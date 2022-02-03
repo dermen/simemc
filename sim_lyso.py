@@ -18,6 +18,7 @@ np.random.seed(COMM.rank)
 NUM_DEV=8
 total_flux=1e12
 beam_size=0.01
+# to retrieve the PDB, run `iotbx.fetch_pdb 4bs7` from cmdline
 PDB = "4bs7.pdb"
 num_shots = 90000
 
