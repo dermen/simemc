@@ -8,7 +8,6 @@ $ gcc make-quaternion.c -O3 -lm -o quat
 Execute:
 
 ```bash
-$ quat -bin 30  # increase bin for higher orientation resolution
 $ ./quat  -bin 20  # creates new file c-quaternion20.bin
 output format: binary
 num_rot = 400200
