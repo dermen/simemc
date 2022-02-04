@@ -9,30 +9,56 @@ import os
 # Probably doesnt matter much for this work..
 
 
+from dials.algorithms.spot_finding.factory import SpotFinderFactory
+from dials.array_family import flex
+import numpy as np
+
+
+def dials_find_spots(data_img, trusted_flags, params):
+    assert data_img.shape==trusted_flags.shape
+    thresh = SpotFinderFactory.configure_threshold(params)
+    flex_data = flex.double(np.ascontiguousarray(data_img))
+    flex_trusted_flags = flex.bool(np.ascontiguousarray(trusted_flags))
+    spotmask = thresh.compute_threshold(flex_data, flex_trusted_flags)
+    return spotmask.as_numpy_array()
+
+
 class RadPros:
 
-    def __init__(self, refGeom, maskFile, numBins=500):
+    def __init__(self, refGeom, maskFile=None, numBins=500):
         """
-        :param refGeom: points to an experiment containing a beam and detector
+        :param refGeom: either a dict with {'D': dxtbx_detector, 'B': dxtbx_beam} or a string that points to an experiment containing a beam and detector
         :param numBins: number of radial bins for the radial profiles
         """
 
         self.numBins = numBins
+        
         # reference geometry!
-        El = ExperimentList.from_file(refGeom)
-        self.detector = El[0].detector
+        if isinstance(refGeom, dict):
+            assert set(refGeom.keys()) == set(["D", "B"])
+            self.detector = refGeom["D"]
+            self.beam = refGeom["B"]
+        else:
+            assert isinstance(refGeom, str)
+            El = ExperimentList.from_file(refGeom)
+            self.detector = El[0].detector
+            self.beam = El[0].beam
+        
         fastDim, slowDim = self.detector[0].get_image_size()
         self.panel_sh = slowDim, fastDim
+        self.img_sh = len(self.detector), slowDim, fastDim
 
-        mask = np.load(maskFile)
-        if len(mask.shape) == 2:
-            mask = np.array([mask])
+        if maskFile is not None:
+            mask = np.load(maskFile)
+            if len(mask.shape) == 2:
+                mask = np.array([mask])
+        else:
+            mask = np.ones(self.img_sh).astype(bool)
         self.mask = mask
 
         # not generalized yet for thick detectors
         assert self.detector[0].get_mu() == 0
 
-        self.beam = El[0].beam
         self.unit_s0 = self.beam.get_unit_s0()
         self._setupQbins()
 
@@ -94,33 +120,50 @@ class RadPros:
         for pid in Qmags:
             self.all_Qbins[pid] = np.digitize(Qmags[pid], self.bins)-1
 
-    def makeRadPro(self, data_expt, strong_refl):
+    def makeRadPro(self, data_pixels=None, data_expt=None, strong_refl=None, strong_params=None,
+                apply_corrections=True):
         """
+        :param data_pixels: image pixels same shape as detector model 
         :param data_expt: filename of an experiment list containing an imageset
         :param strong_refl: filename of a strong spots reflection table
+        :param strong_params:  phil params for dials.spotfinder 
+        :param apply_corrections: if True, correct for polarization and solid angle
         :return: radial profile as a numpy array
         """
-        data_El = ExperimentList.from_file(data_expt)
-        R = flex.reflection_table.from_file(strong_refl)
-        iset = data_El[0].imageset
-        # load the pixels
-        data = iset.get_raw_data(0)
-        if not isinstance(data, tuple):
-            data = (data,)
+        
+        if data_expt is not None:
+            data_El = ExperimentList.from_file(data_expt)
+            iset = data_El[0].imageset
+            # load the pixels
+            data = iset.get_raw_data(0)
+            if not isinstance(data, tuple):
+                data = (data,)
+            data = np.array([d.as_numpy_array() for d in data])
+            R = flex.reflection_table.from_file(strong_refl)
+       
+        if data_pixels is not None:
+            data = data_pixels 
+            R = None
+            all_peak_masks = [~dials_find_spots(data[pid], self.mask[pid], strong_params)\
+                                for pid in range(len(data))]
 
         binCounts = np.zeros(self.numBins-1)
         binWeights = np.zeros(self.numBins-1)
 
         for pid in range(len(self.detector)):
-            photons = data[pid].as_numpy_array().astype(np.float32)
-            photons /= (self.POLAR[pid]*self.OMEGA[pid])
+            photons = data[pid].astype(np.float32)
+            if apply_corrections:
+                photons /= (self.POLAR[pid]*self.OMEGA[pid])
             pix_mask = self.mask[pid]
 
             # mask out the strong pixels
-            refls_pid = R.select(R['panel'] == pid)
-            peak_mask = np.ones_like(pix_mask)
-            for x1, x2, y1, y2, _, _ in refls_pid['bbox']:
-                peak_mask[y1:y2, x1:x2] = False
+            if R is not None:
+                refls_pid = R.select(R['panel'] == pid)
+                peak_mask = np.ones_like(pix_mask)
+                for x1, x2, y1, y2, _, _ in refls_pid['bbox']:
+                    peak_mask[y1:y2, x1:x2] = False
+            else:
+                peak_mask = all_peak_masks[pid]
 
             combined_mask = np.logical_and(peak_mask,pix_mask)
 
@@ -128,9 +171,22 @@ class RadPros:
             np.add.at(binCounts, qbin_idx, 1)
             np.add.at(binWeights, qbin_idx, photons[combined_mask].ravel())
 
-        radPro = np.nan_to_num(binWeights / binCounts)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            radPro = np.nan_to_num(binWeights / binCounts)
         return radPro
 
+    def expand_radPro(self, radPro):
+        """
+        After computing a radial profile, expand it into a full, azimuthally isotropic image
+        :param radPro: numpy array, 1-D, radial profile returned by self.makeRadPro 
+        :returns: a numpy array, same shape as the detector, containing background image
+        """
+        expanded = np.zeros ( self.img_sh)
+        for pid in self.all_Qbins:
+            binIds = self.all_Qbins[pid]
+            expanded[pid] = radPro[binIds]
+        return expanded
+            
     def solidAngle_correction(self):
         """vectorized solid angle correction for every pixel; follows nanoBragg implementation"""
         sq_pixel_size = self.detector[0].get_pixel_size()[0]**2
