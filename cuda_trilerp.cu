@@ -138,11 +138,17 @@ __device__ __inline__ int get_densities_index(int i,int j,int k, int nx, int ny,
     return idx;
 }
 
+/** 
+ * this is a CUDA port of the reborn trilinear interpolator written in Fortran:
+ *     https://gitlab.com/kirianlab/reborn/-/blob/master/reborn/fortran/density.f90#L16
+ * It is assumed that each element in vectors is (vx, vy, vz), with x corresponding to the fast dimension of densities (a flattened 3d array)
+ * Hence in Numpy vx would correspond to the third axis of densities: densities.shape  = (zdim, ydim, xdim)
+ */
 __global__ void trilinear_interpolation(const double * __restrict__ densities, VEC3 *vectors, double * out, int num_qvec,
                                         int nx, int ny, int nz,
                                         double cx, double cy, double cz,
                                         double dx, double dy, double dz){
-
+  
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int thread_stride = blockDim.x * gridDim.x;
     double i_f, j_f, k_f;
@@ -157,6 +163,7 @@ __global__ void trilinear_interpolation(const double * __restrict__ densities, V
         qy = Q[1];
         qz = Q[2];
 
+        // In the variable notation below, "k" is the fast dimension of densities and "i" is the slow dimension
         k_f = (qx - cx) / dx;
         j_f = (qy - cy) / dy;
         i_f = (qz - cz) / dz;
