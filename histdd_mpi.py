@@ -6,6 +6,7 @@ COMM = MPI.COMM_WORLD
 import glob
 from simemc.compute_radials import RadPros
 from dials.command_line.stills_process import phil_scope
+from simemc import utils
 
 #def strong_fname_from_exp_fname(exp_f):
 #    strong_f = 
@@ -34,7 +35,7 @@ num_process = np.inf
 
 Qx = Qy = Qz = None
 if COMM.rank==0:
-    Qx, Qy, Qz = map( lambda x: x.ravel(), np.load("qmap.npy") ) 
+    Qx, Qy, Qz = utils.load_qmap("qmap.npy") 
 Qx = COMM.bcast(Qx)
 Qy = COMM.bcast(Qy)
 Qz = COMM.bcast(Qz)
@@ -80,13 +81,14 @@ for i_f, f in enumerate(fnames):
         data *= (radProMaker.POLAR[0] * radProMaker.OMEGA[0])
         data /= data.max()
         data *= 1e2
-        radialProfile = radProMaker.makeRadPro(data_pixels=np.array([data]), strong_params=params,
-                                                apply_corrections=False)
+        radialProfile = radProMaker.makeRadPro(
+                data_pixels=np.array([data]), 
+                strong_params=params,
+                apply_corrections=False)
         BGdata = radProMaker.expand_radPro(radialProfile)[0]
         data = data-BGdata
     data = data.ravel()
 
-    
     qdata = np.vstack(qXYZ)
     qsampX, qsampY, qsampZ = np.dot(Umat.T, qdata)
     qsamples = qsampX, qsampY, qsampZ
