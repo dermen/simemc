@@ -20,15 +20,22 @@ class lerpyExt{
     lerpyExt(){}
     lerpy gpu;
     inline void alloc(int device_id, np::ndarray rotations, np::ndarray densities, int maxNumQ,
-                      bp::tuple corner, bp::tuple delta){
+                      bp::tuple corner, bp::tuple delta, np::ndarray qvecs, int maxNumRotInds){
         int num_rot=rotations.shape(0)/9;
         gpu.device = device_id;
         gpu.maxNumQ = maxNumQ;
         printf("Determined number of rotations=%d\n", num_rot);
-        prepare_for_lerping( gpu, rotations, densities, corner, delta);
+        prepare_for_lerping( gpu, rotations, densities, corner, delta, qvecs, maxNumRotInds);
     }
-    inline void trilinear_interpolation(np::ndarray qvecs, bool verbose){
-        do_a_lerp(gpu, qvecs, verbose);
+    //inline void trilinear_interpolation(np::ndarray qvecs, bool verbose){
+    inline void trilinear_interpolation(np::ndarray rot_idx, bool verbose){
+        int nrot = rot_idx.shape(0);
+        std::vector<int> rot_inds;
+
+        for (int i_rot=0; i_rot < nrot; i_rot++)
+            rot_inds.push_back(  bp::extract<int>(rot_idx[i_rot])  );
+
+        do_a_lerp(gpu, rot_inds, verbose);
     }
     //inline void free(){
     //    free_orientMatch(gpu);
