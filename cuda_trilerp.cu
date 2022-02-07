@@ -38,20 +38,12 @@ void error_msg(cudaError_t err, const char* msg){
 }
 
 
-void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities, bp::tuple corner, bp::tuple delta,
-                        np::ndarray qvectors, int maxNumRotInds){
+void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities, 
+                        np::ndarray qvectors){
     gpu.numRot = Umats.shape(0)/9;
     gpu.numQ = qvectors.shape(0)/3;
     gpu.numDens = densities.shape(0);
-    gpu.maxNumRotInds = maxNumRotInds;
    // TODO asserts on len of corner and delta (must be 3)
-    gpu.corner[0] = bp::extract<double>(corner[0]);
-    gpu.corner[1] = bp::extract<double>(corner[1]);
-    gpu.corner[2] = bp::extract<double>(corner[2]);
-
-    gpu.delta[0] = bp::extract<double>(delta[0]);
-    gpu.delta[1] = bp::extract<double>(delta[1]);
-    gpu.delta[2] = bp::extract<double>(delta[2]);
 
     gpuErr(cudaSetDevice(gpu.device));
     gpuErr(cudaMallocManaged((void **)&gpu.rotMats, gpu.numRot*sizeof(MAT3)));
@@ -283,7 +275,6 @@ __global__ void trilinear_interpolation_rotate_on_GPU(
     CUDAREAL I0,I1,I2,I3,I4,I5,I6,I7;
     CUDAREAL a0,a1,a2,a3,a4,a5,a6,a7;
     CUDAREAL x0y0, x1y1, x0y1, x1y0;
-    int stride_x, stride_xy;
     int rot_index;
     int i, i_rot;
 

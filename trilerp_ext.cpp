@@ -24,8 +24,16 @@ class lerpyExt{
         int num_rot=rotations.shape(0)/9;
         gpu.device = device_id;
         gpu.maxNumQ = maxNumQ;
+        gpu.maxNumRotInds = maxNumRotInds;
         printf("Determined number of rotations=%d\n", num_rot);
-        prepare_for_lerping( gpu, rotations, densities, corner, delta, qvecs, maxNumRotInds);
+        gpu.corner[0] = bp::extract<double>(corner[0]);
+        gpu.corner[1] = bp::extract<double>(corner[1]);
+        gpu.corner[2] = bp::extract<double>(corner[2]);
+
+        gpu.delta[0] = bp::extract<double>(delta[0]);
+        gpu.delta[1] = bp::extract<double>(delta[1]);
+        gpu.delta[2] = bp::extract<double>(delta[2]);
+        prepare_for_lerping( gpu, rotations, densities, qvecs);
     }
     //inline void trilinear_interpolation(np::ndarray qvecs, bool verbose){
     inline void trilinear_interpolation(np::ndarray rot_idx, bool verbose){
