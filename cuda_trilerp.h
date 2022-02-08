@@ -15,8 +15,11 @@ namespace np = boost::python::numpy;
 struct lerpy {
   MAT3* rotMats=NULL;
   CUDAREAL* densities;
+  CUDAREAL* data;
+  int numDataPixels;
   VEC3* qVecs=NULL;
   CUDAREAL* out=NULL;
+  CUDAREAL* out_equation_two=NULL;
   bp::list outList;
   int numQ;
   int maxNumQ;
@@ -34,8 +37,11 @@ struct lerpy {
 void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
                          np::ndarray qvectors);
 
+void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data);
+
 // fills the gpu.out array with interpolated values, 1 for each qvec
 void do_a_lerp(lerpy& gpu,
                std::vector<int>& rot_inds,
                //np::ndarray qvecs,
-               bool verbose);
+               bool verbose, int task);
+

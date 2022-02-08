@@ -20,9 +20,11 @@ class lerpyExt{
     lerpyExt(){}
     lerpy gpu;
     inline void alloc(int device_id, np::ndarray rotations, np::ndarray densities, int maxNumQ,
-                      bp::tuple corner, bp::tuple delta, np::ndarray qvecs, int maxNumRotInds){
+                      bp::tuple corner, bp::tuple delta, np::ndarray qvecs, int maxNumRotInds,
+                      int numDataPix){
         int num_rot=rotations.shape(0)/9;
         gpu.device = device_id;
+        gpu.numDataPixels = numDataPix;
         gpu.maxNumQ = maxNumQ;
         gpu.maxNumRotInds = maxNumRotInds;
         printf("Determined number of rotations=%d\n", num_rot);
@@ -36,6 +38,17 @@ class lerpyExt{
         prepare_for_lerping( gpu, rotations, densities, qvecs);
     }
     //inline void trilinear_interpolation(np::ndarray qvecs, bool verbose){
+    inline int copy_pixels( np::ndarray pixels){
+        // assert len pixels matches up
+        if (pixels.shape(0) != gpu.numDataPixels){
+            printf("Number of pixels passed does not agree with number of allocated pixels on device\n");
+            return 1;
+        }
+        else{
+            shot_data_to_device(gpu,pixels); 
+            return 0;
+        }
+    }
     inline void trilinear_interpolation(np::ndarray rot_idx, bool verbose){
         int nrot = rot_idx.shape(0);
         std::vector<int> rot_inds;
@@ -43,7 +56,20 @@ class lerpyExt{
         for (int i_rot=0; i_rot < nrot; i_rot++)
             rot_inds.push_back(  bp::extract<int>(rot_idx[i_rot])  );
 
-        do_a_lerp(gpu, rot_inds, verbose);
+        // 0 specifies only do interpolation
+        do_a_lerp(gpu, rot_inds, verbose, 0);
+    }
+    
+    inline void do_equation_two(np::ndarray rot_idx, bool verbose){
+        int nrot = rot_idx.shape(0);
+        std::vector<int> rot_inds;
+
+        for (int i_rot=0; i_rot < nrot; i_rot++)
+            rot_inds.push_back(  bp::extract<int>(rot_idx[i_rot])  );
+
+        // 1 specifies to run through equation two for the  specified rotation inds
+        do_a_lerp(gpu, rot_inds, verbose, 1);
+
     }
     //inline void free(){
     //    free_orientMatch(gpu);
@@ -80,13 +106,20 @@ BOOST_PYTHON_MODULE(trilerp){
     bp::class_<lerpyExt>("lerpy", bp::no_init)
         .def(bp::init<>("returns a class instance"))
         .def ("allocate_lerpy", &lerpyExt::alloc, "allocate the device")
+        .def ("copy_image_data", &lerpyExt::copy_pixels, "copy pixels to the GPU device")
         //.def("free_device", &lerpyExt::free, "free any allocated GPU memory")
         .def ("print_rotMat", &lerpyExt::print_rotMat, "show elements of allocated rotMat i_rot")
-        .def ("get_out", &lerpyExt::get_out, "return the interpolated values")
+        .def ("get_out", &lerpyExt::get_out, "return the output array.")
+
         .def("trilinear_interpolation",
              &lerpyExt::trilinear_interpolation,
-             (bp::arg("qvecs"), bp::arg("verbose")=true),
+             (bp::arg("rot_idx"), bp::arg("verbose")=true),
              "interpolate the qvecs according to the supplied densities")
+
+        .def("equation_two",
+             &lerpyExt::do_equation_two,
+             (bp::arg("rot_idx"), bp::arg("verbose")=true),
+             "compute equation to for the supplied rotation indices")
         //.def ("get_probable_orients", &lerpyExt::listOrients, "returns a list of rotation matrix indices")
         //.add_property("num_ori",
         //               make_getter(&lerpyExt::num_orient,rbv()),
