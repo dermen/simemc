@@ -194,7 +194,11 @@ __device__ __inline__ int get_densities_index(int i,int j,int k, int nx, int ny,
     return idx;
 }
 
-//__global__ void trilinear_interpolation(const CUDAREAL * __restrict__ densities, VEC3 *vectors, CUDAREAL * out, 
+/**
+ * this is a CUDA port of the reborn trilinear interpolator written in Fortran:
+ *     https://gitlab.com/kirianlab/reborn/-/blob/master/reborn/fortran/density.f90#L16
+ */
+//__global__ void trilinear_interpolation(const CUDAREAL * __restrict__ densities, VEC3 *vectors, CUDAREAL * out,
 //                                        int num_qvec,
 //                                        int nx, int ny, int nz,
 //                                        CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
