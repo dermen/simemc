@@ -492,7 +492,10 @@ __global__ void trilinear_interpolation_equation_two(
 
         }
         __syncthreads();
+        // reduce R_dr across blocks, store result on thread 0
         blocksum = BlockReduce(temp_storage).Sum(R_dr_thread);
+
+        // accumulate across all thread 0 using atomics
         if (threadIdx.x==0)
             atomicAdd(&out_rot[i_rot], blocksum);
     }
