@@ -8,7 +8,6 @@ typedef Eigen::Matrix<CUDAREAL,3,3> MAT3;
 #include <stdio.h>
 #include <sys/time.h>
 
-
 namespace bp = boost::python;
 namespace np = boost::python::numpy;
 
@@ -19,6 +18,7 @@ struct lerpy {
   int numDataPixels;
   VEC3* qVecs=NULL;
   CUDAREAL* out=NULL;
+  CUDAREAL* out2=NULL;
   CUDAREAL* out_equation_two=NULL;
   bp::list outList;
   int numQ;

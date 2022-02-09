@@ -31,8 +31,9 @@ qcent = (qbins[:-1] + qbins[1:])*.5
 xmin = qcent[0], qcent[0], qcent[0]
 xmax = qcent[-1], qcent[-1], qcent[-1]
 c,d = utils.corners_and_deltas(dens_sh, xmin, xmax )
+numDataPix = maxNumQ
 
-L.allocate_lerpy(0, rotMats.ravel(), I.ravel(), maxNumQ, tuple(c), tuple(d), qcoords.ravel(), 1000)
+L.allocate_lerpy(0, rotMats.ravel(), I.ravel(), maxNumQ, tuple(c), tuple(d), qcoords.ravel(), 1000, numDataPix)
 
 
 #print("RotMat in Python land:\n",rotMats[1])
@@ -41,7 +42,6 @@ L.allocate_lerpy(0, rotMats.ravel(), I.ravel(), maxNumQ, tuple(c), tuple(d), qco
 
 inds = np.arange(1000).astype(np.int32)[::-1]
 L.trilinear_interpolation(inds)
-
 
 out = np.array(L.get_out())
 img = out.reshape((2527, 2463))
@@ -54,5 +54,6 @@ print("reborn: %f sec" % (t2-t1))
 
 inbounds = np.logical_and(qmags > qmin, qmags < qmax)
 assert np.allclose(out[inbounds], out2[inbounds], atol=1e-5)
+
 
 print("OK!")

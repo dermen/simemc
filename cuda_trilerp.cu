@@ -1,6 +1,6 @@
 
 #include "cuda_trilerp.h"
-
+#include <cub/cub.cuh>
 #define gpuErr(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 
 //__device__ __inline__ int get_densities_index(int i,int j,int k, int stride_x, int stride_y);
@@ -14,7 +14,7 @@ __device__ __inline__ int get_densities_index(int i,int j,int k, int nx, int ny,
 //                                        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
 
 __global__ void trilinear_interpolation_rotate_on_GPU(const CUDAREAL* __restrict__ densities,
-                                        VEC3*vectors, CUDAREAL* out, MAT3* rotMats, int * rot_inds, 
+                                        VEC3*vectors, CUDAREAL* out, MAT3* rotMats, int * rot_inds,
                                         int numRot, int num_qvec,
                                         int nx, int ny, int nz,
                                         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
@@ -22,7 +22,8 @@ __global__ void trilinear_interpolation_rotate_on_GPU(const CUDAREAL* __restrict
 
 __global__ void trilinear_interpolation_equation_two(const CUDAREAL* __restrict__ densities,
                                         const CUDAREAL* __restrict__ data, 
-                                        VEC3*vectors, CUDAREAL* out, MAT3* rotMats, int * rot_inds, 
+                                        VEC3*vectors, CUDAREAL* out_rot,
+                                        MAT3* rotMats, int * rot_inds,
                                         int numRot, int num_qvec,
                                         int nx, int ny, int nz,
                                         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
@@ -65,32 +66,32 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
     MAT3 Umat; // orientation matrix
     for (int i_rot=0; i_rot < gpu.numRot; i_rot ++){
         int i= i_rot*9;
-        float uxx = float(bp::extract<double>(Umats[i]));
-        float uxy = float(bp::extract<double>(Umats[i+1]));
-        float uxz = float(bp::extract<double>(Umats[i+2]));
-        float uyx = float(bp::extract<double>(Umats[i+3]));
-        float uyy = float(bp::extract<double>(Umats[i+4]));
-        float uyz = float(bp::extract<double>(Umats[i+5]));
-        float uzx = float(bp::extract<double>(Umats[i+6]));
-        float uzy = float(bp::extract<double>(Umats[i+7]));
-        float uzz = float(bp::extract<double>(Umats[i+8]));
+        CUDAREAL uxx = bp::extract<CUDAREAL>(Umats[i]);
+        CUDAREAL uxy = bp::extract<CUDAREAL>(Umats[i+1]);
+        CUDAREAL uxz = bp::extract<CUDAREAL>(Umats[i+2]);
+        CUDAREAL uyx = bp::extract<CUDAREAL>(Umats[i+3]);
+        CUDAREAL uyy = bp::extract<CUDAREAL>(Umats[i+4]);
+        CUDAREAL uyz = bp::extract<CUDAREAL>(Umats[i+5]);
+        CUDAREAL uzx = bp::extract<CUDAREAL>(Umats[i+6]);
+        CUDAREAL uzy = bp::extract<CUDAREAL>(Umats[i+7]);
+        CUDAREAL uzz = bp::extract<CUDAREAL>(Umats[i+8]);
         Umat << uxx, uxy, uxz,
                 uyx, uyy, uyz,
                 uzx, uzy, uzz;
-        gpu.rotMats[i_rot] = Umat;
+        gpu.rotMats[i_rot] = Umat.transpose();
     }
 
     for (int i_q = 0; i_q < gpu.numQ; i_q++) {
         int i = i_q * 3;
-        CUDAREAL qx = float(bp::extract<double>(qvectors[i]));
-        CUDAREAL qy = float(bp::extract<double>(qvectors[i + 1]));
-        CUDAREAL qz = float(bp::extract<double>(qvectors[i + 2]));
+        CUDAREAL qx = bp::extract<CUDAREAL>(qvectors[i]);
+        CUDAREAL qy = bp::extract<CUDAREAL>(qvectors[i + 1]);
+        CUDAREAL qz = bp::extract<CUDAREAL>(qvectors[i + 2]);
         VEC3 Q(qx, qy, qz);
         gpu.qVecs[i_q] = Q;
     }
 
     for (int i=0; i < gpu.numDens; i++){
-        gpu.densities[i] = bp::extract<double>(densities[i]);
+        gpu.densities[i] = bp::extract<CUDAREAL>(densities[i]);
     }
 }
 
@@ -112,6 +113,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         gpu.blockSize = 128;
     else
         gpu.blockSize = atoi(threads);
+    //gpu.blockSize=blockSize;
     gpu.numBlocks = (gpu.numQ + gpu.blockSize - 1) / gpu.blockSize;
 
     int numRotInds = rot_inds.size();
@@ -128,10 +130,15 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     }
 
     gettimeofday(&t1, 0);
+    /*
+     *
+     * KERNELS
+     */
     
     if (task==0){
         trilinear_interpolation_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
-                (gpu.densities, gpu.qVecs, gpu.out, gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
+                (gpu.densities, gpu.qVecs, gpu.out, gpu.rotMats,
+                 gpu.rotInds, numRotInds, gpu.numQ,
                  256, 256, 256,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
                  gpu.delta[0], gpu.delta[1], gpu.delta[2]
@@ -139,8 +146,11 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     }
     else {
         if (verbose)printf("Running equation 2!\n");
+
         trilinear_interpolation_equation_two<<<gpu.numBlocks, gpu.blockSize>>>
-                (gpu.densities,  gpu.data, gpu.qVecs, gpu.out_equation_two, gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
+                (gpu.densities,  gpu.data, gpu.qVecs,
+                 gpu.out_equation_two,
+                 gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
                  256, 256, 256,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
                  gpu.delta[0], gpu.delta[1], gpu.delta[2]
@@ -281,7 +291,7 @@ __device__ __inline__ int get_densities_index(int i,int j,int k, int nx, int ny,
 
 __global__ void trilinear_interpolation_rotate_on_GPU(
                                         const CUDAREAL * __restrict__ densities, 
-                                        VEC3 *vectors, CUDAREAL * out, 
+                                        VEC3 *vectors, CUDAREAL * out,
                                         MAT3* rotMats, int* rot_inds, int numRot, int num_qvec,
                                         int nx, int ny, int nz,
                                         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
@@ -376,14 +386,15 @@ __global__ void trilinear_interpolation_rotate_on_GPU(
 __global__ void trilinear_interpolation_equation_two(
                                         const CUDAREAL * __restrict__ densities, 
                                         const CUDAREAL * __restrict__ data, 
-                                        VEC3 *vectors, CUDAREAL * out, 
+                                        VEC3 *vectors,
+                                        CUDAREAL * out_rot,
                                         MAT3* rotMats, int* rot_inds, int numRot, int num_qvec,
                                         int nx, int ny, int nz,
                                         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
                                         CUDAREAL dx, CUDAREAL dy, CUDAREAL dz){
 
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    int thread_stride = blockDim.x * gridDim.x;
+    unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int thread_stride = blockDim.x * gridDim.x;
     CUDAREAL i_f, j_f, k_f;
     CUDAREAL x0,x1,y0,y1,z0,z1;
     CUDAREAL qx,qy,qz;
@@ -393,19 +404,25 @@ __global__ void trilinear_interpolation_equation_two(
     CUDAREAL x0y0, x1y1, x0y1, x1y0;
     int i_rot;
 
-    VEC3 Q, Qr;
+    VEC3 Q;
     CUDAREAL K_t;
     CUDAREAL W_rt;
     int t,r;
-    for (t=tid; t < num_qvec; t += thread_stride){
-        Q = vectors[t];
-        K_t = data[t];
-        for (i_rot =0; i_rot < numRot; i_rot++){
-            r = rot_inds[i_rot];
-            Qr = rotMats[r]*Q;
-            qx = Qr[0];
-            qy = Qr[1];
-            qz = Qr[2];
+
+    CUDAREAL R_dr_thread, blocksum;
+    typedef cub::BlockReduce<CUDAREAL, 128> BlockReduce;
+    __shared__ typename BlockReduce::TempStorage temp_storage;
+
+    for (i_rot =0; i_rot < numRot; i_rot++){
+        R_dr_thread = 0;
+        r = rot_inds[i_rot];
+        for (t=tid; t < num_qvec; t += thread_stride){
+            Q = vectors[t];
+            K_t = data[t];
+            Q = rotMats[r]*Q;
+            qx = Q[0];
+            qy = Q[1];
+            qz = Q[2];
 
             k_f = (qx - cx) / dx;
             j_f = (qy - cy) / dy;
@@ -470,8 +487,15 @@ __global__ void trilinear_interpolation_equation_two(
             
             if (W_rt  > 0){
                 //out[r] += fma(K_t, log(W_rt), -W_rt);
-                out[r] += K_t* log(W_rt) - W_rt;
+                R_dr_thread += K_t*log(W_rt)-W_rt;
             }
+
         }
+        __syncthreads();
+        blocksum = BlockReduce(temp_storage).Sum(R_dr_thread);
+        if (threadIdx.x==0)
+            atomicAdd(&out_rot[i_rot], blocksum);
     }
 }
+
+
