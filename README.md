@@ -5,3 +5,8 @@ diffraction simulations and EMC
 
 * Developer build of CCTBX with mpi4py support
 * reborn (https://kirianlab.gitlab.io/reborn/)
+
+## Testing
+From the repository root run `pytest`
+
+
