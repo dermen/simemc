@@ -40,9 +40,9 @@ class lerpyExt{
     //inline void trilinear_interpolation(np::ndarray qvecs, bool verbose){
     inline int copy_pixels( np::ndarray pixels){
         // assert len pixels matches up
-        if (pixels.shape(0) != gpu.numDataPixels){
+        if (pixels.shape(0) != gpu.numQ){
             printf("Number of pixels passed does not agree with number of allocated pixels on device\n");
-            return 1;
+            exit(1);
         }
         else{
             shot_data_to_device(gpu,pixels); 

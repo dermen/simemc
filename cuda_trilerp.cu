@@ -4,7 +4,7 @@
 #include "emc.cuh"
 
 //__device__ __inline__ int get_densities_index(int i,int j,int k, int stride_x, int stride_y);
-__device__ __inline__ int get_densities_index(int i,int j,int k, int nx, int ny, int nz);
+__device__ __inline__ unsigned int get_densities_index(int i,int j,int k, int nx, int ny, int nz);
 
 
 //__global__ void trilinear_interpolation(const CUDAREAL* __restrict__ densities,
@@ -21,13 +21,13 @@ __global__ void trilinear_interpolation_rotate_on_GPU(const CUDAREAL* __restrict
                                         CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
 
 __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
-                                        const CUDAREAL* __restrict__ data, 
-                                        VEC3*vectors, CUDAREAL* out_rot,
-                                        MAT3* rotMats, int * rot_inds,
-                                        int numRot, int num_qvec,
-                                        int nx, int ny, int nz,
-                                        CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
-                                        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
+                                 const CUDAREAL* __restrict__ data,
+                                 VEC3*vectors, CUDAREAL* out_rot,
+                                 MAT3* rotMats, int * rot_inds,
+                                 int numRot, int num_qvec,
+                                 int nx, int ny, int nz,
+                                 CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
+                                 CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
 
 
 
@@ -37,6 +37,7 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
                         np::ndarray qvectors){
     gpu.numRot = Umats.shape(0)/9;
     gpu.numQ = qvectors.shape(0)/3;
+    printf("Number of Qvectors=%d\n", gpu.numQ);
     gpu.numDens = densities.shape(0);
    // TODO asserts on len of corner and delta (must be 3)
 
@@ -82,8 +83,10 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
 }
 
 void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data){
-    for (int i=0; i < shot_data.shape(0); i++)
-        gpu.data[i] =  bp::extract<double>(shot_data[i]);
+    unsigned int num_pix = shot_data.shape(0);
+    for (int i=0; i < num_pix; i++) {
+        gpu.data[i] = bp::extract<CUDAREAL>(shot_data[i]);
+    }
 }
 
 
@@ -173,10 +176,11 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     }
 }
 
-__device__ __inline__ int get_densities_index(int i,int j,int k, int nx, int ny, int nz)
+__device__ __inline__ unsigned int get_densities_index(int i,int j,int k, int nx, int ny, int nz)
 //__device__ __inline__ int get_densities_index(int i,int j,int k, int stride_x, int stride_xy)
 {
-    int idx = i + j*nx + k*nx*ny;
+    //int idx = i + j*nx + k*nx*ny;
+    unsigned int idx = fma(nx, fma(k,ny,j), i);
     return idx;
 }
 
@@ -405,14 +409,17 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
     CUDAREAL R_dr_thread, R_dr_block;
     typedef cub::BlockReduce<CUDAREAL, 128> BlockReduce;
     __shared__ typename BlockReduce::TempStorage temp_storage;
+    MAT3 R;
 
     for (i_rot =0; i_rot < numRot; i_rot++){
         R_dr_thread = 0;
         r = rot_inds[i_rot];
+        R = rotMats[r];
         for (t=tid; t < num_qvec; t += thread_stride){
-            Q = vectors[t];
-            K_t = data[t];
-            Q = rotMats[r]*Q;
+            //Q = vectors[t];
+            K_t = __ldg(&data[t]);
+            Q = R*vectors[t];
+            //Q = rotMats[r]*vectors[t];
             qx = Q[0];
             qy = Q[1];
             qz = Q[2];
@@ -438,7 +445,7 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
             y1 = 1.0 - y0;
             z1 = 1.0 - z0;
 
-            I0 = __ldg(&densities[get_densities_index(i0, j0, k0, nx, ny, nz)]); 
+            I0 = __ldg(&densities[get_densities_index(i0, j0, k0, nx, ny, nz)]);
             I1 = __ldg(&densities[get_densities_index(i1, j0, k0, nx, ny, nz)]); 
             I2 = __ldg(&densities[get_densities_index(i0, j1, k0, nx, ny, nz)]); 
             I3 = __ldg(&densities[get_densities_index(i0, j0, k1, nx, ny, nz)]); 
@@ -461,26 +468,26 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
             a6 = x0y0 * z1;
             a7 = x0y0 * z0;
 
-            W_rt = I0 * a0 +
-                     I1 * a1 +
-                     I2 * a2 +
-                     I3 * a3 +
-                     I4 * a4 +
-                     I5 * a5 +
-                     I6 * a6 +
-                     I7 * a7;
-            //W_rt = fma(I0,a0, 
-            //       fma(I1,a1,
-            //       fma(I2,a2,
-            //       fma(I3,a3,
-            //       fma(I4,a4,
-            //       fma(I5,a5,
-            //       fma(I6,a6,
-            //       fma(I7,a7,0))))))));
+            //W_rt = I0 * a0 +
+            //         I1 * a1 +
+            //         I2 * a2 +
+            //         I3 * a3 +
+            //         I4 * a4 +
+            //         I5 * a5 +
+            //         I6 * a6 +
+            //         I7 * a7;
+            W_rt = fma(I0,a0,
+                   fma(I1,a1,
+                   fma(I2,a2,
+                   fma(I3,a3,
+                   fma(I4,a4,
+                   fma(I5,a5,
+                   fma(I6,a6,
+                   fma(I7,a7,0))))))));
             
             if (W_rt  > 0){
-                //out[r] += fma(K_t, log(W_rt), -W_rt);
-                R_dr_thread += K_t*log(W_rt)-W_rt;
+                //R_dr_thread += fma(K_t, log(W_rt), -W_rt);
+                R_dr_thread += K_t*log(W_rt) - W_rt;
             }
 
         }

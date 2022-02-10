@@ -2,7 +2,7 @@
 #define CUDA_EMC_H
 
 #include <Eigen/Dense>
-typedef double CUDAREAL;
+typedef float CUDAREAL;
 typedef Eigen::Matrix<CUDAREAL,3,1> VEC3;
 typedef Eigen::Matrix<CUDAREAL,3,3> MAT3;
 #include <iostream>
