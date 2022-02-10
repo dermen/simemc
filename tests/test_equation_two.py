@@ -1,14 +1,18 @@
-from emc import lerpy
+
+import sys
+import os
+mod_dir = os.path.join(os.path.dirname(__file__) + "../")
+sys.path.append(mod_dir)
+
+from simemc.emc import lerpy
 import numpy as np
 from simemc import utils
-import sys
 from scipy.spatial.transform import Rotation
 from reborn.misc.interpolate import trilinear_interpolation
 import time
 
-def test(maxRotInds=100):
+def test(maxRotInds=10):
 
-    maxRotInds = 100
     fdim = 2463
     sdim = 2527
     N= fdim*sdim
@@ -27,7 +31,7 @@ def test(maxRotInds=100):
     data1 = data1.astype(np.float32).astype(np.float64)
 
     # do interpolation
-    qx, qy, qz = utils.load_qmap("../qmap.npy")
+    #qx, qy, qz = utils.load_qmap("../qmap.npy")
     qx = np.random.uniform(-0.25, 0.25, N)
     qy = np.random.uniform(-0.25, 0.25,N)
     qz = np.random.uniform(0, 0.25, N)
