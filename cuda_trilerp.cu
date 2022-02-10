@@ -20,7 +20,7 @@ __global__ void trilinear_interpolation_rotate_on_GPU(const CUDAREAL* __restrict
                                         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
                                         CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
 
-__global__ void trilinear_interpolation_equation_two(const CUDAREAL* __restrict__ densities,
+__global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
                                         const CUDAREAL* __restrict__ data, 
                                         VEC3*vectors, CUDAREAL* out_rot,
                                         MAT3* rotMats, int * rot_inds,
@@ -147,7 +147,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     else {
         if (verbose)printf("Running equation 2!\n");
 
-        trilinear_interpolation_equation_two<<<gpu.numBlocks, gpu.blockSize>>>
+        EMC_equation_two<<<gpu.numBlocks, gpu.blockSize>>>
                 (gpu.densities,  gpu.data, gpu.qVecs,
                  gpu.out_equation_two,
                  gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
@@ -387,15 +387,18 @@ __global__ void trilinear_interpolation_rotate_on_GPU(
     }
 }
 
-__global__ void trilinear_interpolation_equation_two(
-                                        const CUDAREAL * __restrict__ densities, 
-                                        const CUDAREAL * __restrict__ data, 
-                                        VEC3 *vectors,
-                                        CUDAREAL * out_rot,
-                                        MAT3* rotMats, int* rot_inds, int numRot, int num_qvec,
-                                        int nx, int ny, int nz,
-                                        CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
-                                        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz){
+/*
+ * Computes equation (2) in http://dx.doi.org/10.1107/S1600576716008165
+ *
+ */
+__global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
+                                 const CUDAREAL * __restrict__ data,
+                                 VEC3 *vectors,
+                                 CUDAREAL * out_rot,
+                                 MAT3* rotMats, int* rot_inds, int numRot, int num_qvec,
+                                 int nx, int ny, int nz,
+                                 CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
+                                 CUDAREAL dx, CUDAREAL dy, CUDAREAL dz){
 
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int thread_stride = blockDim.x * gridDim.x;
@@ -413,7 +416,7 @@ __global__ void trilinear_interpolation_equation_two(
     CUDAREAL W_rt;
     int t,r;
 
-    CUDAREAL R_dr_thread, blocksum;
+    CUDAREAL R_dr_thread, R_dr_block;
     typedef cub::BlockReduce<CUDAREAL, 128> BlockReduce;
     __shared__ typename BlockReduce::TempStorage temp_storage;
 
@@ -497,11 +500,11 @@ __global__ void trilinear_interpolation_equation_two(
         }
         __syncthreads();
         // reduce R_dr across blocks, store result on thread 0
-        blocksum = BlockReduce(temp_storage).Sum(R_dr_thread);
+        R_dr_block = BlockReduce(temp_storage).Sum(R_dr_thread);
 
         // accumulate across all thread 0 using atomics
         if (threadIdx.x==0)
-            atomicAdd(&out_rot[i_rot], blocksum);
+            atomicAdd(&out_rot[i_rot], R_dr_block);
     }
 }
 
