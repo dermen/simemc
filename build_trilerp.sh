@@ -34,5 +34,5 @@ g++ -shared emc_ext.o cuda_trilerp.o orient_match.o \
   -lboost_numpy38 -lcudart \
   -o emc.so
 
-# NOTE: import with python:  "from emc import lerpy"
+# NOTE: import with python:  "from simemc.emc import lerpy"
 # (just ensure the folder containing emc.so is in PYTHONPATH)

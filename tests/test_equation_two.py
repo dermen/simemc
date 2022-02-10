@@ -1,10 +1,6 @@
 
-import sys
-import os
-mod_dir = os.path.join(os.path.dirname(__file__) + "../")
-sys.path.append(mod_dir)
-
 from simemc.emc import lerpy
+import sys
 import numpy as np
 from simemc import utils
 from scipy.spatial.transform import Rotation
