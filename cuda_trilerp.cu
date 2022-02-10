@@ -1,7 +1,7 @@
 
-#include "cuda_trilerp.h"
 #include <cub/cub.cuh>
-#define gpuErr(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+#include "cuda_trilerp.h"
+#include "emc.cuh"
 
 //__device__ __inline__ int get_densities_index(int i,int j,int k, int stride_x, int stride_y);
 __device__ __inline__ int get_densities_index(int i,int j,int k, int nx, int ny, int nz);
@@ -30,21 +30,7 @@ __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
                                         CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
 
 
-inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
-{
-   if (code != cudaSuccess)
-   {
-      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
-      if (abort) exit(code);
-   }
-}
 
-void error_msg(cudaError_t err, const char* msg){
-    if (err != cudaSuccess){
-        printf("%s: CUDA error message: %s\n", msg, cudaGetErrorString(err));
-        exit(err);
-    }
-}
 
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities, 

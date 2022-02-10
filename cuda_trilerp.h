@@ -1,3 +1,5 @@
+#ifndef CUDA_EMC_H
+#define CUDA_EMC_H
 
 #include <Eigen/Dense>
 typedef double CUDAREAL;
@@ -45,3 +47,25 @@ void do_a_lerp(lerpy& gpu,
                //np::ndarray qvecs,
                bool verbose, int task);
 
+
+struct gpuOrient {
+    MAT3* rotMats=NULL;
+    VEC3* qVecs=NULL;
+    //double* qVecs=NULL;
+    bool* out=NULL;
+    int max_numQ;
+    int numRot;
+    int numBlocks, blockSize;
+    int device;
+    bp::list probable_rot_inds;
+};
+
+void orientPeaks(gpuOrient& gpu,
+                 np::ndarray qvecs,
+                 CUDAREAL hcut,
+                 int minpred, bool verbose);
+void setup_orientMatch(int dev_id, int maxNumQ, gpuOrient& gpu,
+                       np::ndarray Umats, bool alloc);
+void free_orientMatch(gpuOrient& gpu);
+
+#endif

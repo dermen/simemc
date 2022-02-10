@@ -1,4 +1,4 @@
-from trilerp import lerpy
+from emc import lerpy
 import numpy as np
 from simemc import utils
 
