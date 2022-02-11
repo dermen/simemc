@@ -1,18 +1,29 @@
 
-import dxtbx
+import sys
 import numpy as np
-from dxtbx.model import Crystal
+import pytest
 from scipy.spatial.transform import Rotation
+import dxtbx
+from dxtbx.model import Crystal
 from dials.array_family import flex
 from dxtbx.model import ExperimentList, Experiment
 
+from reborn.misc.interpolate import trilinear_insertion
 from simemc import utils
 from simemc.emc import probable_orients, lerpy
-import pytest
 
 
 @pytest.mark.skip(reason="test currently depends on hard-coded paths")
-def test_conventions():
+def test_conventions_reborn_insert():
+    _test_conventions(False)
+
+
+@pytest.mark.skip(reason="test currently depends on hard-coded paths")
+def test_conventions_hist_insert():
+    _test_conventions(True)
+
+
+def _test_conventions(use_hist_method=True):
     gpu_device = 0
     num_rot_mats = 10000000
     maxRotInds = 10000
@@ -31,14 +42,30 @@ def test_conventions():
     Umat = np.reshape(C.get_U(), (3,3))
     qcoords_rot = np.dot( Umat.T, qcoords.T).T
     qbins = np.linspace(-0.25, 0.25, 257)
-    print("inserting slice")
-    W = utils.insert_slice(img.ravel(), qcoords_rot, qbins)
-
     maxNumQ = qcoords_rot.shape[0]
     xmin = [qbins[0]] *3
     xmax = [qbins[-1]] *3
+    dens_shape = tuple([len(qbins)-1]*3)
+    corner,deltas = utils.corners_and_deltas(dens_shape, xmin, xmax )
+    print("inserting slice")
+    if use_hist_method:
+        W = utils.insert_slice(img.ravel(), qcoords_rot, qbins)
+    else:
+        kji = np.floor((qcoords_rot - corner) / deltas)
+        bad = np.logical_or(kji < 0, kji > dens_shape[0]-2)
+        good = ~np.any(bad, axis=1)
+        densities = np.zeros(dens_shape)
+        weights = np.zeros(dens_shape)
+
+        trilinear_insertion(
+            densities, weights,
+            vectors=np.ascontiguousarray(qcoords_rot[good]),
+            insert_vals=img.ravel()[good],  x_min=xmin, x_max=xmax)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            W = np.nan_to_num(densities / weights)
+
     Npix = maxNumQ
-    corner,deltas = utils.corners_and_deltas(W.shape, xmin, xmax )
 
     rotMats = Rotation.random(num_rot_mats, random_state=0).as_matrix()
     rotMats[0] = Umat
@@ -90,4 +117,7 @@ def test_conventions():
 
 
 if __name__=="__main__":
-    test_conventions()
+    if int(sys.argv[1]):
+        test_conventions_hist_insert()
+    else:
+        test_conventions_reborn_insert()

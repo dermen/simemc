@@ -1,0 +1,14 @@
+spotfinder.threshold.algorithm=dispersion
+spotfinder.threshold.dispersion.gain=1
+spotfinder.threshold.dispersion.kernel_size=[3,3]
+spotfinder.threshold.dispersion.sigma_strong=3
+spotfinder.threshold.dispersion.sigma_background=6
+spotfinder.filter.min_spot_size=4
+
+output.composite_output=False
+output.strong_filename="%s_strong.refl"
+output.experiments_filename="%s_strong.expt"
+dispatch.index=False
+dispatch.integrate=False
+
+
