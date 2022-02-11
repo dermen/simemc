@@ -1,8 +1,11 @@
 import numpy as np
+import os
 from scipy.spatial.transform import Rotation
 from simemc.compute_radials import RadPros
-from libtbx.phil import parse
 from dials.command_line.stills_process import phil_scope
+from dxtbx.model import ExperimentList
+from simtbx.diffBragg import utils as db_utils
+from libtbx.phil import parse
 
 
 def corners_and_deltas(shape, x_min, x_max):
@@ -43,7 +46,7 @@ def load_quat_file(quat_bin):
 
 def load_qmap(qmap_file, as_1d=True):
     """
-    :param qmap_file: path to a qmap.npy file created by the script X 
+    :param qmap_file: path to a qmap.npy file created by save_qmap
     :param as_1d: bool, return as 1d arrays if True, else return as 2D arrays (same shape as detector)
     : returns: numpy arrays specifying the rlp of every pixel
     """
@@ -121,3 +124,96 @@ def insert_slice(K_t, qvecs, qbins):
     with np.errstate(divide='ignore', invalid='ignore'):
         result = np.nan_to_num(vals / counts)
     return result
+
+
+def save_qmap(output_file, Det, Beam, return_qmap=False):
+    """
+    Qmap shape is (3, num_panels, slow_dim, fast_dim)
+    Its assumed all pixels are square, and all panels have same slow,fast dims
+    :param output_file: name of file to store the qmap can be loaded with method load_qmap
+    :param Det: dxtbx Detector model
+    :param return_qmap: if true, return the qmap after computing
+    :param Beam: dxtbx Beam model
+    """
+    # TODO generalize for panel thickness
+    panel_fdim, panel_sdim = Det[0].get_image_size()
+    num_panels = len(Det)
+    image_sh = num_panels, panel_sdim, panel_sdim
+
+    Ki = np.array(Beam.get_unit_s0())
+    wave = Beam.get_wavelength()
+
+    qmap = np.zeros( (3,) + (image_sh))
+    for pid in range(num_panels):
+        F = np.array(Det[pid].get_fast_axis())
+        S = np.array(Det[pid].get_slow_axis())
+        O = np.array(Det[pid].get_origin())
+        J,I = np.indices((panel_sdim, panel_fdim))
+
+        pxsize = Det[pid].get_pixel_size()[0]
+        Kx = O[0] + I*F[0]*pxsize + J*S[0]*pxsize
+        Ky = O[1] + I*F[1]*pxsize + J*S[1]*pxsize
+        Kz = O[2] + I*F[2]*pxsize + J*S[2]*pxsize
+        Kmag = np.sqrt(Kx**2 + Ky**2 + Kz**2)
+        Kx /= Kmag
+        Ky /= Kmag
+        Kz /= Kmag
+        Qx = 1./wave * (Kx-Ki[0])
+        Qy = 1./wave * (Ky-Ki[1])
+        Qz = 1./wave * (Kz-Ki[2])
+        qmap[0,pid,:,:] = Qx
+        qmap[1,pid,:,:] = Qy
+        qmap[2,pid,:,:] = Qz
+
+    np.save(output_file, qmap)
+
+
+def stills_process_params_from_file(phil_file):
+    """
+    :param phil_file: path to phil file for stills_process
+    :return: phil params object
+    """
+    phil_file = open(phil_file, "r").read()
+    user_phil = parse(phil_file)
+    phil_sources = [user_phil]
+    working_phil, unused = phil_scope.fetch(
+        sources=phil_sources, track_unused_definitions=True)
+    params = working_phil.extract()
+    return params
+
+
+def save_expt_refl_file(filename, expts, refls):
+    with open(filename, "w") as o:
+        for expt, refl in zip(expts, refls):
+            expt = os.path.abspath(expt)
+            refl = os.path.abspath(refl)
+            o.write("%s %s\n" % (expt, refl))
+
+
+def load_expt_refl_file(input_file):
+    expts,refls = [],[]
+    lines = open(input_file, "r").readlines()
+    for l in lines:
+        l = l.strip().split()
+        assert(len(l)==2)
+        expt,refl = l
+        assert os.path.exists(expt)
+        assert os.path.exists(refl)
+        expts.append(expt)
+        refls.append(refl)
+    return expts, refls
+
+
+def load_geom(input_geo, strip_thick=True):
+    """
+    :param input_geo: experiment list file containing a detector and beam model
+    :param strip_thick: if True, return a detector with no panel depth
+    :return: (dxtbx detector, dxtbx beam)
+    """
+    El = ExperimentList.from_file(input_geo, False)
+    DETECTOR = El.detectors()[0]
+    if strip_thick:
+        DETECTOR = db_utils.strip_thickness_from_detector(DETECTOR)
+
+    BEAM = El.beams()[0]
+    return DETECTOR, BEAM
