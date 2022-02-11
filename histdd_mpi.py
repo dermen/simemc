@@ -5,20 +5,8 @@ from libtbx.mpi4py import MPI
 COMM = MPI.COMM_WORLD
 import glob
 from simemc.compute_radials import RadPros
-from dials.command_line.stills_process import phil_scope
+from simemc.mpi_utils import print0
 from simemc import utils
-
-#def strong_fname_from_exp_fname(exp_f):
-#    strong_f = 
-#    return strong_g
-
-from libtbx.phil import parse
-
-phil_file = open("proc.phil", "r").read()
-user_phil = parse(phil_file)
-phil_sources = [user_phil]
-working_phil, unused = phil_scope.fetch(sources=phil_sources, track_unused_definitions=True)
-params = working_phil.extract()
 
 
 # variables
@@ -27,11 +15,14 @@ qmax = 1/4.
 
 subBG = True
 radProMaker = None
+phil_file = "proc.phil"
+num_process = np.inf
 
 # constants
 img_sh = 2527, 2463
 numQ  = 256
-num_process = np.inf
+
+params = utils.stills_process_params_from_file(phil_file)
 
 Qx = Qy = Qz = None
 if COMM.rank==0:
@@ -44,10 +35,6 @@ Qmag = np.sqrt( Qx**2 + Qy**2 + Qz**2)
 qbins = np.linspace( -qmax, qmax, numQ + 1)
 sel = np.logical_and(Qmag > qmin, Qmag < qmax)
 qXYZ = Qx[sel], Qy[sel], Qz[sel]
-
-def print0(*args, **kwargs):
-    if COMM.rank==0:
-        print(*args, **kwargs)
 
 print0("Loading files")
 fnames = None
