@@ -5,6 +5,11 @@ spotfinder.threshold.dispersion.sigma_strong=3
 spotfinder.threshold.dispersion.sigma_background=6
 spotfinder.filter.min_spot_size=4
 
+output.composite_output=False
+output.strong_filename="%s_strong.refl"
+output.experiments_filename="%s_strong.expt"
+
+
 indexing.method=fft1d
 indexing.known_symmetry.unit_cell=79.1,79.1,38.4,90,90,90
 indexing.known_symmetry.space_group=P43212
