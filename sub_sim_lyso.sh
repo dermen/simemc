@@ -1,8 +1,8 @@
 #!/bin/bash -l
 
 #SBATCH -q special
-#SBATCH -N 4 
-#SBATCH -t 03:00:00
+#SBATCH -N 1
+#SBATCH -t 00:10:00
 #SBATCH -J lyso_sim
 #SBATCH -C gpu 
 #SBATCH -c 80
@@ -11,7 +11,12 @@
 #SBATCH -o job%j.out
 #SBATCH -e job%j.err
 
-source  ~/stable.cuda.Z.sh
-DIFFBRAGG_USE_CUDA=1 srun -N4 --tasks-per-node=24 -c2 libtbx.python sim_lyso.py  shots_2um
+# NERSC environment script:
+module purge
+module load cgpu gcc openmpi cuda
 
-for n in {1..9};do srun -N4 --tasks-per-node=40 -c2  dials.stills_process proc.phil  shots_2um/rank${n}*/*cbf output.output_dir=shots_2um/proc composite_output=False  mp.method=mpi output.integration_pickle=None output.refined_experiments_filename=None; done
+# Source to setpaths.sh , this file is created by CCTBX dev build script
+source /global/cfs/cdirs/lcls/dermen/d9114_sims/CrystalNew/gpubuild3/setpaths.sh
+export DIFFBRAGG_USE_CUDA=1
+time srun -N1 --tasks-per-node=16 -c2 \
+  libtbx.python sim_lyso.py 1600 1600sim_wBG --sparse
