@@ -63,7 +63,7 @@ class lerpyExt{
     inline void do_equation_two(np::ndarray rot_idx, bool verbose){
         int nrot = rot_idx.shape(0);
         std::vector<int> rot_inds;
-
+        // TODO: ensure rot_idx is of type np.int32
         for (int i_rot=0; i_rot < nrot; i_rot++)
             rot_inds.push_back(  bp::extract<int>(rot_idx[i_rot])  );
 
@@ -91,6 +91,29 @@ public:
     // constructor
     probaOr(){}
     gpuOrient gpu;
+    inline void set_B(bp::tuple vals){
+        CUDAREAL bxx = bp::extract<CUDAREAL>(vals[0]);
+        CUDAREAL bxy = bp::extract<CUDAREAL>(vals[1]);
+        CUDAREAL bxz = bp::extract<CUDAREAL>(vals[2]);
+        CUDAREAL byx = bp::extract<CUDAREAL>(vals[3]);
+        CUDAREAL byy = bp::extract<CUDAREAL>(vals[4]);
+        CUDAREAL byz = bp::extract<CUDAREAL>(vals[5]);
+        CUDAREAL bzx = bp::extract<CUDAREAL>(vals[6]);
+        CUDAREAL bzy = bp::extract<CUDAREAL>(vals[7]);
+        CUDAREAL bzz = bp::extract<CUDAREAL>(vals[8]);
+        gpu.Bmat << bxx, bxy, bxz,
+                byx, byy, byz,
+                bzx, bzy, bzz;
+    }
+    inline bp::tuple get_B(){
+        bp::tuple B = bp::make_tuple(
+                gpu.Bmat(0,0), gpu.Bmat(0,1), gpu.Bmat(0,2),
+                gpu.Bmat(1,0), gpu.Bmat(1,1), gpu.Bmat(1,2),
+                gpu.Bmat(2,0), gpu.Bmat(2,1), gpu.Bmat(2,2)
+                );
+        return B;
+    }
+
     inline void alloc(int device_id, np::ndarray rotations, int maxQvecs){
         int num_rot=rotations.shape(0)/9;
         printf("Determined number of rotations=%d\n", num_rot);
@@ -158,6 +181,10 @@ BOOST_PYTHON_MODULE(emc){
         .def("free_device", &probaOr::free, "free any allocated GPU memory")
         .def ("print_rotMat", &probaOr::print_rotMat, "show elements of allocated rotMat i_rot")
         .def ("get_probable_orients", &probaOr::listOrients, "returns a list of rotation matrix indices")
+        .add_property("Bmatrix",
+                       make_function(&probaOr::get_B,rbv()),
+                       make_function(&probaOr::set_B,dcp()),
+                       "the Bmatrix (dxtbx Crystal.get_B() format)")
         ;
 
 }

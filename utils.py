@@ -103,3 +103,21 @@ def get_data_with_bg_removed(expt, phil_file, radProMaker=None, renorm=None, ret
         return data, radProMaker
     else:
         return data 
+
+
+def insert_slice(K_t, qvecs, qbins):
+    """
+    :param K_t: ndarray, shape (N,), data pixels (2D slice of 3d volume)
+    :param qvecs: ndarray shape (N,3) qvectors
+    :param qbins: qbins , shape (M,), bin edges defining 3d reciprocal space
+    :return: 3d intensity with K_t inserted as a slice, shape (M,M,M)
+    """
+    assert qvecs.shape[1]==3
+    assert K_t.shape[0] == qvecs.shape[0]
+    qsampX, qsampY, qsampZ = qvecs.T
+    qsamples = qsampX, qsampY, qsampZ
+    counts = np.histogramdd( qsamples, bins=[qbins, qbins, qbins])[0]
+    vals = np.histogramdd( qsamples, bins=[qbins, qbins, qbins], weights=K_t)[0]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        result = np.nan_to_num(vals / counts)
+    return result

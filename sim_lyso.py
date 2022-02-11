@@ -15,12 +15,13 @@ import time
 import sys
 np.random.seed(COMM.rank)
 
-NUM_DEV=8
+NUM_DEV=1
 total_flux=1e12
 beam_size=0.01
 # to retrieve the PDB, run `iotbx.fetch_pdb 4bs7` from cmdline
 PDB = "4bs7.pdb"
-num_shots = 90000
+num_shots = 5
+XTAL_SIZE = 0.02  # mm
 
 OUTDIR = os.path.join( sys.argv[1], "rank%d" % COMM.rank)
 if not os.path.exists(OUTDIR):
@@ -46,8 +47,6 @@ img_sh = slow, fast
 
 num_en = len(energies)
 fluxes = [total_flux]
-
-
 
 water = None
 if COMM.rank==0:
@@ -88,7 +87,7 @@ for i_shot in range(num_shots):
         fluxes,
         oversample=1, Ncells_abc=(30,30,40),
         mos_dom=1, mos_spread=0, beamsize_mm=beam_size, device_Id=dev_id,
-        show_params=False, crystal_size_mm=0.002, printout_pix=None,
+        show_params=False, crystal_size_mm=XTAL_SIZE, printout_pix=None,
         verbose=0, default_F=0, interpolate=0, profile="gauss",
         mosaicity_random_seeds=None,
         show_timings=False, #COMM.rank==0,
@@ -106,6 +105,8 @@ for i_shot in range(num_shots):
 
     outfile = os.path.join(OUTDIR, "shot%d.cbf" % i_shot)
     SIM.to_cbf(outfile)
+    np.savez(os.path.join(OUTDIR, "shot%d" % i_shot),
+             A=CRYSTAL.get_A(), B=CRYSTAL.get_B(), U=CRYSTAL.get_U)
 
 SIM.free_all()
 del SIM

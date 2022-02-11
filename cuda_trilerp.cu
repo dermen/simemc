@@ -486,7 +486,6 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                    fma(I7,a7,0))))))));
             
             if (W_rt  > 0){
-                //R_dr_thread += fma(K_t, log(W_rt), -W_rt);
                 R_dr_thread += K_t*log(W_rt) - W_rt;
             }
 

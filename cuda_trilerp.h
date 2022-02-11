@@ -58,6 +58,7 @@ struct gpuOrient {
     int numBlocks, blockSize;
     int device;
     bp::list probable_rot_inds;
+    MAT3 Bmat; // upper diagonal Bmatrix (reciprocal space same convention as dxtbx Crystal.get_B())
 };
 
 void orientPeaks(gpuOrient& gpu,

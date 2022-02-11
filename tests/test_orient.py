@@ -7,7 +7,6 @@ def test_orient():
     hcut = 0.3
     minPred = 3
     numRot = 3000000
-    METHOD = 1
 
     rotMats = np.ascontiguousarray(np.random.random((numRot,3,3)))
     qvecs = np.ascontiguousarray(np.random.random((20,3))*10)

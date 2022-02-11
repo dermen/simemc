@@ -4,7 +4,9 @@
 
 
 __global__
-void orientMultiply(VEC3*  qVecs, MAT3* rotMats, int numQ, int numRot, bool* out, CUDAREAL hcut, int minPred);
+void orientMultiply(VEC3*  qVecs, MAT3* rotMats, int numQ,
+                    int numRot, bool* out, CUDAREAL hcut,
+                    int minPred, MAT3 Bmat);
 
 void free_orientMatch(gpuOrient& gpu){
     if (gpu.rotMats != NULL)
@@ -42,7 +44,7 @@ void setup_orientMatch(int dev_id, int maxNumQ, gpuOrient& gpu,
             Umat << uxx, uxy, uxz,
                     uyx, uyy, uyz,
                     uzx, uzy, uzz;
-            gpu.rotMats[i_rot] = Umat;
+            gpu.rotMats[i_rot] = Umat.transpose();
         }
     }
 
@@ -96,7 +98,10 @@ void orientPeaks(gpuOrient& gpu, np::ndarray qvecs, CUDAREAL hcut,
 
     gettimeofday(&t1, 0);
     // run the kernel
-    orientMultiply<<<gpu.numBlocks, gpu.blockSize>>>(gpu.qVecs, gpu.rotMats, numQ, gpu.numRot, gpu.out, hcut, minPred);
+    MAT3 Binv = gpu.Bmat.inverse();
+    orientMultiply<<<gpu.numBlocks, gpu.blockSize>>>
+        (gpu.qVecs, gpu.rotMats, numQ, gpu.numRot,
+         gpu.out, hcut, minPred, Binv);
 
     error_msg(cudaGetLastError(), "after kernel call");
     cudaDeviceSynchronize();
@@ -121,7 +126,9 @@ void orientPeaks(gpuOrient& gpu, np::ndarray qvecs, CUDAREAL hcut,
 
 
 __global__
-void orientMultiply(VEC3* qVecs, MAT3* rotMats, int numQ, int numRot, bool* out, CUDAREAL hcut, int minPred){
+void orientMultiply(VEC3* qVecs, MAT3* rotMats, int numQ,
+                    int numRot, bool* out, CUDAREAL hcut,
+                    int minPred, MAT3 Bmat){
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int thread_stride = blockDim.x * gridDim.x;
@@ -129,7 +136,7 @@ void orientMultiply(VEC3* qVecs, MAT3* rotMats, int numQ, int numRot, bool* out,
     for (int i_rot=tid; i_rot < numRot; i_rot += thread_stride){
         int count=0;
         for (int i_q=0; i_q < numQ; i_q ++ ){
-            VEC3 Hkl = rotMats[i_rot]*qVecs[i_q];
+            VEC3 Hkl = Bmat*(rotMats[i_rot]*qVecs[i_q]);
 
             CUDAREAL h = ceil(Hkl[0]-0.5);
             CUDAREAL k = ceil(Hkl[1]-0.5);
