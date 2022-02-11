@@ -1,7 +1,4 @@
 from dxtbx.model import ExperimentList
-from dials.array_family import flex
-import numpy as np
-import os
 
 # TODO generalize for variable wavelength
 # NOTES: dxtbx radial average (which wraps xfel's radial average , a C++ extension module)
@@ -130,7 +127,6 @@ class RadPros:
         :param apply_corrections: if True, correct for polarization and solid angle
         :return: radial profile as a numpy array
         """
-        
         if data_expt is not None:
             data_El = ExperimentList.from_file(data_expt)
             iset = data_El[0].imageset
@@ -139,13 +135,17 @@ class RadPros:
             if not isinstance(data, tuple):
                 data = (data,)
             data = np.array([d.as_numpy_array() for d in data])
-            R = flex.reflection_table.from_file(strong_refl)
-       
-        if data_pixels is not None:
-            data = data_pixels 
+        else:
+            assert data_pixels is not None
+            data = data_pixels
+
+        if strong_refl is None:
+            assert strong_params is not None
             R = None
             all_peak_masks = [~dials_find_spots(data[pid], self.mask[pid], strong_params)\
                                 for pid in range(len(data))]
+        else:
+            R = strong_refl
 
         binCounts = np.zeros(self.numBins-1)
         binWeights = np.zeros(self.numBins-1)
