@@ -7,6 +7,56 @@ from dxtbx.model import ExperimentList
 from simtbx.diffBragg import utils as db_utils
 from libtbx.phil import parse
 
+from simemc import sim_const
+from simemc import const
+
+
+def get_W_init(ndom=20):
+    """
+    Get an initial guess of the density
+    :param ndom: number of unit cells along crystal a-axis
+         Increase this parameter to make the gaussian falloff stronger.
+         The other two crystal axes wil have ndom such that the overall
+         shape is spherical.
+    :return: Density estimate
+    """
+    a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
+    V = np.dot(a1, np.cross(a2,a3))
+    b1 = np.cross(a2,a3)/V
+    b2 = np.cross(a3,a1)/V
+    b3 = np.cross(a1,a2)/V
+
+    astar=np.linalg.norm(b1)
+    bstar=np.linalg.norm(b2)
+    cstar=np.linalg.norm(b3)
+
+    qbin_cent = (const.QBINS[1:] + const.QBINS[:-1])*.5
+    qX,qY,qZ = np.meshgrid(qbin_cent,qbin_cent,qbin_cent)
+
+    frac_h = qX / astar
+    frac_k = qY/ bstar
+    frac_l = qZ/ cstar
+
+    H = np.ceil(frac_h-0.5)
+    K = np.ceil(frac_k-0.5)
+    L = np.ceil(frac_l-0.5)
+
+    na = ndom
+    nb = ndom *bstar/astar
+    nc = ndom *cstar/astar
+    del_h = H-frac_h
+    del_k = K-frac_k
+    del_l = L-frac_l
+
+    hkl_rad_sq = na**2*del_h**2 + nb**2*del_k**2 + nc**2*del_l**2
+    W_init = np.exp(-hkl_rad_sq*2/0.63)
+
+    return W_init
+
+
+if __name__=="__main__":
+    get_W_init()
+
 
 def corners_and_deltas(shape, x_min, x_max):
     """
