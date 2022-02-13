@@ -1,14 +1,14 @@
-from dxtbx.model import ExperimentList
-
 # TODO generalize for variable wavelength
+# TODO profile
 # NOTES: dxtbx radial average (which wraps xfel's radial average , a C++ extension module)
 # could also work, but I noticed the beam center is forced to be an integer in that implementation
 # Probably doesnt matter much for this work..
 
-
+from scipy import ndimage
+import numpy as np
+from dxtbx.model import ExperimentList
 from dials.algorithms.spot_finding.factory import SpotFinderFactory
 from dials.array_family import flex
-import numpy as np
 
 
 def dials_find_spots(data_img, trusted_flags, params):
@@ -18,6 +18,25 @@ def dials_find_spots(data_img, trusted_flags, params):
     flex_trusted_flags = flex.bool(np.ascontiguousarray(trusted_flags))
     spotmask = thresh.compute_threshold(flex_data, flex_trusted_flags)
     return spotmask.as_numpy_array()
+
+
+def strong_spot_mask(refl_tbl, detector):
+    """
+    Returns a mask the same shape as detector
+    :param refl_tbl: dials.array_family.flex.reflection_table
+    :param detector: dxtbx detector
+    :return:  strong spot mask same shape as detector (multi panel)
+    """
+    nfast, nslow = detector[0].get_image_size()
+    n_panels = len(detector)
+    is_strong_pixel = np.zeros((n_panels, nslow, nfast), bool)
+    panel_ids = refl_tbl["panel"]
+    for i_refl, (x1, x2, y1, y2, _, _) in enumerate(refl_tbl['bbox']):
+        i_panel = panel_ids[i_refl]
+        bb_ss = slice(y1, y2, 1)
+        bb_fs = slice(x1, x2, 1)
+        is_strong_pixel[i_panel, bb_ss, bb_fs] = True
+    return is_strong_pixel
 
 
 class RadPros:
@@ -60,11 +79,9 @@ class RadPros:
         self._setupQbins()
 
         # geom correction containers (panel_id -> 2D numpy.array)
-        self.POLAR = {}
-        self.OMEGA = {}
-        for pid in range(len(self.detector)):
-            self.POLAR[pid] = np.ones(self.panel_sh)
-            self.OMEGA[pid] = np.ones(self.panel_sh)
+        self.POLAR = np.ones(self.img_sh)
+        self.OMEGA = np.ones(self.img_sh)
+        self._index = np.arange(1, self.numBins+1)
 
     def _setupQbins(self):
         Qmags = {}
@@ -98,33 +115,26 @@ class RadPros:
             QZ = (SZ - self.unit_s0[2]) / self.beam.get_wavelength()
             Qmags[pid] = np.sqrt(QX**2 + QY**2 + QZ**2)
 
-            #unit_QX = QX / Qmags_dials
-            #unit_QY = QY / Qmags_dials
-            #unit_QZ = QZ / Qmags_dials
-
-            #Qvecs_dials = np.zeros( (self.panel_sh)+(3,) )
-            #Qvecs_dials[:, :, 0] = unit_QX
-            #Qvecs_dials[:, :, 1] = unit_QY
-            #Qvecs_dials[:, :, 2] = unit_QZ
-
         minQ = min([q.min() for q in Qmags.values()])
         maxQ = max([q.max() for q in Qmags.values()])
 
-        self.bins = np.linspace(minQ-1e-6, maxQ+1e-6, self.numBins)
+        self.bins = np.linspace(minQ-1e-6, maxQ+1e-6, self.numBins+1)
 
         self.bin_cent = (self.bins[:-1] + self.bins[1:])*.5
-        self.all_Qbins = {}
+        self.all_Qbins = np.zeros(self.img_sh, int)
         for pid in Qmags:
-            self.all_Qbins[pid] = np.digitize(Qmags[pid], self.bins)-1
+            self.all_Qbins[pid] = np.digitize(Qmags[pid], self.bins)
 
     def makeRadPro(self, data_pixels=None, data_expt=None, strong_refl=None, strong_params=None,
-                apply_corrections=True):
+                apply_corrections=True, use_median=True):
         """
+        Create a 1d radial profile of the background pixels in the image
         :param data_pixels: image pixels same shape as detector model 
         :param data_expt: filename of an experiment list containing an imageset
         :param strong_refl: filename of a strong spots reflection table
         :param strong_params:  phil params for dials.spotfinder 
         :param apply_corrections: if True, correct for polarization and solid angle
+        :param use_median: compute radial median profile, as opposed to radial mean profile
         :return: radial profile as a numpy array
         """
         if data_expt is not None:
@@ -141,38 +151,21 @@ class RadPros:
 
         if strong_refl is None:
             assert strong_params is not None
-            R = None
             all_peak_masks = [~dials_find_spots(data[pid], self.mask[pid], strong_params)\
                                 for pid in range(len(data))]
         else:
-            R = strong_refl
+            all_peak_masks = ~strong_spot_mask(strong_refl, self.detector)
 
-        binCounts = np.zeros(self.numBins-1)
-        binWeights = np.zeros(self.numBins-1)
-
-        for pid in range(len(self.detector)):
-            photons = data[pid].astype(np.float32)
-            if apply_corrections:
-                photons /= (self.POLAR[pid]*self.OMEGA[pid])
-            pix_mask = self.mask[pid]
-
-            # mask out the strong pixels
-            if R is not None:
-                refls_pid = R.select(R['panel'] == pid)
-                peak_mask = np.ones_like(pix_mask)
-                for x1, x2, y1, y2, _, _ in refls_pid['bbox']:
-                    peak_mask[y1:y2, x1:x2] = False
-            else:
-                peak_mask = all_peak_masks[pid]
-
-            combined_mask = np.logical_and(peak_mask,pix_mask)
-
-            qbin_idx = self.all_Qbins[pid][combined_mask].ravel()
-            np.add.at(binCounts, qbin_idx, 1)
-            np.add.at(binWeights, qbin_idx, photons[combined_mask].ravel())
-
+        if apply_corrections:
+            data /= (self.POLAR*self.OMEGA)
+        bin_labels = self.all_Qbins.copy()
+        combined_mask = np.logical_and(all_peak_masks, self.mask)
+        bin_labels[~combined_mask] = 0
         with np.errstate(divide='ignore', invalid='ignore'):
-            radPro = np.nan_to_num(binWeights / binCounts)
+            if use_median:
+                radPro = ndimage.median(data, bin_labels,self._index)
+            else:
+                radPro = ndimage.mean(data, bin_labels,self._index)
         return radPro
 
     def expand_radPro(self, radPro):
@@ -181,12 +174,8 @@ class RadPros:
         :param radPro: numpy array, 1-D, radial profile returned by self.makeRadPro 
         :returns: a numpy array, same shape as the detector, containing background image
         """
-        expanded = np.zeros ( self.img_sh)
-        for pid in self.all_Qbins:
-            binIds = self.all_Qbins[pid]
-            expanded[pid] = radPro[binIds]
-        return expanded
-            
+        return self.expand_background_1d_to_2d(radPro, self.img_sh, self.all_Qbins)
+
     def solidAngle_correction(self):
         """vectorized solid angle correction for every pixel; follows nanoBragg implementation"""
         sq_pixel_size = self.detector[0].get_pixel_size()[0]**2
@@ -224,59 +213,16 @@ class RadPros:
             polar = 0.5 * (1.0 + cos2theta_sqr - kahn_factor * np.cos(2 * psi) * sin2theta_sqr)
             self.POLAR[pid] = np.reshape(polar, d[0].shape)
 
-
-if __name__ == "__main__":
-    import pylab as plt
-    from mpi4py import MPI
-    COMM = MPI.COMM_WORLD
-    import time
-    import glob
-    import h5py
-
-
-    fnames = glob.glob("all_data[1-8]_spots4/*imported.expt")
-    img_nums = [int(f.split("_")[-2]) for f in fnames]
-    if COMM.rank==0:
-        print("Found %d expts" % len(fnames))
-
-
-    refGeo = "../make-detector/geom_+x_-y.expt"
-    maskFile = "/data/dermen/better_mask_test_data.npy"
-    rp = RadPros(refGeo, maskFile)
-    rp.polarization_correction()
-    rp.solidAngle_correction()
-    num_radials = len(fnames)
-    with h5py.File("ALL_data_spots4_radials.h5", "w", driver="mpio", comm=COMM) as OUT:
-        #OUT.atomic = True
-        if COMM.rank==0:
-            print("Making dataset")
-        radials_dset = OUT.create_dataset("radials", 
-                shape=(num_radials, rp.numBins-1), 
-                dtype=np.float32)
-
-        tall = time.time()
-        fname_idx_per_rank = np.array_split(np.arange(num_radials), COMM.size)[COMM.rank]
-
-        for ii in range(num_radials):
-            if ii % COMM.size != COMM.rank: continue
-
-            data_expt = fnames[ii] 
-            strong_refl = data_expt.replace("imported.expt", "strong.refl")
-            #assert os.path.exists( strong_refl)
-
-            #data_expt = 'test_data_spots4/idx-lysozyme2_test_%06d_imported.expt' % img_num
-            #strong_refl = 'test_data_spots4/idx-lysozyme2_test_%06d_strong.refl' % img_num
-
-            t = time.time()
-            with np.errstate(divide='ignore', invalid='ignore'):
-                radPro = rp.makeRadPro(data_expt, strong_refl)
-            radials_dset[ii] = radPro
-            t = time.time()-t
-
-            if COMM.rank==0:
-                print("Done with img %s (%d / %d) in %.3f sec" % (data_expt, ii+1, num_radials, t))
-
-    COMM.barrier()
-    tall = time.time()-tall
-    if COMM.rank==0:
-        print("Took %.3f sec total" % tall)
+    @staticmethod
+    def expand_background_1d_to_2d(radPro, img_sh, all_Qbins):
+        """
+        This is a special helper method to convert radial profile data
+        into a 2D image. Its assumed `all_Qbins` and `img_sh` are copies of this classes members that
+        were originally used to create the radPro
+        :param radPro: radial profile created by makeRadPro
+        :param img_sh: shape of the 2d image
+        :param all_Qbins:
+        :return: 2D image of background
+        """
+        expanded = radPro[all_Qbins-1]
+        return expanded
