@@ -134,3 +134,8 @@ with h5py.File(outfile, "w") as OUT:
     OUT.create_dataset("all_Qbins", data=radProMaker.all_Qbins)
     OUT.create_dataset("polar", data=radProMaker.POLAR)
     OUT.create_dataset("omega", data=radProMaker.OMEGA)
+    Es = [expt_names[i] for i in shot_num_rank]
+    Rs = [refl_names[i] for i in shot_num_rank]
+    for dset_name, lst in [("expts", Es), ("refls", Rs)]:
+        dset = OUT.create_dataset(dset_name, shape=(num_shots,), dtype=h5py.string_dtype(encoding="utf-8"))
+        dset[:] = lst
