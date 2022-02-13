@@ -19,6 +19,7 @@ args = COMM.bcast(args)
 import numpy as np
 import os
 from simemc import sim_utils
+from simemc.mpi_utils import printR
 
 
 if __name__=="__main__":
@@ -29,9 +30,9 @@ if __name__=="__main__":
     NUM_DEV=args.ndev
     num_shots = args.nshot
     if args.sparse:
-        XTAL_SIZE = 0.02  # mm
+        XTAL_SIZE = 0.002  # mm
     else:
-        XTAL_SIZE = 0.002
+        XTAL_SIZE = 0.02
     calib_noise_percent = 0 if args.no_calib else 3
     add_background= not args.no_water
     #######################################
@@ -44,7 +45,7 @@ if __name__=="__main__":
     Famp = sim_utils.get_famp()
 
     water = 0
-    if add_background and COMM.rank==0:
+    if add_background:
         if COMM.rank==0:
             print("Simulating water scattering...")
             water = sim_utils.get_water_scattering()
@@ -58,7 +59,7 @@ if __name__=="__main__":
             continue
         ROT_CRYSTAL = sim_utils.random_crystal()
 
-        print("Simulating shot %d / %d on device %d " % (i_shot+1, num_shots, dev_id), flush=True)
+        printR("Simulating shot %d / %d on device %d " % (i_shot+1, num_shots, dev_id), flush=True)
 
         outfile = os.path.join(OUTDIR, "shot%d.cbf" % i_shot)
 
@@ -67,3 +68,4 @@ if __name__=="__main__":
             dev_id, XTAL_SIZE, outfile, water)
 
     sim_utils.delete_noise_sim(SIM)
+    printR("DONE")

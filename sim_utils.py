@@ -72,7 +72,7 @@ def get_water_scattering():
         wavelength_weights=[1],
         total_flux=SC.TOTAL_FLUX, pidx=0,
         beam_size_mm=SC.BEAMSIZE, Fbg_vs_stol=None,
-        sample_thick_mm=SC.WATER_PATH_MM,
+        sample_thick_mm=SC.WATER_PATH,
         density_gcm3=1, molecular_weight=18)
 
     fast, slow = SC.DETECTOR[0].get_image_size()
