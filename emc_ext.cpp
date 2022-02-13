@@ -27,7 +27,8 @@ class lerpyExt{
         gpu.numDataPixels = numDataPix;
         gpu.maxNumQ = maxNumQ;
         gpu.maxNumRotInds = maxNumRotInds;
-        printf("Determined number of rotations=%d\n", num_rot);
+        //TODO global verose flag
+        //printf("Determined number of rotations=%d\n", num_rot);
         gpu.corner[0] = bp::extract<double>(corner[0]);
         gpu.corner[1] = bp::extract<double>(corner[1]);
         gpu.corner[2] = bp::extract<double>(corner[2]);

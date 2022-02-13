@@ -37,7 +37,8 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
                         np::ndarray qvectors){
     gpu.numRot = Umats.shape(0)/9;
     gpu.numQ = qvectors.shape(0)/3;
-    printf("Number of Qvectors=%d\n", gpu.numQ);
+    // TODO global verbose flag
+    //printf("Number of Qvectors=%d\n", gpu.numQ);
     gpu.numDens = densities.shape(0);
    // TODO asserts on len of corner and delta (must be 3)
 
@@ -163,8 +164,9 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         gpu.outList = outList;
     }
     else {
+    //  TODO: only retrieve the number of rot inds processed
         bp::list outList;
-        for (int i = 0; i < gpu.maxNumRotInds; i++)
+        for (int i = 0; i < numRotInds; i++)
             outList.append(gpu.out_equation_two[i]);
         gpu.outList = outList;
     }
