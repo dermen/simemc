@@ -267,3 +267,78 @@ def load_geom(input_geo, strip_thick=True):
 
     BEAM = El.beams()[0]
     return DETECTOR, BEAM
+
+
+class RotInds(dict):
+
+    def merge(self, other):
+        for rot_ind in other:
+            if rot_ind not in self:
+                self[rot_ind] = {}
+                self[rot_ind]['i_data'] = []
+                self[rot_ind]['rank'] = []
+                self[rot_ind]['P_dr'] = []
+            self[rot_ind]['i_data'] += other[rot_ind]['i_data']
+            self[rot_ind]['rank'] += other[rot_ind]['rank']
+            self[rot_ind]['P_dr'] += other[rot_ind]['P_dr']
+
+    @property
+    def on_one_rank(self):
+        inds = []
+        for rot_ind in self:
+            ranks = self[rot_ind]['rank']
+            if len(set(ranks)) == 1:
+                inds.append(rot_ind)
+        return set(inds)
+
+    @property
+    def on_multiple_ranks(self):
+        inds = []
+        for rot_ind in self:
+            ranks = self[rot_ind]['rank']
+            if len(set(ranks)) > 1:
+                inds.append(rot_ind)
+        return set(inds)
+
+    def tomogram_sends_and_recvs(self):
+        """
+        Instructions for ranks to send / recv tomograms
+        such that W_rt can be computed when components of it exist on different ranks
+        Note: this method returns None,None unless rank==0 ; the results should be broadcast to all ranks
+            (this is because of the random.choice which is rank-dependent
+        """
+        multis = self.on_multiple_ranks
+        send_to = {}
+        recv_from = {}
+        req_tag = 0
+        for rot_ind in multis:
+            ranks = set(self[rot_ind]['rank'])
+            tomo_manager = np.random.choice(list(ranks))
+            senders = ranks.difference({tomo_manager})
+
+            if tomo_manager not in recv_from:
+                recv_from[tomo_manager] = {'rot_inds': [], 'comms_info':[]}
+            recv_comms_info = []
+
+            for rank, i_data, P_dr in zip(
+                    self[rot_ind]['rank'],
+                    self[rot_ind]['i_data'],
+                    self[rot_ind]['P_dr']):
+                if rank == tomo_manager:
+                    continue
+                if np.isnan(P_dr):
+                    continue
+                assert rank in senders
+                sender = rank
+                if sender not in send_to:
+                    send_to[sender] = []
+                send_to[sender].append((tomo_manager, i_data, req_tag))
+                recv_comms_info.append((sender, P_dr, req_tag))
+                req_tag += 1
+
+            if recv_comms_info:
+                recv_from[tomo_manager]['rot_inds'].append(rot_ind)
+                recv_from[tomo_manager]['comms_info'].append(recv_comms_info)
+
+        return send_to, recv_from
+

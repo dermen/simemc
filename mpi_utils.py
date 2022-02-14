@@ -16,8 +16,17 @@ def print0(*args, **kwargs):
     if COMM.rank==0:
         print(*args, **kwargs)
 
+def print0f(*args, **kwargs):
+    kwargs['flush'] = True
+    if COMM.rank==0:
+        print(*args, **kwargs)
+
 
 def printR(*args, **kwargs):
+    print("rank%d"%COMM.rank,*args, **kwargs)
+
+def printRf(*args, **kwargs):
+    kwargs['flush'] = True
     print("rank%d"%COMM.rank,*args, **kwargs)
 
 
@@ -29,6 +38,7 @@ def make_dir(dirname):
 
 
 def load_emc_input(input_dir):
+    RENORM = 169895.59872560613 / 100
     inputNames_Shots = None
     if COMM.rank==0:
         all_inputs = glob.glob("%s/emc_input*.h5" % input_dir)
@@ -40,7 +50,7 @@ def load_emc_input(input_dir):
             N = len(expt_names)
             inputNames_Shots += list(zip([f]*N, list(range(N))))
         ntot = len(inputNames_Shots)
-        print("Found %d total expst to load" %  ntot )
+        printR("Found %d total expst to load" % ntot, flush=True)
     inputNames_Shots = COMM.bcast(inputNames_Shots)
     inputNames_Shots_rank = np.array_split(inputNames_Shots, COMM.size)[COMM.rank]
     # note: the previous call to array_split converts shot index from int to str! so undo:
@@ -49,7 +59,7 @@ def load_emc_input(input_dir):
 
 
     my_open_h5,_ = map(set, zip(*inputNames_Shots_rank))
-    printR("Need to open %d input emc files" % len(my_open_h5))
+    printR("Need to open %d input emc files" % len(my_open_h5), flush=True)
     name_to_h5 = {}
     for fname in my_open_h5:
         name_to_h5[fname] = {}
@@ -80,6 +90,8 @@ def load_emc_input(input_dir):
         )
 
         # get the correction
-        data /= name_to_h5[fname]["correction"]
+        data *= name_to_h5[fname]["correction"]
+        data *= RENORM
+        rot_inds = h5["probable_rot_inds"][i_shot].astype(np.int32)
 
-        yield data, background
+        yield data.astype(np.float32), background, rot_inds, fname, i_shot
