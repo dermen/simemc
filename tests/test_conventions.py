@@ -14,6 +14,7 @@ from simemc.emc import probable_orients, lerpy
 
 
 @pytest.mark.skip(reason="test currently depends on hard-coded paths")
+@pytest.mark.mpi_skip()
 def test_conventions_reborn_insert():
     _test_conventions(False)
 

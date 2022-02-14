@@ -1,7 +1,10 @@
 import numpy as np
 from simemc import emc
 import time
+import pytest
 
+
+@pytest.mark.mpi_skip()
 def test_orient():
     np.random.seed(12345)
     hcut = 0.3

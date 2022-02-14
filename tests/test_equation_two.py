@@ -6,7 +6,10 @@ from simemc import utils
 from scipy.spatial.transform import Rotation
 from reborn.misc.interpolate import trilinear_interpolation
 import time
+import pytest
 
+
+@pytest.mark.mpi_skip()
 def test(maxRotInds=10):
 
     fdim = 2463
