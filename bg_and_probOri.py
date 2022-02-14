@@ -20,7 +20,7 @@ from simemc.emc import probable_orients
 
 outdir = "../1600sim_noBG/emc_input"
 qmap_file = "../qmap.npy"
-quat_file = "quatgrid/c-quaternion30.bin"
+quat_file = "quatgrid/c-quaternion70.bin"
 input_file="1600sim_noBG_input.txt"
 num_gpu_dev = 8
 max_num_strong_spots = 1000
@@ -29,7 +29,7 @@ qmin = 1/40.
 qmax = 1/4.
 hcut = 0.05
 min_pred = 3
-RENORM = 1e2
+RENORM = 169895.59872560613/100
 
 # constants
 img_sh = 2527, 2463
@@ -61,7 +61,7 @@ qbins = np.linspace( -qmax, qmax, numQ + 1)
 sel = np.logical_and(Qmag > qmin, Qmag < qmax)
 qXYZ = Qx[sel], Qy[sel], Qz[sel]
 
-print0("Found %d experiment files total, dividing across ranks" % len(expt_names))
+print0("Found %d experiment files total, dividing across ranks" % len(expt_names), flush=True)
 # TODO: this script assumes a single panel image format, generalizing is trivial, but should be done
 
 # make the probable orientation identifier
@@ -97,7 +97,7 @@ with h5py.File(outfile, "w") as OUT:
         # Get the background image
         ##########################
         if radProMaker is None:
-            print0("Creating radial profile maker!")
+            print0("Creating radial profile maker!", flush=True)
             # TODO: add support for per-shot wavelength
             refGeom = {"D": El[0].detector, "B": El[0].beam}
             radProMaker = RadPros(refGeom, numBins=num_radial_bins)
@@ -106,7 +106,6 @@ with h5py.File(outfile, "w") as OUT:
 
         t = time.time()
         data *= (radProMaker.POLAR * radProMaker.OMEGA)
-        data /= data.max()
         data *= RENORM
         radialProfile = radProMaker.makeRadPro(
                 data_pixels=data,
@@ -119,7 +118,7 @@ with h5py.File(outfile, "w") as OUT:
         ####################################
         t = time.time()
         qvecs = R['rlp'].as_numpy_array()
-        verbose_flag = COMM.rank==0
+        verbose_flag = False #COMM.rank==0
         O.orient_peaks(qvecs.ravel(), hcut, min_pred, verbose_flag)
         prob_rot = O.get_probable_orients()
         tori = time.time()-t
@@ -128,7 +127,7 @@ with h5py.File(outfile, "w") as OUT:
         prob_rot_dset[i_f] = prob_rot
         bg_dset[i_f] = radialProfile
         print0("(%d/%d) Took %.4f sec for background estimation and %.4f sec for prob. ori. estimation"
-               % (i_f+1, num_shots, tbg, tori))
+               % (i_f+1, num_shots, tbg, tori), flush=True)
 
     OUT.create_dataset("background_img_sh", data=radProMaker.img_sh)
     OUT.create_dataset("all_Qbins", data=radProMaker.all_Qbins)
