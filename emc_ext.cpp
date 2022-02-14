@@ -39,7 +39,7 @@ class lerpyExt{
         prepare_for_lerping( gpu, rotations, densities, qvecs);
     }
     //inline void trilinear_interpolation(np::ndarray qvecs, bool verbose){
-    inline int copy_pixels( np::ndarray pixels){
+    inline int copy_pixels( np::ndarray& pixels){
         // assert len pixels matches up
         if (pixels.shape(0) != gpu.numQ){
             printf("Number of pixels passed does not agree with number of allocated pixels on device\n");
@@ -50,6 +50,19 @@ class lerpyExt{
             return 0;
         }
     }
+
+    inline int copy_densities( np::ndarray& new_dens){
+        // assert len pixels matches up
+        if (new_dens.shape(0) != gpu.numDens){
+            printf("Number of densities passed does not agree with number of allocated densities on device\n");
+            exit(-1);
+        }
+        else{
+            densities_to_device(gpu,new_dens);
+            return 0;
+        }
+    }
+
     inline void trilinear_interpolation(np::ndarray rot_idx, bool verbose){
         int nrot = rot_idx.shape(0);
         std::vector<int> rot_inds;
@@ -117,7 +130,7 @@ public:
 
     inline void alloc(int device_id, np::ndarray rotations, int maxQvecs){
         int num_rot=rotations.shape(0)/9;
-        printf("Determined number of rotations=%d\n", num_rot);
+        //printf("Determined number of rotations=%d\n", num_rot);
         //printf("We will allocate space for %d orientations!\n", num_rot);
         setup_orientMatch( device_id, maxQvecs, gpu, rotations, true);
     }
@@ -155,6 +168,7 @@ BOOST_PYTHON_MODULE(emc){
         .def(bp::init<>("returns a class instance"))
         .def ("allocate_lerpy", &lerpyExt::alloc, "allocate the device")
         .def ("copy_image_data", &lerpyExt::copy_pixels, "copy pixels to the GPU device")
+        .def ("update_density", &lerpyExt::copy_densities, "copies new density to the GPU device")
         //.def("free_device", &lerpyExt::free, "free any allocated GPU memory")
         .def ("print_rotMat", &lerpyExt::print_rotMat, "show elements of allocated rotMat i_rot")
         .def ("get_out", &lerpyExt::get_out, "return the output array.")

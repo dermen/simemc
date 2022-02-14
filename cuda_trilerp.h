@@ -40,6 +40,7 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
                          np::ndarray qvectors);
 
 void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data);
+void densities_to_device(lerpy& gpu, np::ndarray& new_densities);
 
 // fills the gpu.out array with interpolated values, 1 for each qvec
 void do_a_lerp(lerpy& gpu,

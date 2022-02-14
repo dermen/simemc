@@ -90,6 +90,17 @@ void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data){
     }
 }
 
+void densities_to_device(lerpy& gpu, np::ndarray& new_densities){
+    unsigned int numDens = new_densities.shape(0);
+    //if (numDens != gpu.numDens){
+    //    printf("ERROR: densities size mis-match!\n");
+    //    exit(-1);
+    //}
+    for (int i=0; i < gpu.numDens; i++){
+        gpu.densities[i] = bp::extract<CUDAREAL>(new_densities[i]);
+    }
+}
+
 
 void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     double time;
