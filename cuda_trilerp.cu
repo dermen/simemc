@@ -52,52 +52,53 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
     gpuErr(cudaMallocManaged((void **)&gpu.data, gpu.numDataPixels*sizeof(CUDAREAL)));
 
     MAT3 Umat; // orientation matrix
+    CUDAREAL* Umats_ptr = reinterpret_cast<CUDAREAL*>(Umats.get_data());
     for (int i_rot=0; i_rot < gpu.numRot; i_rot ++){
         int i= i_rot*9;
-        CUDAREAL uxx = bp::extract<CUDAREAL>(Umats[i]);
-        CUDAREAL uxy = bp::extract<CUDAREAL>(Umats[i+1]);
-        CUDAREAL uxz = bp::extract<CUDAREAL>(Umats[i+2]);
-        CUDAREAL uyx = bp::extract<CUDAREAL>(Umats[i+3]);
-        CUDAREAL uyy = bp::extract<CUDAREAL>(Umats[i+4]);
-        CUDAREAL uyz = bp::extract<CUDAREAL>(Umats[i+5]);
-        CUDAREAL uzx = bp::extract<CUDAREAL>(Umats[i+6]);
-        CUDAREAL uzy = bp::extract<CUDAREAL>(Umats[i+7]);
-        CUDAREAL uzz = bp::extract<CUDAREAL>(Umats[i+8]);
+        CUDAREAL uxx = *(Umats_ptr+i);
+        CUDAREAL uxy = *(Umats_ptr+i+1);
+        CUDAREAL uxz = *(Umats_ptr+i+2);
+        CUDAREAL uyx = *(Umats_ptr+i+3);
+        CUDAREAL uyy = *(Umats_ptr+i+4);
+        CUDAREAL uyz = *(Umats_ptr+i+5);
+        CUDAREAL uzx = *(Umats_ptr+i+6);
+        CUDAREAL uzy = *(Umats_ptr+i+7);
+        CUDAREAL uzz = *(Umats_ptr+i+8);
         Umat << uxx, uxy, uxz,
                 uyx, uyy, uyz,
                 uzx, uzy, uzz;
         gpu.rotMats[i_rot] = Umat.transpose();
     }
 
+    CUDAREAL* qvec_ptr = reinterpret_cast<CUDAREAL*>(qvectors.get_data());
     for (int i_q = 0; i_q < gpu.numQ; i_q++) {
         int i = i_q * 3;
-        CUDAREAL qx = bp::extract<CUDAREAL>(qvectors[i]);
-        CUDAREAL qy = bp::extract<CUDAREAL>(qvectors[i + 1]);
-        CUDAREAL qz = bp::extract<CUDAREAL>(qvectors[i + 2]);
+        CUDAREAL qx = *(qvec_ptr +i);
+        CUDAREAL qy = *(qvec_ptr +i+1);
+        CUDAREAL qz = *(qvec_ptr +i+2);
         VEC3 Q(qx, qy, qz);
         gpu.qVecs[i_q] = Q;
     }
 
+    CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(densities.get_data());
     for (int i=0; i < gpu.numDens; i++){
-        gpu.densities[i] = bp::extract<CUDAREAL>(densities[i]);
+        gpu.densities[i] = *(dens_pts+i);
     }
 }
 
 void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data){
     unsigned int num_pix = shot_data.shape(0);
+    CUDAREAL* data_ptr = reinterpret_cast<CUDAREAL*>(shot_data.get_data());
     for (int i=0; i < num_pix; i++) {
-        gpu.data[i] = bp::extract<CUDAREAL>(shot_data[i]);
+        gpu.data[i] = *(data_ptr + i);
     }
 }
 
 void densities_to_device(lerpy& gpu, np::ndarray& new_densities){
     unsigned int numDens = new_densities.shape(0);
-    //if (numDens != gpu.numDens){
-    //    printf("ERROR: densities size mis-match!\n");
-    //    exit(-1);
-    //}
+    CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(new_densities.get_data());
     for (int i=0; i < gpu.numDens; i++){
-        gpu.densities[i] = bp::extract<CUDAREAL>(new_densities[i]);
+        gpu.densities[i] = *(dens_ptr+i);
     }
 }
 

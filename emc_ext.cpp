@@ -19,6 +19,38 @@ class lerpyExt{
     virtual ~lerpyExt(){}
     lerpyExt(){}
     lerpy gpu;
+    bool auto_convert_arrays = true;
+    int size_of_cudareal = sizeof(CUDAREAL);
+
+
+    inline void contig_check(np::ndarray& vals){
+       if (!(vals.get_flags() & np::ndarray::C_CONTIGUOUS)){
+           PyErr_SetString(PyExc_TypeError, "Array must be C-contig and of type CUDAREAL\n" );
+           bp::throw_error_already_set();
+       }
+    }
+
+
+    inline void type_check(np::ndarray& vals){
+        contig_check(vals);
+
+        np::dtype vals_t = vals.get_dtype();
+        int cu_size = sizeof(CUDAREAL);
+        int vals_size = vals_t.get_itemsize();
+        bool types_agree= (cu_size != vals_size);
+
+        if (! types_agree){
+            if (sizeof(CUDAREAL)==4)
+                PyErr_SetString(PyExc_TypeError, "Array must of type CUDAREAL=float (np.float32)\n" );
+            else if (sizeof(CUDAREAL)==8)
+                PyErr_SetString(PyExc_TypeError, "Array must of type CUDAREAL=double, (np.float64)\n" );
+            else{
+                printf("sizeof(CUDAREAL) = %d\n", sizeof(CUDAREAL));
+                PyErr_SetString(PyExc_TypeError, "Array must of type CUDAREAL\n" );
+            }
+            bp::throw_error_already_set();
+        }
+    }
     inline void alloc(int device_id, np::ndarray rotations, np::ndarray densities, int maxNumQ,
                       bp::tuple corner, bp::tuple delta, np::ndarray qvecs, int maxNumRotInds,
                       int numDataPix){
@@ -39,27 +71,25 @@ class lerpyExt{
         prepare_for_lerping( gpu, rotations, densities, qvecs);
     }
     //inline void trilinear_interpolation(np::ndarray qvecs, bool verbose){
-    inline int copy_pixels( np::ndarray& pixels){
+    inline void copy_pixels( np::ndarray& pixels){
         // assert len pixels matches up
         if (pixels.shape(0) != gpu.numQ){
-            printf("Number of pixels passed does not agree with number of allocated pixels on device\n");
-            exit(1);
+            PyErr_SetString(PyExc_TypeError, "Number of pixels passed does not agree with number of allocated pixels on device\n");
+            bp::throw_error_already_set();
         }
         else{
-            shot_data_to_device(gpu,pixels); 
-            return 0;
+            shot_data_to_device(gpu,pixels);
         }
     }
 
-    inline int copy_densities( np::ndarray& new_dens){
+    inline void copy_densities( np::ndarray& new_dens){
         // assert len pixels matches up
         if (new_dens.shape(0) != gpu.numDens){
-            printf("Number of densities passed does not agree with number of allocated densities on device\n");
-            exit(-1);
+            PyErr_SetString(PyExc_TypeError, "Number of densities passed does not agree with number of allocated densities on device\n");
+            bp::throw_error_already_set();
         }
         else{
             densities_to_device(gpu,new_dens);
-            return 0;
         }
     }
 
@@ -166,9 +196,9 @@ BOOST_PYTHON_MODULE(emc){
 
     bp::class_<lerpyExt>("lerpy", bp::no_init)
         .def(bp::init<>("returns a class instance"))
-        .def ("allocate_lerpy", &lerpyExt::alloc, "allocate the device")
-        .def ("copy_image_data", &lerpyExt::copy_pixels, "copy pixels to the GPU device")
-        .def ("update_density", &lerpyExt::copy_densities, "copies new density to the GPU device")
+        .def ("_allocate_lerpy", &lerpyExt::alloc, "allocate the device")
+        .def ("_copy_image_data", &lerpyExt::copy_pixels, "copy pixels to the GPU device")
+        .def ("_update_density", &lerpyExt::copy_densities, "copies new density to the GPU device")
         //.def("free_device", &lerpyExt::free, "free any allocated GPU memory")
         .def ("print_rotMat", &lerpyExt::print_rotMat, "show elements of allocated rotMat i_rot")
         .def ("get_out", &lerpyExt::get_out, "return the output array.")
@@ -182,10 +212,13 @@ BOOST_PYTHON_MODULE(emc){
              &lerpyExt::do_equation_two,
              (bp::arg("rot_idx"), bp::arg("verbose")=true),
              "compute equation to for the supplied rotation indices")
-        //.add_property("num_ori",
-        //               make_getter(&lerpyExt::num_orient,rbv()),
-        //               make_setter(&probaOr::num_orient,dcp()),
-        //               "Number of orientations.")
+        .add_property("auto_convert_arrays",
+                       make_getter(&lerpyExt::auto_convert_arrays,rbv()),
+                       make_setter(&lerpyExt::auto_convert_arrays,dcp()),
+                       "If arrays passed to `copy_image_data` or `update_density` aren't suitable, convert them to suitable arrays. A suitable array is C-contiguous and of type CUDAREAL")
+        .add_property("size_of_cudareal",
+                       make_getter(&lerpyExt::size_of_cudareal,rbv()),
+                       "CUDAREAL is this many bytes")
         ;
 
     /* Orientation matching class */
