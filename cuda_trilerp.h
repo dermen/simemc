@@ -2,7 +2,7 @@
 #define CUDA_EMC_H
 
 #include <Eigen/Dense>
-typedef float CUDAREAL;
+typedef double CUDAREAL;
 typedef Eigen::Matrix<CUDAREAL,3,1> VEC3;
 typedef Eigen::Matrix<CUDAREAL,3,3> MAT3;
 #include <iostream>
@@ -15,8 +15,9 @@ namespace np = boost::python::numpy;
 
 struct lerpy {
   MAT3* rotMats=NULL;
-  CUDAREAL* densities;
-  CUDAREAL* data;
+  CUDAREAL* densities=NULL;
+  CUDAREAL* wts=NULL;
+  CUDAREAL* data=NULL;
   int numDataPixels;
   VEC3* qVecs=NULL;
   CUDAREAL* out=NULL;
@@ -48,6 +49,8 @@ void do_a_lerp(lerpy& gpu,
                //np::ndarray qvecs,
                bool verbose, int task);
 
+void toggle_insert_mode(lerpy& gpu);
+
 
 struct gpuOrient {
     MAT3* rotMats=NULL;
@@ -69,5 +72,6 @@ void orientPeaks(gpuOrient& gpu,
 void setup_orientMatch(int dev_id, int maxNumQ, gpuOrient& gpu,
                        np::ndarray Umats, bool alloc);
 void free_orientMatch(gpuOrient& gpu);
+
 
 #endif

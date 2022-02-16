@@ -93,15 +93,82 @@ class lerpyExt{
         }
     }
 
-    inline void trilinear_interpolation(np::ndarray rot_idx, bool verbose){
-        int nrot = rot_idx.shape(0);
+    inline np::ndarray trilinear_interpolation(int rot_idx, bool verbose){
+        if (rot_idx < 0 || rot_idx >= gpu.numRot) {
+            PyErr_SetString(PyExc_TypeError,
+                            "Rot index is out of bounds, check size of allocated rotMats\n");
+            bp::throw_error_already_set();
+        }
         std::vector<int> rot_inds;
-
-        for (int i_rot=0; i_rot < nrot; i_rot++)
-            rot_inds.push_back(  bp::extract<int>(rot_idx[i_rot])  );
+        rot_inds.push_back(rot_idx);
 
         // 0 specifies only do interpolation
         do_a_lerp(gpu, rot_inds, verbose, 0);
+
+        bp::tuple shape = bp::make_tuple(gpu.maxNumQ);
+        bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
+        np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
+        np::ndarray output = np::from_data(&gpu.out[0], dt, shape, stride, bp::object());
+        return output;
+    }
+    
+    inline void trilinear_insertion(int rot_idx, np::ndarray vals, bool verbose){
+        if (rot_idx < 0 || rot_idx >= gpu.numRot) {
+            PyErr_SetString(PyExc_TypeError,
+                            "Rot index is out of bounds, check size of allocated rotMats\n");
+            bp::throw_error_already_set();
+        }
+        if (vals.shape(0) > gpu.numDataPixels) {
+            PyErr_SetString(PyExc_TypeError,
+                            "Number of passed values does not agree with number of allocated data pixels\n");
+            bp::throw_error_already_set();
+        }
+        if (vals.shape(0) != gpu.numQ) {
+            PyErr_SetString(PyExc_TypeError,
+                            "For insertion the number of vals should be the same as the number of Qvecs on device\n");
+            bp::throw_error_already_set();
+        }
+
+        std::vector<int> rot_inds;
+        rot_inds.push_back(rot_idx);
+           
+        // copy the insertion values to the device 
+        shot_data_to_device(gpu,vals);
+
+        // 2 specifies to do a trilinear insertion only do interpolation
+        do_a_lerp(gpu, rot_inds, verbose, 2);
+
+        //bp::tuple shape = bp::make_tuple(gpu.maxNumQ);
+        //bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
+        //np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
+        //np::ndarray output = np::from_data(&gpu.out[0], dt, shape, stride, bp::object());
+        //return output;
+    }
+
+    inline  np::ndarray get_densities(){
+        if (gpu.densities==NULL){ 
+            PyErr_SetString(PyExc_TypeError,
+                            "densities has not been allocated\n");
+            bp::throw_error_already_set();
+        }
+        bp::tuple shape = bp::make_tuple(gpu.numDens);
+        bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
+        np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
+        np::ndarray output = np::from_data(&gpu.densities[0], dt, shape, stride, bp::object());
+        return output;
+    }
+
+    inline np::ndarray get_wts(){
+        if (gpu.wts==NULL){
+            PyErr_SetString(PyExc_TypeError,
+                            "wts has not been allocated\n");
+            bp::throw_error_already_set();
+        }
+        bp::tuple shape = bp::make_tuple(gpu.numDens);
+        bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
+        np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
+        np::ndarray output = np::from_data(&gpu.wts[0], dt, shape, stride, bp::object());
+        return output;
     }
     
     inline void do_equation_two(np::ndarray rot_idx, bool verbose){
@@ -125,6 +192,9 @@ class lerpyExt{
     }
     inline bp::list get_out(){
         return gpu.outList;
+    }
+    inline void toggle_insert(){
+        toggle_insert_mode(gpu);
     }
 };
 
@@ -202,13 +272,20 @@ BOOST_PYTHON_MODULE(emc){
         //.def("free_device", &lerpyExt::free, "free any allocated GPU memory")
         .def ("print_rotMat", &lerpyExt::print_rotMat, "show elements of allocated rotMat i_rot")
         .def ("get_out", &lerpyExt::get_out, "return the output array.")
+        
+        .def ("toggle_insert", &lerpyExt::toggle_insert, "Prepare for trilinear insertions.")
 
         .def("trilinear_interpolation",
              &lerpyExt::trilinear_interpolation,
              (bp::arg("rot_idx"), bp::arg("verbose")=true),
              "interpolate the qvecs according to the supplied densities")
+        
+        .def("_trilinear_insertion",
+             &lerpyExt::trilinear_insertion,
+             (bp::arg("rot_idx"), bp::arg("vals"), bp::arg("verbose")=true),
+             "insert the vals according into the densities")
 
-        .def("equation_two",
+        .def("_equation_two",
              &lerpyExt::do_equation_two,
              (bp::arg("rot_idx"), bp::arg("verbose")=true),
              "compute equation to for the supplied rotation indices")
@@ -219,6 +296,12 @@ BOOST_PYTHON_MODULE(emc){
         .add_property("size_of_cudareal",
                        make_getter(&lerpyExt::size_of_cudareal,rbv()),
                        "CUDAREAL is this many bytes")
+        .def("densities",
+              &lerpyExt::get_densities,
+              "get the densities")
+        .def("wts",
+              &lerpyExt::get_wts,
+              "get the density weights")
         ;
 
     /* Orientation matching class */

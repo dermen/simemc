@@ -3,22 +3,25 @@
 #include "cuda_trilerp.h"
 #include "emc.cuh"
 
-//__device__ __inline__ int get_densities_index(int i,int j,int k, int stride_x, int stride_y);
 __device__ __inline__ unsigned int get_densities_index(int i,int j,int k, int nx, int ny, int nz);
 
-
-//__global__ void trilinear_interpolation(const CUDAREAL* __restrict__ densities,
-//                                        VEC3*vectors, CUDAREAL* out, int num_qvec,
-//                                        int nx, int ny, int nz,
-//                                        CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
-//                                        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
-
 __global__ void trilinear_interpolation_rotate_on_GPU(const CUDAREAL* __restrict__ densities,
-                                        VEC3*vectors, CUDAREAL* out, MAT3* rotMats, int * rot_inds,
-                                        int numRot, int num_qvec,
+                                        VEC3*vectors, CUDAREAL* out, MAT3 rotMat,
+                                        int num_qvec,
                                         int nx, int ny, int nz,
                                         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
                                         CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
+
+__global__ void trilinear_insertion_rotate_on_GPU(
+        CUDAREAL * densities,
+        CUDAREAL * wts,
+        CUDAREAL* insertion_values,
+        VEC3 *vectors,
+        MAT3 rotMat, int num_qvec,
+        int nx, int ny, int nz,
+        CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
+        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
+
 
 __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
                                  const CUDAREAL* __restrict__ data,
@@ -28,9 +31,6 @@ __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
                                  int nx, int ny, int nz,
                                  CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
                                  CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
-
-
-
 
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities, 
@@ -82,7 +82,7 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
 
     CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(densities.get_data());
     for (int i=0; i < gpu.numDens; i++){
-        gpu.densities[i] = *(dens_pts+i);
+        gpu.densities[i] = *(dens_ptr+i);
     }
 }
 
@@ -99,6 +99,17 @@ void densities_to_device(lerpy& gpu, np::ndarray& new_densities){
     CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(new_densities.get_data());
     for (int i=0; i < gpu.numDens; i++){
         gpu.densities[i] = *(dens_ptr+i);
+    }
+}
+
+void toggle_insert_mode(lerpy& gpu){
+    if (gpu.wts==NULL){
+        gpuErr(cudaMallocManaged((void **)&gpu.wts, gpu.numDens*sizeof(CUDAREAL)));
+    }
+
+    for (int i=0; i < gpu.numDens; i++){
+        gpu.wts[i]=0;
+        gpu.densities[i]=0;
     }
 }
 
@@ -132,21 +143,21 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     }
 
     gettimeofday(&t1, 0);
+
     /*
-     *
      * KERNELS
      */
-    
     if (task==0){
+        MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
         trilinear_interpolation_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
-                (gpu.densities, gpu.qVecs, gpu.out, gpu.rotMats,
-                 gpu.rotInds, numRotInds, gpu.numQ,
+                (gpu.densities, gpu.qVecs, gpu.out,
+                 rotMat, gpu.numQ,
                  256, 256, 256,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
                  gpu.delta[0], gpu.delta[1], gpu.delta[2]
                 );
     }
-    else {
+    else if(task==1) {
         if (verbose)printf("Running equation 2!\n");
 
         EMC_equation_two<<<gpu.numBlocks, gpu.blockSize>>>
@@ -159,7 +170,19 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                 );
 
     }
-    
+    else  {
+        if (verbose)printf("Trilinear insertion!\n");
+        MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
+//      NOTE: here gpu.data are the insert values
+        trilinear_insertion_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
+                (gpu.densities, gpu.wts, gpu.data, gpu.qVecs, 
+                 rotMat, gpu.numQ,
+                 256, 256, 256,
+                 gpu.corner[0], gpu.corner[1], gpu.corner[2],
+                 gpu.delta[0], gpu.delta[1], gpu.delta[2]
+                );
+   
+    } 
     error_msg(cudaGetLastError(), "after kernel call");
     cudaDeviceSynchronize();
     if (verbose) {
@@ -169,14 +192,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     }
 
     gettimeofday(&t1, 0);
-    if (task==0){
-        bp::list outList;
-        for (int i = 0; i < gpu.maxNumQ; i++)
-            outList.append(gpu.out[i]);
-        gpu.outList = outList;
-    }
-    else {
-    //  TODO: only retrieve the number of rot inds processed
+    if (task==1){
         bp::list outList;
         for (int i = 0; i < numRotInds; i++)
             outList.append(gpu.out_equation_two[i]);
@@ -191,7 +207,6 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
 }
 
 __device__ __inline__ unsigned int get_densities_index(int i,int j,int k, int nx, int ny, int nz)
-//__device__ __inline__ int get_densities_index(int i,int j,int k, int stride_x, int stride_xy)
 {
     //int idx = i + j*nx + k*nx*ny;
     unsigned int idx = fma(nx, fma(k,ny,j), i);
@@ -199,108 +214,13 @@ __device__ __inline__ unsigned int get_densities_index(int i,int j,int k, int nx
 }
 
 /**
- * this is a CUDA port of the reborn trilinear interpolator written in Fortran:
+ * this is mostly a CUDA port of the reborn trilinear interpolator written in Fortran:
  *     https://gitlab.com/kirianlab/reborn/-/blob/master/reborn/fortran/density.f90#L16
  */
-//__global__ void trilinear_interpolation(const CUDAREAL * __restrict__ densities, VEC3 *vectors, CUDAREAL * out,
-//                                        int num_qvec,
-//                                        int nx, int ny, int nz,
-//                                        CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
-//                                        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz){
-//
-//    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-//    int thread_stride = blockDim.x * gridDim.x;
-//    CUDAREAL i_f, j_f, k_f;
-//    CUDAREAL x0,x1,y0,y1,z0,z1;
-//    CUDAREAL qx,qy,qz;
-//    int i0, i1, j0, j1, k0, k1;
-//    CUDAREAL I0,I1,I2,I3,I4,I5,I6,I7;
-//    CUDAREAL a0,a1,a2,a3,a4,a5,a6,a7;
-//    CUDAREAL x0y0, x1y1, x0y1, x1y0;
-//
-//    VEC3 Q;
-//    for (int i=tid; i < num_qvec; i += thread_stride){
-//        Q = vectors[i];
-//        qx = Q[0];
-//        qy = Q[1];
-//        qz = Q[2];
-//
-//        k_f = (qx - cx) / dx;
-//        j_f = (qy - cy) / dy;
-//        i_f = (qz - cz) / dz;
-//        i0 = int(floor(i_f));
-//        j0 = int(floor(j_f));
-//        k0 = int(floor(k_f));
-//        if (i0 > nz-2 || j0 > ny-2 || k0 > nx-2 )
-//            continue;
-//        if(i0 < 0 || j0  < 0 || k0 < 0)
-//            continue;
-//        i1 = i0 + 1;
-//        j1 = j0 + 1;
-//        k1 = k0 + 1;
-//
-//        x0 = i_f - i0;
-//        y0 = j_f - j0;
-//        z0 = k_f - k0;
-//        x1 = 1.0 - x0;
-//        y1 = 1.0 - y0;
-//        z1 = 1.0 - z0;
-//
-//        I0 = __ldg(&densities[get_densities_index(i0, j0, k0, nx, ny, nz)]); 
-//        I1 = __ldg(&densities[get_densities_index(i1, j0, k0, nx, ny, nz)]); 
-//        I2 = __ldg(&densities[get_densities_index(i0, j1, k0, nx, ny, nz)]); 
-//        I3 = __ldg(&densities[get_densities_index(i0, j0, k1, nx, ny, nz)]); 
-//        I4 = __ldg(&densities[get_densities_index(i1, j0, k1, nx, ny, nz)]); 
-//        I5 = __ldg(&densities[get_densities_index(i0, j1, k1, nx, ny, nz)]); 
-//        I6 = __ldg(&densities[get_densities_index(i1, j1, k0, nx, ny, nz)]); 
-//        I7 = __ldg(&densities[get_densities_index(i1, j1, k1, nx, ny, nz)]); 
-//
-//        x0y0 = x0*y0;
-//        x1y1 = x1*y1;
-//        x1y0 = x1*y0;
-//        x0y1 = x0*y1;
-//       
-//        a0 = x1y1 * z1;
-//        a1 = x0y1 * z1;
-//        a2 = x1y0 * z1;
-//        a3 = x1y1 * z0;
-//        a4 = x0y1 * z0;
-//        a5 = x1y0 * z0;
-//        a6 = x0y0 * z1;
-//        a7 = x0y0 * z0;
-//
-//        //out[i] = fma(I0,a0, 
-//        //         fma(I1,a1,
-//        //         fma(I2,a2,
-//        //         fma(I3,a3,
-//        //         fma(I4,a4,
-//        //         fma(I5,a5,
-//        //         fma(I6,a6,
-//        //         fma(I7,a7,0))))))));
-//
-//        out[i] = I0 * a0 +
-//                 I1 * a1 +
-//                 I2 * a2 +
-//                 I3 * a3 +
-//                 I4 * a4 +
-//                 I5 * a5 +
-//                 I6 * a6 +
-//                 I7 * a7;
-//        //out[i] = __ldg(&densities[get_densities_index(i0, j0, k0, nx, ny, nz)]) * x1 * y1 * z1 +
-//        //         __ldg(&densities[get_densities_index(i1, j0, k0, nx, ny, nz)]) * x0 * y1 * z1 +
-//        //         __ldg(&densities[get_densities_index(i0, j1, k0, nx, ny, nz)]) * x1 * y0 * z1 +
-//        //         __ldg(&densities[get_densities_index(i0, j0, k1, nx, ny, nz)]) * x1 * y1 * z0 +
-//        //         __ldg(&densities[get_densities_index(i1, j0, k1, nx, ny, nz)]) * x0 * y1 * z0 +
-//        //         __ldg(&densities[get_densities_index(i0, j1, k1, nx, ny, nz)]) * x1 * y0 * z0 +
-//        //         __ldg(&densities[get_densities_index(i1, j1, k0, nx, ny, nz)]) * x0 * y0 * z1 +
-//        //         __ldg(&densities[get_densities_index(i1, j1, k1, nx, ny, nz)]) * x0 * y0 * z0;
-//    }
-//}
-
 __global__ void trilinear_interpolation_rotate_on_GPU(
                                         const CUDAREAL * __restrict__ densities, 
                                         VEC3 *vectors, CUDAREAL * out,
-                                        MAT3* rotMats, int* rot_inds, int numRot, int num_qvec,
+                                        MAT3 rotMat, int num_qvec,
                                         int nx, int ny, int nz,
                                         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
                                         CUDAREAL dx, CUDAREAL dy, CUDAREAL dz){
@@ -314,80 +234,166 @@ __global__ void trilinear_interpolation_rotate_on_GPU(
     CUDAREAL I0,I1,I2,I3,I4,I5,I6,I7;
     CUDAREAL a0,a1,a2,a3,a4,a5,a6,a7;
     CUDAREAL x0y0, x1y1, x0y1, x1y0;
-    int rot_index;
-    int i, i_rot;
-
+    int i;
     VEC3 Q;
     
     for (i=tid; i < num_qvec; i += thread_stride){
-        for (i_rot =0; i_rot < numRot; i_rot++){
-            rot_index = rot_inds[i_rot];
-            Q = rotMats[rot_index]*vectors[i];
-            qx = Q[0];
-            qy = Q[1];
-            qz = Q[2];
+        Q = rotMat*vectors[i];
+        qx = Q[0];
+        qy = Q[1];
+        qz = Q[2];
 
-            k_f = (qx - cx) / dx;
-            j_f = (qy - cy) / dy;
-            i_f = (qz - cz) / dz;
-            i0 = int(floor(i_f));
-            j0 = int(floor(j_f));
-            k0 = int(floor(k_f));
-            if (i0 > nz-2 || j0 > ny-2 || k0 > nx-2 )
-                continue;
-            if(i0 < 0 || j0  < 0 || k0 < 0)
-                continue;
-            i1 = i0 + 1;
-            j1 = j0 + 1;
-            k1 = k0 + 1;
+        k_f = (qx - cx) / dx;
+        j_f = (qy - cy) / dy;
+        i_f = (qz - cz) / dz;
+        i0 = int(floor(i_f));
+        j0 = int(floor(j_f));
+        k0 = int(floor(k_f));
+        if (i0 > nz-2 || j0 > ny-2 || k0 > nx-2 )
+            continue;
+        if(i0 < 0 || j0  < 0 || k0 < 0)
+            continue;
+        i1 = i0 + 1;
+        j1 = j0 + 1;
+        k1 = k0 + 1;
 
-            x0 = i_f - i0;
-            y0 = j_f - j0;
-            z0 = k_f - k0;
-            x1 = 1.0 - x0;
-            y1 = 1.0 - y0;
-            z1 = 1.0 - z0;
+        x0 = i_f - i0;
+        y0 = j_f - j0;
+        z0 = k_f - k0;
+        x1 = 1.0 - x0;
+        y1 = 1.0 - y0;
+        z1 = 1.0 - z0;
 
-            //I0 = __ldg(&densities[get_densities_index(i0, j0, k0, stride_x, stride_xy)]); 
-            //I1 = __ldg(&densities[get_densities_index(i1, j0, k0, stride_x, stride_xy)]); 
-            //I2 = __ldg(&densities[get_densities_index(i0, j1, k0, stride_x, stride_xy)]); 
-            //I3 = __ldg(&densities[get_densities_index(i0, j0, k1, stride_x, stride_xy)]); 
-            //I4 = __ldg(&densities[get_densities_index(i1, j0, k1, stride_x, stride_xy)]); 
-            //I5 = __ldg(&densities[get_densities_index(i0, j1, k1, stride_x, stride_xy)]); 
-            //I6 = __ldg(&densities[get_densities_index(i1, j1, k0, stride_x, stride_xy)]); 
-            //I7 = __ldg(&densities[get_densities_index(i1, j1, k1, stride_x, stride_xy)]); 
-            I0 = __ldg(&densities[get_densities_index(i0, j0, k0, nx, ny, nz)]); 
-            I1 = __ldg(&densities[get_densities_index(i1, j0, k0, nx, ny, nz)]); 
-            I2 = __ldg(&densities[get_densities_index(i0, j1, k0, nx, ny, nz)]); 
-            I3 = __ldg(&densities[get_densities_index(i0, j0, k1, nx, ny, nz)]); 
-            I4 = __ldg(&densities[get_densities_index(i1, j0, k1, nx, ny, nz)]); 
-            I5 = __ldg(&densities[get_densities_index(i0, j1, k1, nx, ny, nz)]); 
-            I6 = __ldg(&densities[get_densities_index(i1, j1, k0, nx, ny, nz)]); 
-            I7 = __ldg(&densities[get_densities_index(i1, j1, k1, nx, ny, nz)]); 
+        I0 = __ldg(&densities[get_densities_index(i0, j0, k0, nx, ny, nz)]);
+        I1 = __ldg(&densities[get_densities_index(i1, j0, k0, nx, ny, nz)]);
+        I2 = __ldg(&densities[get_densities_index(i0, j1, k0, nx, ny, nz)]);
+        I3 = __ldg(&densities[get_densities_index(i0, j0, k1, nx, ny, nz)]);
+        I4 = __ldg(&densities[get_densities_index(i1, j0, k1, nx, ny, nz)]);
+        I5 = __ldg(&densities[get_densities_index(i0, j1, k1, nx, ny, nz)]);
+        I6 = __ldg(&densities[get_densities_index(i1, j1, k0, nx, ny, nz)]);
+        I7 = __ldg(&densities[get_densities_index(i1, j1, k1, nx, ny, nz)]);
 
-            x0y0 = x0*y0;
-            x1y1 = x1*y1;
-            x1y0 = x1*y0;
-            x0y1 = x0*y1;
-           
-            a0 = x1y1 * z1;
-            a1 = x0y1 * z1;
-            a2 = x1y0 * z1;
-            a3 = x1y1 * z0;
-            a4 = x0y1 * z0;
-            a5 = x1y0 * z0;
-            a6 = x0y0 * z1;
-            a7 = x0y0 * z0;
+        x0y0 = x0*y0;
+        x1y1 = x1*y1;
+        x1y0 = x1*y0;
+        x0y1 = x0*y1;
 
-            out[i] = I0 * a0 +
-                     I1 * a1 +
-                     I2 * a2 +
-                     I3 * a3 +
-                     I4 * a4 +
-                     I5 * a5 +
-                     I6 * a6 +
-                     I7 * a7;
-        }
+        a0 = x1y1 * z1;
+        a1 = x0y1 * z1;
+        a2 = x1y0 * z1;
+        a3 = x1y1 * z0;
+        a4 = x0y1 * z0;
+        a5 = x1y0 * z0;
+        a6 = x0y0 * z1;
+        a7 = x0y0 * z0;
+
+        out[i] = I0 * a0 +
+                 I1 * a1 +
+                 I2 * a2 +
+                 I3 * a3 +
+                 I4 * a4 +
+                 I5 * a5 +
+                 I6 * a6 +
+                 I7 * a7;
+    }
+}
+
+/**
+ * Insert a tomogram into the density
+ *
+ * this is mostly a CUDA port of the reborn trilinear insertion written in Fortran:
+ *     https://gitlab.com/kirianlab/reborn/-/blob/master/reborn/fortran/density.f90#L16
+ */
+__global__ void trilinear_insertion_rotate_on_GPU(
+        CUDAREAL*  densities,
+        CUDAREAL*  wts,
+        CUDAREAL* insertion_values,
+        VEC3 *vectors,
+        MAT3 rotMat, int num_qvec,
+        int nx, int ny, int nz,
+        CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
+        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz){
+
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int thread_stride = blockDim.x * gridDim.x;
+    CUDAREAL i_f, j_f, k_f;
+    CUDAREAL x0,x1,y0,y1,z0,z1;
+    CUDAREAL qx,qy,qz;
+    int i0, i1, j0, j1, k0, k1;
+    CUDAREAL a0,a1,a2,a3,a4,a5,a6,a7;
+    CUDAREAL x0y0, x1y1, x0y1, x1y0;
+    int i;
+
+    VEC3 Q;
+    int idx0,idx1,idx2,idx3,idx4,idx5,idx6,idx7;
+    CUDAREAL val;
+    for (i=tid; i < num_qvec; i += thread_stride){
+        val = insertion_values[i];
+        Q = rotMat*vectors[i];
+        qx = Q[0];
+        qy = Q[1];
+        qz = Q[2];
+
+        k_f = (qx - cx) / dx;
+        j_f = (qy - cy) / dy;
+        i_f = (qz - cz) / dz;
+        i0 = int(floor(i_f));
+        j0 = int(floor(j_f));
+        k0 = int(floor(k_f));
+        if (i0 > nz-2 || j0 > ny-2 || k0 > nx-2 )
+            continue;
+        if(i0 < 0 || j0  < 0 || k0 < 0)
+            continue;
+        i1 = i0 + 1;
+        j1 = j0 + 1;
+        k1 = k0 + 1;
+
+        x0 = i_f - i0;
+        y0 = j_f - j0;
+        z0 = k_f - k0;
+        x1 = 1.0 - x0;
+        y1 = 1.0 - y0;
+        z1 = 1.0 - z0;
+
+        x0y0 = x0*y0;
+        x1y1 = x1*y1;
+        x1y0 = x1*y0;
+        x0y1 = x0*y1;
+
+        a0 = x1y1 * z1;
+        a1 = x0y1 * z1;
+        a2 = x1y0 * z1;
+        a3 = x1y1 * z0;
+        a4 = x0y1 * z0;
+        a5 = x1y0 * z0;
+        a6 = x0y0 * z1;
+        a7 = x0y0 * z0;
+        idx0 = get_densities_index(i0, j0, k0, nx, ny, nz);
+        idx1 = get_densities_index(i1, j0, k0, nx, ny, nz);
+        idx2 = get_densities_index(i0, j1, k0, nx, ny, nz);
+        idx3 = get_densities_index(i0, j0, k1, nx, ny, nz);
+        idx4 = get_densities_index(i1, j0, k1, nx, ny, nz);
+        idx5 = get_densities_index(i0, j1, k1, nx, ny, nz);
+        idx6 = get_densities_index(i1, j1, k0, nx, ny, nz);
+        idx7 = get_densities_index(i1, j1, k1, nx, ny, nz);
+
+        atomicAdd(&densities[idx0], val*a0);
+        atomicAdd(&densities[idx1], val*a1);
+        atomicAdd(&densities[idx2], val*a2);
+        atomicAdd(&densities[idx3], val*a3);
+        atomicAdd(&densities[idx4], val*a4);
+        atomicAdd(&densities[idx5], val*a5);
+        atomicAdd(&densities[idx6], val*a6);
+        atomicAdd(&densities[idx7], val*a7);
+
+        atomicAdd(&wts[idx0], a0);
+        atomicAdd(&wts[idx1], a1);
+        atomicAdd(&wts[idx2], a2);
+        atomicAdd(&wts[idx3], a3);
+        atomicAdd(&wts[idx4], a4);
+        atomicAdd(&wts[idx5], a5);
+        atomicAdd(&wts[idx6], a6);
+        atomicAdd(&wts[idx7], a7);
     }
 }
 
@@ -430,10 +436,8 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
         r = rot_inds[i_rot];
         R = rotMats[r];
         for (t=tid; t < num_qvec; t += thread_stride){
-            //Q = vectors[t];
             K_t = __ldg(&data[t]);
             Q = R*vectors[t];
-            //Q = rotMats[r]*vectors[t];
             qx = Q[0];
             qy = Q[1];
             qz = Q[2];
@@ -482,14 +486,6 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
             a6 = x0y0 * z1;
             a7 = x0y0 * z0;
 
-            //W_rt = I0 * a0 +
-            //         I1 * a1 +
-            //         I2 * a2 +
-            //         I3 * a3 +
-            //         I4 * a4 +
-            //         I5 * a5 +
-            //         I6 * a6 +
-            //         I7 * a7;
             W_rt = fma(I0,a0,
                    fma(I1,a1,
                    fma(I2,a2,
@@ -513,5 +509,3 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
             atomicAdd(&out_rot[i_rot], R_dr_block);
     }
 }
-
-
