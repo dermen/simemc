@@ -37,7 +37,7 @@ def make_dir(dirname):
     COMM.barrier()
 
 
-def load_emc_input(input_dir):
+def load_emc_input(input_dir, dt=None):
     RENORM = 169895.59872560613 / 100
     inputNames_Shots = None
     if COMM.rank==0:
@@ -94,4 +94,7 @@ def load_emc_input(input_dir):
         data *= RENORM
         rot_inds = h5["probable_rot_inds"][i_shot].astype(np.int32)
 
-        yield data.astype(np.float32), background, rot_inds, fname, i_shot
+        if dt is not None:
+            data = data.astype(dt)
+        data = np.ascontiguousarray(data)
+        yield data, background, rot_inds, fname, i_shot
