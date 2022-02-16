@@ -30,17 +30,18 @@ void setup_orientMatch(int dev_id, int maxNumQ, gpuOrient& gpu,
         gpuErr(cudaMallocManaged((void **)&gpu.qVecs, maxNumQ*sizeof(VEC3)));
 
         MAT3 Umat; // orientation matrix
+        CUDAREAL * u_ptr = reinterpret_cast<CUDAREAL*>(Umats.get_data());
         for (int i_rot=0; i_rot < numRot; i_rot ++){
             int i= i_rot*9;
-            CUDAREAL uxx = bp::extract<CUDAREAL>(Umats[i]);
-            CUDAREAL uxy = bp::extract<CUDAREAL>(Umats[i+1]);
-            CUDAREAL uxz = bp::extract<CUDAREAL>(Umats[i+2]);
-            CUDAREAL uyx = bp::extract<CUDAREAL>(Umats[i+3]);
-            CUDAREAL uyy = bp::extract<CUDAREAL>(Umats[i+4]);
-            CUDAREAL uyz = bp::extract<CUDAREAL>(Umats[i+5]);
-            CUDAREAL uzx = bp::extract<CUDAREAL>(Umats[i+6]);
-            CUDAREAL uzy = bp::extract<CUDAREAL>(Umats[i+7]);
-            CUDAREAL uzz = bp::extract<CUDAREAL>(Umats[i+8]);
+            CUDAREAL uxx = *(u_ptr+i);
+            CUDAREAL uxy = *(u_ptr+i+1);
+            CUDAREAL uxz = *(u_ptr+i+2);
+            CUDAREAL uyx = *(u_ptr+i+3);
+            CUDAREAL uyy = *(u_ptr+i+4);
+            CUDAREAL uyz = *(u_ptr+i+5);
+            CUDAREAL uzx = *(u_ptr+i+6);
+            CUDAREAL uzy = *(u_ptr+i+7);
+            CUDAREAL uzz = *(u_ptr+i+8);
             Umat << uxx, uxy, uxz,
                     uyx, uyy, uyz,
                     uzx, uzy, uzz;
@@ -83,11 +84,12 @@ void orientPeaks(gpuOrient& gpu, np::ndarray qvecs, CUDAREAL hcut,
     // copy the Qvectors to the device
     if (verbose)
         printf("Copying over %d qvectors to the GPU\n", numQ);
+    CUDAREAL* qptr = reinterpret_cast<CUDAREAL*>(qvecs.get_data());
     for (int i_q=0; i_q < numQ; i_q++){
         int i = i_q*3;
-        CUDAREAL qx = bp::extract<CUDAREAL>(qvecs[i]);
-        CUDAREAL qy = bp::extract<CUDAREAL>(qvecs[i+1]);
-        CUDAREAL qz = bp::extract<CUDAREAL>(qvecs[i+2]);
+        CUDAREAL qx = *(qptr+i);
+        CUDAREAL qy = *(qptr+i+1);
+        CUDAREAL qz = *(qptr+i+2);
         VEC3 Q(qx,qy,qz);
         gpu.qVecs[i_q] = Q;
     }
@@ -109,18 +111,6 @@ void orientPeaks(gpuOrient& gpu, np::ndarray qvecs, CUDAREAL hcut,
     time = (1000000.0*(t2.tv_sec-t1.tv_sec) + t2.tv_usec-t1.tv_usec)/1000.0;
     if(verbose)
         printf("kernel time=%f msec\n", time);
-
-    gettimeofday(&t1, 0);
-    bp::list rot_inds;
-    for (int i=0; i< gpu.numRot; i++){
-        if (gpu.out[i])
-            rot_inds.append(i);
-    }
-    gpu.probable_rot_inds = rot_inds;
-    gettimeofday(&t2, 0);
-    time = (1000000.0*(t2.tv_sec-t1.tv_sec) + t2.tv_usec-t1.tv_usec)/1000.0;
-    if(verbose)
-        printf("POST kernel time=%f msec\n", time);
 
 }
 

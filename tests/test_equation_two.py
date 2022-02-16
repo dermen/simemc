@@ -57,20 +57,26 @@ def test(maxRotInds=10):
     L = lerpy()
     qcoords_alloc  = qcoords[inbounds]
     data1_alloc = data1[inbounds]
-    L.allocate_lerpy(0, rotMats.ravel(), I.ravel(), maxNumQ,
-                     tuple(c), tuple(d), qcoords_alloc.ravel(),
+    L.allocate_lerpy(0, rotMats, I, maxNumQ,
+                     tuple(c), tuple(d), qcoords_alloc,
                      maxRotInds, N)
     talloc = time.time()-talloc
     print("Took %.4f sec to allocate device (this only ever happens once per EMC computation)" % talloc)
 
     tcopy = time.time()
-    L.copy_image_data(data1_alloc) #data.ravel())
+    L.copy_image_data(data1_alloc)
     tcopy = time.time()-tcopy
     print("Takes %.4f sec to copy data to GPU" % tcopy)
 
-    inds = np.arange(maxRotInds).astype(np.int32)
+    inds = np.arange(maxRotInds)
     t2 = time.time()
-    L.equation_two(inds)
+    try:  # quick test of the auto type converter
+        L.auto_convert_arrays = False
+        L.equation_two(inds)
+        raise RuntimeError("Auto type check failed")
+    except TypeError:
+        L.auto_convert_arrays = True
+        L.equation_two(inds)
     Rgpu = L.get_out()
     t2 = time.time() - t2
     print("First 3 R_dr values:")
@@ -78,7 +84,6 @@ def test(maxRotInds=10):
 
     Rcpu = []
     t = time.time()
-    #data1 = data.ravel()
     twaste = 0
     for i_rot in range(maxRotInds):
         qcoords_rot = np.dot(qcoords, rotMats[i_rot])

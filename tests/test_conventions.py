@@ -1,15 +1,17 @@
 
+import time
 import sys
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
+from scipy.stats import pearsonr
 import dxtbx
 from dxtbx.model import Crystal
 from dials.array_family import flex
 from dxtbx.model import ExperimentList, Experiment
 
 from reborn.misc.interpolate import trilinear_insertion
-from simemc import utils
+from simemc import utils, const
 from simemc.emc import probable_orients, lerpy
 
 
@@ -37,15 +39,20 @@ def _test_conventions(use_hist_method=True):
     img = loader.get_raw_data().as_numpy_array()
     qcoords = np.vstack((qx,qy,qz)).T
     Amat = np.load("../quick_sim/rank0/shot0.npz")["A"].reshape((3,3))
+
     real_a, real_b, real_c = map(tuple, np.linalg.inv(Amat) )
     cdict = {"real_space_a": real_a, "real_space_b": real_b, "real_space_c": real_c, "space_group_hall_symbol": "-P 4 2", "__id__": "crystal"}
     C = Crystal.from_dict(cdict)
     Umat = np.reshape(C.get_U(), (3,3))
     qcoords_rot = np.dot( Umat.T, qcoords.T).T
-    qbins = np.linspace(-0.25, 0.25, 257)
+    q0 = np.dot( Umat.T, qcoords[0])
+    from IPython import embed
+    embed()
+    qbins = const.QBINS
+    qcent = (qbins[:-1] + qbins[1:])*.5
     maxNumQ = qcoords_rot.shape[0]
-    xmin = [qbins[0]] *3
-    xmax = [qbins[-1]] *3
+    xmin = [qcent[0]] *3
+    xmax = [qcent[-1]] *3
     dens_shape = tuple([len(qbins)-1]*3)
     corner,deltas = utils.corners_and_deltas(dens_shape, xmin, xmax )
     print("inserting slice")
@@ -73,9 +80,30 @@ def _test_conventions(use_hist_method=True):
 
     print("Allocate a lerpy")
     L = lerpy()
-    L.allocate_lerpy(gpu_device, rotMats.ravel(), W.ravel(), maxNumQ,
-                     tuple(corner), tuple(deltas), qcoords.ravel(),
+    L.allocate_lerpy(gpu_device, rotMats, W, maxNumQ,
+                     tuple(corner), tuple(deltas), qcoords,
                      maxRotInds, Npix)
+    # get the interpolated values for rot mat 0
+    Umat_idx = 0
+    img2 = L.trilinear_interpolation(Umat_idx,True).reshape(img.shape)
+
+
+    L.toggle_insert()
+    tinsert = time.time()
+    L.trilinear_insertion(0, img)
+    tinsert = time.time()-tinsert
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        W2 = np.nan_to_num(L.densities()/ L.wts())
+    W2 = W2.reshape(W.shape)
+    assert np.sum(W> 0) == np.sum(W2>0)
+
+    if L.size_of_cudareal==8:
+        assert np.allclose(W, W2.reshape(W.shape))
+    else:
+        assert pearsonr(W[W> 0], W2[W2 > 0])[0] > 0.99
+
+    L.update_density(W)
 
     print("Copy image data to lerpy")
     L.copy_image_data(img.ravel())

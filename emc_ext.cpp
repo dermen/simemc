@@ -7,9 +7,10 @@
 #include <boost/python/numpy.hpp>
 #include <boost/python/args.hpp>
 #include <iostream>
-#include "cuda_trilerp.h"
 #define BOOST_LIB_NAME "boost_numpy"
 #include <boost/config/auto_link.hpp>
+
+#include "cuda_trilerp.h"
 namespace bp=boost::python;
 namespace np=boost::python::numpy;
 
@@ -138,11 +139,6 @@ class lerpyExt{
         // 2 specifies to do a trilinear insertion only do interpolation
         do_a_lerp(gpu, rot_inds, verbose, 2);
 
-        //bp::tuple shape = bp::make_tuple(gpu.maxNumQ);
-        //bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
-        //np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
-        //np::ndarray output = np::from_data(&gpu.out[0], dt, shape, stride, bp::object());
-        //return output;
     }
 
     inline  np::ndarray get_densities(){
@@ -205,6 +201,8 @@ public:
     // constructor
     probaOr(){}
     gpuOrient gpu;
+    int size_of_cudareal = sizeof(CUDAREAL);
+    bool auto_convert_arrays = true;
     inline void set_B(bp::tuple vals){
         CUDAREAL bxx = bp::extract<CUDAREAL>(vals[0]);
         CUDAREAL bxy = bp::extract<CUDAREAL>(vals[1]);
@@ -230,16 +228,21 @@ public:
 
     inline void alloc(int device_id, np::ndarray rotations, int maxQvecs){
         int num_rot=rotations.shape(0)/9;
-        //printf("Determined number of rotations=%d\n", num_rot);
-        //printf("We will allocate space for %d orientations!\n", num_rot);
         setup_orientMatch( device_id, maxQvecs, gpu, rotations, true);
     }
     inline void free(){
         free_orientMatch(gpu);
     }
-    inline void oriPeaks(np::ndarray qvecs,
+    inline np::ndarray oriPeaks(np::ndarray qvecs,
                          float hcut, int minWithinHcut, bool verbose){
         orientPeaks(gpu, qvecs, hcut, minWithinHcut, verbose);
+
+        int numQ = qvecs.shape(0)/3;
+        bp::tuple shape = bp::make_tuple(numQ);
+        bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
+        np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
+        np::ndarray output = np::from_data(&gpu.out[0], dt, shape, stride, bp::object());
+        return output;
     }
 
     inline bp::list listOrients(){
@@ -307,8 +310,8 @@ BOOST_PYTHON_MODULE(emc){
     /* Orientation matching class */
     bp::class_<probaOr>("probable_orients", bp::no_init)
         .def(bp::init<>("returns a class instance"))
-        .def ("allocate_orientations", &probaOr::alloc, "move the orientations to the device")
-        .def ("orient_peaks", &probaOr::oriPeaks, "compute probable orientations (main CUDA kernel)")
+        .def ("_allocate_orientations", &probaOr::alloc, "move the orientations to the device")
+        .def ("_orient_peaks", &probaOr::oriPeaks, "compute probable orientations (main CUDA kernel)")
         .def("free_device", &probaOr::free, "free any allocated GPU memory")
         .def ("print_rotMat", &probaOr::print_rotMat, "show elements of allocated rotMat i_rot")
         .def ("get_probable_orients", &probaOr::listOrients, "returns a list of rotation matrix indices")
@@ -316,6 +319,13 @@ BOOST_PYTHON_MODULE(emc){
                        make_function(&probaOr::get_B,rbv()),
                        make_function(&probaOr::set_B,dcp()),
                        "the Bmatrix (dxtbx Crystal.get_B() format)")
+        .add_property("size_of_cudareal",
+            make_getter(&probaOr::size_of_cudareal,rbv()),
+            "CUDAREAL is this many bytes")
+        .add_property("auto_convert_arrays",
+            make_getter(&probaOr::auto_convert_arrays,rbv()),
+            make_setter(&probaOr::auto_convert_arrays,dcp()),
+            "If arrays passed to `copy_image_data` or `update_density` aren't suitable, convert them to suitable arrays. A suitable array is C-contiguous and of type CUDAREAL")
         ;
 
 }
