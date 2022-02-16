@@ -4,6 +4,7 @@ import time
 import pytest
 
 
+#@pytest.mark.skip(reason="Fails if pytest is run from repository root for unknown reason")
 @pytest.mark.mpi_skip()
 def test_orient():
     np.random.seed(12345)
@@ -22,7 +23,7 @@ def test_orient():
 
     t = time.time()
     rot_inds = []
-    O.orient_peaks(qvecs.ravel(), hcut, minPred, True)
+    rot_inds = O.orient_peaks(qvecs.ravel(), hcut, minPred, True)
     rot_inds = O.get_probable_orients()
     t = time.time()-t
     print("GPU took %.5f sec" % t)
@@ -37,7 +38,6 @@ def test_orient():
     t = time.time()-t
     print("CPU took %.5f sec" % t)
     diff_inds = set(rot_inds).difference(rot_inds2)
-    print(diff_inds)
     if diff_inds:
         print("WARNING THERE ARE DIFFERENCES BUT DID YOU COMPILE WITH CUDAREAL defined as float ? ")
         print("If so, then diff_inds should be few..")

@@ -119,8 +119,7 @@ with h5py.File(outfile, "w") as OUT:
         t = time.time()
         qvecs = R['rlp'].as_numpy_array()
         verbose_flag = False #COMM.rank==0
-        O.orient_peaks(qvecs.ravel(), hcut, min_pred, verbose_flag)
-        prob_rot = O.get_probable_orients()
+        prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, verbose_flag)
         tori = time.time()-t
 
         ### Save stuff

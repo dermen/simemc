@@ -45,9 +45,6 @@ def _test_conventions(use_hist_method=True):
     C = Crystal.from_dict(cdict)
     Umat = np.reshape(C.get_U(), (3,3))
     qcoords_rot = np.dot( Umat.T, qcoords.T).T
-    q0 = np.dot( Umat.T, qcoords[0])
-    from IPython import embed
-    embed()
     qbins = const.QBINS
     qcent = (qbins[:-1] + qbins[1:])*.5
     maxNumQ = qcoords_rot.shape[0]
@@ -96,12 +93,14 @@ def _test_conventions(use_hist_method=True):
     with np.errstate(divide='ignore', invalid='ignore'):
         W2 = np.nan_to_num(L.densities()/ L.wts())
     W2 = W2.reshape(W.shape)
-    assert np.sum(W> 0) == np.sum(W2>0)
+    if not use_hist_method:
+        # quantitative comparison should only be done if reborn insertion was used to get W
+        assert np.sum(W> 0) == np.sum(W2>0)
 
-    if L.size_of_cudareal==8:
-        assert np.allclose(W, W2.reshape(W.shape))
-    else:
-        assert pearsonr(W[W> 0], W2[W2 > 0])[0] > 0.99
+        if L.size_of_cudareal==8:
+            assert np.allclose(W, W2.reshape(W.shape))
+        else:
+            assert pearsonr(W[W> 0], W2[W2 > 0])[0] > 0.99
 
     L.update_density(W)
 
@@ -138,8 +137,7 @@ def _test_conventions(use_hist_method=True):
     # resolution of each refl; only use refls within the resolution cutoff
     qvecs = R['rlp'].as_numpy_array()
 
-    O.orient_peaks(qvecs.ravel(), hcut, minPred, True)
-    prob_rot = O.get_probable_orients()
+    prob_rot = O.orient_peaks(qvecs.ravel(), hcut, minPred, True)
     # rotation index 0 (ground truth) should definitely be in the prob_rot list
     assert 0 in prob_rot
     print("OK")
