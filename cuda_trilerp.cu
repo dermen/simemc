@@ -170,7 +170,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                 );
 
     }
-    else  {
+    else if (task==2)  {
         if (verbose)printf("Trilinear insertion!\n");
         MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
 //      NOTE: here gpu.data are the insert values
@@ -182,7 +182,24 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                  gpu.delta[0], gpu.delta[1], gpu.delta[2]
                 );
    
-    } 
+    }
+    else {
+        if (verbose)printf("Symmetrize density!\n");
+        // zero out the densities
+        toggle_insert_mode(gpu);
+
+        MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
+//      NOTE: here gpu.data are the insert values
+        trilinear_insertion_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
+                (gpu.densities, gpu.wts, gpu.data, gpu.qVecs,
+                 rotMat, gpu.numQ,
+                 256, 256, 256,
+                 gpu.corner[0], gpu.corner[1], gpu.corner[2],
+                 gpu.delta[0], gpu.delta[1], gpu.delta[2]
+                );
+
+
+    }
     error_msg(cudaGetLastError(), "after kernel call");
     cudaDeviceSynchronize();
     if (verbose) {
@@ -204,6 +221,25 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         time = (1000000.0 * (t2.tv_sec - t1.tv_sec) + t2.tv_usec - t1.tv_usec) / 1000.0;
         printf("Post-kernel time=%f msec\n", time);
     }
+}
+
+void free_lerpy(lerpy& gpu){
+    if (gpu.qVecs != NULL)
+        gpuErr(cudaFree(gpu.qVecs));
+    if (gpu.rotInds!= NULL)
+        gpuErr(cudaFree(gpu.rotInds));
+    if (gpu.rotMats!= NULL)
+        gpuErr(cudaFree(gpu.rotMats));
+    if (gpu.data!= NULL)
+        gpuErr(cudaFree(gpu.data));
+    if (gpu.out!= NULL)
+        gpuErr(cudaFree(gpu.out));
+    if (gpu.out_equation_two!= NULL)
+        gpuErr(cudaFree(gpu.out_equation_two));
+    if (gpu.densities!= NULL)
+        gpuErr(cudaFree(gpu.densities));
+    if (gpu.wts!= NULL)
+        gpuErr(cudaFree(gpu.wts));
 }
 
 __device__ __inline__ unsigned int get_densities_index(int i,int j,int k, int nx, int ny, int nz)

@@ -7,10 +7,9 @@
 #include <boost/python/numpy.hpp>
 #include <boost/python/args.hpp>
 #include <iostream>
+#include "cuda_trilerp.h"
 #define BOOST_LIB_NAME "boost_numpy"
 #include <boost/config/auto_link.hpp>
-
-#include "cuda_trilerp.h"
 namespace bp=boost::python;
 namespace np=boost::python::numpy;
 
@@ -36,17 +35,16 @@ class lerpyExt{
         contig_check(vals);
 
         np::dtype vals_t = vals.get_dtype();
-        int cu_size = sizeof(CUDAREAL);
         int vals_size = vals_t.get_itemsize();
-        bool types_agree= (cu_size != vals_size);
+        bool types_agree= (size_of_cudareal != vals_size);
 
         if (! types_agree){
-            if (sizeof(CUDAREAL)==4)
+            if (size_of_cudareal==4)
                 PyErr_SetString(PyExc_TypeError, "Array must of type CUDAREAL=float (np.float32)\n" );
-            else if (sizeof(CUDAREAL)==8)
+            else if (size_of_cudareal==8)
                 PyErr_SetString(PyExc_TypeError, "Array must of type CUDAREAL=double, (np.float64)\n" );
             else{
-                printf("sizeof(CUDAREAL) = %d\n", sizeof(CUDAREAL));
+                printf("sizeof(CUDAREAL) = %d\n", size_of_cudareal);
                 PyErr_SetString(PyExc_TypeError, "Array must of type CUDAREAL\n" );
             }
             bp::throw_error_already_set();
@@ -60,8 +58,6 @@ class lerpyExt{
         gpu.numDataPixels = numDataPix;
         gpu.maxNumQ = maxNumQ;
         gpu.maxNumRotInds = maxNumRotInds;
-        //TODO global verose flag
-        //printf("Determined number of rotations=%d\n", num_rot);
         gpu.corner[0] = bp::extract<double>(corner[0]);
         gpu.corner[1] = bp::extract<double>(corner[1]);
         gpu.corner[2] = bp::extract<double>(corner[2]);
@@ -71,7 +67,6 @@ class lerpyExt{
         gpu.delta[2] = bp::extract<double>(delta[2]);
         prepare_for_lerping( gpu, rotations, densities, qvecs);
     }
-    //inline void trilinear_interpolation(np::ndarray qvecs, bool verbose){
     inline void copy_pixels( np::ndarray& pixels){
         // assert len pixels matches up
         if (pixels.shape(0) != gpu.numQ){
@@ -170,7 +165,6 @@ class lerpyExt{
     inline void do_equation_two(np::ndarray rot_idx, bool verbose){
         int nrot = rot_idx.shape(0);
         std::vector<int> rot_inds;
-        // TODO: ensure rot_idx is of type np.int32
         for (int i_rot=0; i_rot < nrot; i_rot++)
             rot_inds.push_back(  bp::extract<int>(rot_idx[i_rot])  );
 
@@ -191,6 +185,10 @@ class lerpyExt{
     }
     inline void toggle_insert(){
         toggle_insert_mode(gpu);
+    }
+
+    inline void free(){
+        free_lerpy(gpu);
     }
 };
 
@@ -305,6 +303,8 @@ BOOST_PYTHON_MODULE(emc){
         .def("wts",
               &lerpyExt::get_wts,
               "get the density weights")
+
+        .def("free", &lerpyExt::free, "free the gpu")
         ;
 
     /* Orientation matching class */

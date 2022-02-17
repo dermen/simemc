@@ -8,7 +8,9 @@ from simtbx.diffBragg import utils as db_utils
 from libtbx.phil import parse
 
 from simemc import sim_const
+from simemc.emc import lerpy
 from simemc import const
+from cctbx import sgtbx
 
 
 def get_W_init(ndom=20):
@@ -78,13 +80,17 @@ def corners_and_deltas(shape, x_min, x_max):
     deltas = deltas.astype(np.float64)
     return corners, deltas
 
-def load_quat_file(quat_bin):
+def load_quat_file(quat_file, binary=True):
     """
     Load the data file written by Ti-Yen's quaternion grid sampler
     """
-    num_quat = np.fromfile(quat_bin, np.int32, 1)[0]
-    quat_data = np.fromfile(quat_bin, np.float64, offset=4)
-    quat_data = quat_data.reshape((num_quat, 5))
+    if binary:
+        num_quat = np.fromfile(quat_file, np.int32, 1)[0]
+        quat_data = np.fromfile(quat_file, np.float64, offset=4)
+        quat_data = quat_data.reshape((num_quat, 5))
+
+    else:
+        quat_data = np.loadtxt(quat_file, skiprows=1)
 
     # Convert these quats to rotation matrices using scipy
     rotMats = Rotation.from_quat(quat_data[:, :4]).as_matrix()
@@ -341,4 +347,46 @@ class RotInds(dict):
                 recv_from[tomo_manager]['comms_info'].append(recv_comms_info)
 
         return send_to, recv_from
+
+
+def symmetrize(density, symbol="P43212", dens_sh=(256,256,256), reshape=True):
+    """
+    :param density: can be 1d or 3d (usually 1d)
+    :param symbol: space group lookup symbol
+    :param dens_sh: 3d shape of density
+    """
+    sgi = sgtbx.space_group_info(symbol)
+    sg = sgtbx.space_group(sgi.type().hall_symbol())
+    O = sg.all_ops()
+    sym_rot_mats = []
+    for o in O:
+        r = o.r()
+        R = np.reshape( r.as_double(), (3,3))
+        sym_rot_mats.append(R)
+    sym_rot_mats = np.array(sym_rot_mats)
+
+    qvecs = np.vstack(tuple(map(lambda x: x.ravel(), np.meshgrid(const.QCENT, const.QCENT, const.QCENT) ))).T
+    L = lerpy()
+    num_data_pix = maxNumQ = const.NBINS**3
+    maxRotInds = len(sym_rot_mats)
+    corners, deltas = corners_and_deltas(dens_sh, const.X_MIN, const.X_MAX)
+    W = np.zeros(dens_sh)
+    dev_id = 0
+    L.allocate_lerpy(
+        dev_id, sym_rot_mats, W, int(maxNumQ),
+        tuple(corners), tuple(deltas), qvecs,
+        maxRotInds, int(num_data_pix))
+
+    L.toggle_insert()
+    for i in range(maxRotInds):
+        L.trilinear_insertion(i, density.ravel())
+
+    d = L.densities()
+    w = L.wts()
+    with np.errstate(divide='ignore',  invalid='ignore'):
+        d = np.nan_to_num(d / w)
+        if reshape:
+            d = d.reshape(dens_sh)
+    L.free()
+    return d
 

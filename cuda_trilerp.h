@@ -21,7 +21,6 @@ struct lerpy {
   int numDataPixels;
   VEC3* qVecs=NULL;
   CUDAREAL* out=NULL;
-  CUDAREAL* out2=NULL;
   CUDAREAL* out_equation_two=NULL;
   bp::list outList;
   int numQ;
@@ -50,6 +49,9 @@ void do_a_lerp(lerpy& gpu,
                bool verbose, int task);
 
 void toggle_insert_mode(lerpy& gpu);
+
+void free_lerpy(lerpy& gpu);
+
 
 
 struct gpuOrient {
