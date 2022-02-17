@@ -115,6 +115,7 @@ def test(maxRotInds=10):
     print("Took %.4f sec with CUDA" % t2)
     print("Took %.4f sec with fortran + openMP" % t)
 
+    L.free()
     print("OK!")
 
 
