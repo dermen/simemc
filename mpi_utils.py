@@ -57,7 +57,6 @@ def load_emc_input(input_dir, dt=None):
     inputNames_Shots_rank = [(input_h5, int(shot))
                              for input_h5, shot in inputNames_Shots_rank]
 
-
     my_open_h5,_ = map(set, zip(*inputNames_Shots_rank))
     printR("Need to open %d input emc files" % len(my_open_h5), flush=True)
     name_to_h5 = {}
@@ -73,7 +72,8 @@ def load_emc_input(input_dir, dt=None):
         name_to_h5[fname]['renorm'] = 1e2  # TODO add renorm to hdf5
         name_to_h5[fname]["correction"] = h['omega'][()]*h["polar"][()]
 
-    for fnames, i_shot in inputNames_Shots_rank:
+    n_to_load = len(inputNames_Shots_rank)
+    for fname, i_shot in inputNames_Shots_rank:
         h5 = name_to_h5[fname]['handle']
 
         # get the data
@@ -96,5 +96,6 @@ def load_emc_input(input_dir, dt=None):
 
         if dt is not None:
             data = data.astype(dt)
-        data = np.ascontiguousarray(data)
-        yield data, background, rot_inds, fname, i_shot
+        data = np.ascontiguousarray(data).ravel()
+        n_to_load = n_to_load -1
+        yield data, background, rot_inds, fname, i_shot, n_to_load
