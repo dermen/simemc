@@ -1,6 +1,6 @@
 
 from simemc.emc import lerpy
-from simemc.sim_geom import DET, BEAM
+from simemc.dragon_geom import DET, BEAM
 from simemc import const
 from scipy.spatial.transform import Rotation
 
