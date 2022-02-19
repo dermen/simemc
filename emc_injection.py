@@ -97,7 +97,7 @@ class _():
         rotMats = self.check_arrays(rotMats)
         densities = self.check_arrays(densities)
         qvecs = self.check_arrays(qvecs)
-        self._allocate_lerpy(dev_id, rotMats, densities, maxNumQ, corners, deltas, qvecs, maxNumRotInds, numDataPix)
+        self._allocate_lerpy(dev_id, rotMats, densities, maxNumQ, tuple(corners), tuple(deltas), qvecs, maxNumRotInds, numDataPix)
 
     def trilinear_insertion(self, rot_idx, vals, verbose=False):
         """
