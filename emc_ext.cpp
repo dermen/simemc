@@ -146,7 +146,7 @@ class lerpyExt{
         bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
         np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
         np::ndarray output = np::from_data(&gpu.densities[0], dt, shape, stride, bp::object());
-        return output;
+        return output.copy();
     }
 
     inline np::ndarray get_wts(){
@@ -159,7 +159,7 @@ class lerpyExt{
         bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
         np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
         np::ndarray output = np::from_data(&gpu.wts[0], dt, shape, stride, bp::object());
-        return output;
+        return output.copy();
     }
     
     inline void do_equation_two(np::ndarray rot_idx, bool verbose){
@@ -240,7 +240,7 @@ public:
         bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
         np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
         np::ndarray output = np::from_data(&gpu.out[0], dt, shape, stride, bp::object());
-        return output;
+        return output.copy();
     }
 
     inline bp::list listOrients(){
