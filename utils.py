@@ -80,17 +80,16 @@ def corners_and_deltas(shape, x_min, x_max):
     deltas = deltas.astype(np.float64)
     return corners, deltas
 
-def load_quat_file(quat_file, binary=True):
+def load_quat_file(quat_file):
     """
     Load the data file written by Ti-Yen's quaternion grid sampler
     """
-    if binary:
+    try:
+        quat_data = np.loadtxt(quat_file, skiprows=1)
+    except UnicodeDecodeError:
         num_quat = np.fromfile(quat_file, np.int32, 1)[0]
         quat_data = np.fromfile(quat_file, np.float64, offset=4)
         quat_data = quat_data.reshape((num_quat, 5))
-
-    else:
-        quat_data = np.loadtxt(quat_file, skiprows=1)
 
     # Convert these quats to rotation matrices using scipy
     rotMats = Rotation.from_quat(quat_data[:, :4]).as_matrix()
@@ -182,11 +181,14 @@ def insert_slice(K_t, qvecs, qbins):
     return result
 
 
-def save_qmap(output_file, Det, Beam, return_qmap=False):
+def save_qmap(output_file, Det, Beam):
+    qmap = calc_qmap(Det, Beam)
+    np.save(output_file, qmap)
+
+def calc_qmap(Det, Beam):
     """
     Qmap shape is (3, num_panels, slow_dim, fast_dim)
     Its assumed all pixels are square, and all panels have same slow,fast dims
-    :param output_file: name of file to store the qmap can be loaded with method load_qmap
     :param Det: dxtbx Detector model
     :param return_qmap: if true, return the qmap after computing
     :param Beam: dxtbx Beam model
@@ -221,7 +223,7 @@ def save_qmap(output_file, Det, Beam, return_qmap=False):
         qmap[1,pid,:,:] = Qy
         qmap[2,pid,:,:] = Qz
 
-    np.save(output_file, qmap)
+    return qmap
 
 
 def stills_process_params_from_file(phil_file):
@@ -390,3 +392,14 @@ def symmetrize(density, symbol="P43212", dens_sh=(256,256,256), reshape=True):
     L.free()
     return d
 
+def errdiv(v1, v2):
+    with np.errstate(divide='ignore', invalid='ignore'):
+        v3 = np.nan_to_num(v1 / v2)
+    return v3
+
+def qs_inbounds(qcoords, dens_sh, x_min, x_max):
+    corner,deltas = corners_and_deltas(dens_sh, x_min, x_max)
+    kji = np.floor((qcoords - corner) / deltas)
+    bad = np.logical_or(kji < 0, kji > dens_sh[0]-2)
+    inbounds = ~np.any(bad, axis=1)
+    return inbounds
