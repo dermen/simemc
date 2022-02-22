@@ -10,6 +10,7 @@ from libtbx.phil import parse
 from simemc import sim_const
 from simemc.emc import lerpy
 from simemc import const
+from reborn.misc.interpolate import trilinear_insertion, trilinear_interpolation
 from cctbx import sgtbx
 
 
@@ -351,7 +352,8 @@ class RotInds(dict):
         return send_to, recv_from
 
 
-def symmetrize(density, symbol="P43212", dens_sh=(256,256,256), reshape=True):
+def symmetrize(density, symbol="P43212", dens_sh=(256,256,256),
+               reshape=True, how=0, friedel=True):
     """
     :param density: can be 1d or 3d (usually 1d)
     :param symbol: space group lookup symbol
@@ -361,41 +363,108 @@ def symmetrize(density, symbol="P43212", dens_sh=(256,256,256), reshape=True):
     sg = sgtbx.space_group(sgi.type().hall_symbol())
     O = sg.all_ops()
     sym_rot_mats = []
+    sym_xyz = []
     for o in O:
         r = o.r()
         R = np.reshape( r.as_double(), (3,3))
         sym_rot_mats.append(R)
+        sym_xyz.append(r.as_xyz())
     sym_rot_mats = np.array(sym_rot_mats)
 
     qvecs = np.vstack(tuple(map(lambda x: x.ravel(), np.meshgrid(const.QCENT, const.QCENT, const.QCENT) ))).T
-    L = lerpy()
-    num_data_pix = maxNumQ = const.NBINS**3
-    maxRotInds = len(sym_rot_mats)
-    corners, deltas = corners_and_deltas(dens_sh, const.X_MIN, const.X_MAX)
-    W = np.zeros(dens_sh)
-    dev_id = 0
-    L.allocate_lerpy(
-        dev_id, sym_rot_mats, W, int(maxNumQ),
-        tuple(corners), tuple(deltas), qvecs,
-        maxRotInds, int(num_data_pix))
+    if how==0:
+        L = lerpy()
+        num_data_pix = maxNumQ = const.NBINS**3
+        maxRotInds = len(sym_rot_mats)
+        corners, deltas = corners_and_deltas(dens_sh, const.X_MIN, const.X_MAX)
+        W = np.zeros(dens_sh)
+        dev_id = 0
+        L.allocate_lerpy(
+            dev_id, sym_rot_mats, W, int(maxNumQ),
+            tuple(corners), tuple(deltas), qvecs,
+            maxRotInds, int(num_data_pix))
 
-    L.toggle_insert()
-    for i in range(maxRotInds):
-        L.trilinear_insertion(i, density.ravel())
+        L.toggle_insert()
+        for i in range(maxRotInds):
+            L.trilinear_insertion(i, density.ravel())
 
-    d = L.densities()
-    w = L.wts()
-    with np.errstate(divide='ignore',  invalid='ignore'):
-        d = np.nan_to_num(d / w)
-        if reshape:
-            d = d.reshape(dens_sh)
-    L.free()
+        d = L.densities()
+        w = L.wts()
+        with np.errstate(divide='ignore',  invalid='ignore'):
+            d = np.nan_to_num(d / w)
+            if reshape:
+                d = d.reshape(dens_sh)
+        L.free()
+    elif how==1:
+        A = np.zeros(dens_sh)
+        B = np.zeros(dens_sh)
+        for rot in sym_rot_mats:
+            qcoords_rot = np.dot( rot.T, qvecs.T).T
+            is_inbounds = qs_inbounds(qcoords_rot, dens_sh, const.X_MIN, const.X_MAX)
+            trilinear_insertion(
+                A,B,
+                vectors=np.ascontiguousarray(qcoords_rot[is_inbounds]),
+                insert_vals=density.ravel().astype(np.float64)[is_inbounds],
+                x_min=const.X_MIN, x_max=const.X_MAX)
+        d = errdiv(A,B)
+    else:
+        raise NotImplementedError("still working out the kinds of index-based symmetry")
+        d = np.zeros_like(density)
+        for ii, xyz in enumerate(sym_xyz):
+            xyz = xyz.split(',')
+            #a,b,c = xyz.split(',')
+
+            #s_put = [slice(None) for _ in range(3)]
+            swap=False
+            if 'y' in xyz[0]:
+                swap = True
+            invert_map = {'x':2, 'y':1, 'z':0}
+            invert = []
+            for v in xyz:
+                if v.startswith('-'):
+                    invert.append(invert_map[v[1]])
+            #invert = [invert_map[i_ax] for i_ax in range(3) if xyz[i_ax].startswith('-')]
+            #for i,x in enumerate((a,b,c)):
+            #    invert = False
+            #    if x.startswith('-'):
+            #        x = x[1]
+            #        invert = True
+            #    if invert:
+            #        s_put[i] = slice(density.shape[0],None,-1)
+            #    else:
+            #        s_put[i] = slice(0, density.shape[0], 1)
+
+            print(ii, xyz, invert, swap)
+            print("")
+            d_term = density.copy()
+            if invert:
+                d_term = np.flip(d_term, axis=tuple(invert))
+            if swap:
+                d_term = d_term.swapaxes(2,1)
+            d+= d_term
+            #if swap:
+            #    d = d.swapaxes(2,1)
+            #if invert:
+            #    d = np.flip(d, axis=tuple(invert))
+            #d += density
+            #if invert:
+            #    d = np.flip(d, axis=tuple(invert))
+            #if swap:
+            #    d = d.swapaxes(2,1)
+
+        d /= len(sym_xyz)
+
+    #if friedel:
+    #    d = 0.5*(d +np.flip(d))
+
     return d
+
 
 def errdiv(v1, v2):
     with np.errstate(divide='ignore', invalid='ignore'):
         v3 = np.nan_to_num(v1 / v2)
     return v3
+
 
 def qs_inbounds(qcoords, dens_sh, x_min, x_max):
     corner,deltas = corners_and_deltas(dens_sh, x_min, x_max)
