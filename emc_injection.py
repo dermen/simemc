@@ -73,8 +73,9 @@ class _():
         :return:
         """
         qvecs = self.check_arrays(qvecs)
-        return self._orient_peaks(qvecs, hcut, min_within, verbose)
-
+        is_prob = self._orient_peaks(qvecs, hcut, min_within, verbose)
+        probable_rot_inds = np.where(is_prob)[0]
+        return probable_rot_inds
 
 
 @bp.inject_into(emc.lerpy)

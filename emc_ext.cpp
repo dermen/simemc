@@ -235,10 +235,9 @@ public:
                          float hcut, int minWithinHcut, bool verbose){
         orientPeaks(gpu, qvecs, hcut, minWithinHcut, verbose);
 
-        int numQ = qvecs.shape(0)/3;
-        bp::tuple shape = bp::make_tuple(numQ);
-        bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
-        np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
+        bp::tuple shape = bp::make_tuple(gpu.numRot);
+        bp::tuple stride = bp::make_tuple(sizeof(bool));
+        np::dtype dt = np::dtype::get_builtin<bool>();
         np::ndarray output = np::from_data(&gpu.out[0], dt, shape, stride, bp::object());
         return output.copy();
     }
