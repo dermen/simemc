@@ -29,11 +29,8 @@ def _test_conventions(use_hist_method=True):
     maxRotInds = 10000
     max_num_strong_spots = 1000
 
-    print("loading qmap and image")
     qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
     qx,qy,qz = map(lambda x: x.ravel(), qmap)
-    #loader = dxtbx.load("../quick_sim/rank0/shot0.cbf")
-    #img = loader.get_raw_data().as_numpy_array()
     np.random.seed(0)
     C = sim_utils.random_crystal()
     print(C.get_U())
@@ -60,13 +57,13 @@ def _test_conventions(use_hist_method=True):
     xmax = [qcent[-1]] *3
     dens_shape = tuple([len(qbins)-1]*3)
     corner,deltas = utils.corners_and_deltas(dens_shape, xmin, xmax )
-    print("inserting slice")
     if use_hist_method:
         W = utils.insert_slice(img.ravel(), qcoords_rot, qbins)
     else:
-        kji = np.floor((qcoords_rot - corner) / deltas)
-        bad = np.logical_or(kji < 0, kji > dens_shape[0]-2)
-        good = ~np.any(bad, axis=1)
+        #kji = np.floor((qcoords_rot - corner) / deltas)
+        #bad = np.logical_or(kji < 0, kji > dens_shape[0]-2)
+        #good = ~np.any(bad, axis=1)
+        good = utils.qs_inbounds(qcoords_rot, dens_shape, const.X_MIN, const.X_MAX)
         densities = np.zeros(dens_shape)
         weights = np.zeros(dens_shape)
 
@@ -84,7 +81,6 @@ def _test_conventions(use_hist_method=True):
     rot_idx = 1
     rotMats[rot_idx] = Umat
 
-    print("Allocate a lerpy")
     L = lerpy()
     L.allocate_lerpy(gpu_device, rotMats, W, maxNumQ,
                      tuple(corner), tuple(deltas), qcoords,
@@ -107,6 +103,7 @@ def _test_conventions(use_hist_method=True):
             assert pearsonr(W[W> 0], W2[W2 > 0])[0] > 0.99
 
     L.update_density(W)
+
 
     print("Copy image data to lerpy")
     L.copy_image_data(img.ravel())
