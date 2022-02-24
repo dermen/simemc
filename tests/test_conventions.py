@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 from scipy.stats import pearsonr
-from dxtbx.model import Crystal
 from dials.array_family import flex
 from dxtbx.model import ExperimentList, Experiment
 
@@ -43,26 +42,16 @@ def _test_conventions(use_hist_method=True):
         xtal_size=0.002, outfile=None, background=0, just_return_img=True )
 
     qcoords = np.vstack((qx,qy,qz)).T
-    Amat = np.reshape(C.get_A(), (3,3))
 
-    real_a, real_b, real_c = map(tuple, np.linalg.inv(Amat) )
-    cdict = {"real_space_a": real_a, "real_space_b": real_b, "real_space_c": real_c, "space_group_hall_symbol": "-P 4 2", "__id__": "crystal"}
-    C = Crystal.from_dict(cdict)
     Umat = np.reshape(C.get_U(), (3,3))
     qcoords_rot = np.dot( Umat.T, qcoords.T).T
     qbins = const.QBINS
-    qcent = (qbins[:-1] + qbins[1:])*.5
     maxNumQ = qcoords_rot.shape[0]
-    xmin = [qcent[0]] *3
-    xmax = [qcent[-1]] *3
-    dens_shape = tuple([len(qbins)-1]*3)
-    corner,deltas = utils.corners_and_deltas(dens_shape, xmin, xmax )
+    dens_shape = const.DENSITY_SHAPE
+    corner,deltas = utils.corners_and_deltas(dens_shape, const.X_MIN, const.X_MAX )
     if use_hist_method:
         W = utils.insert_slice(img.ravel(), qcoords_rot, qbins)
     else:
-        #kji = np.floor((qcoords_rot - corner) / deltas)
-        #bad = np.logical_or(kji < 0, kji > dens_shape[0]-2)
-        #good = ~np.any(bad, axis=1)
         good = utils.qs_inbounds(qcoords_rot, dens_shape, const.X_MIN, const.X_MAX)
         densities = np.zeros(dens_shape)
         weights = np.zeros(dens_shape)
@@ -70,7 +59,7 @@ def _test_conventions(use_hist_method=True):
         trilinear_insertion(
             densities, weights,
             vectors=np.ascontiguousarray(qcoords_rot[good]),
-            insert_vals=img.ravel()[good],  x_min=xmin, x_max=xmax)
+            insert_vals=img.ravel()[good],  x_min=const.X_MIN, x_max=const.X_MAX)
 
         with np.errstate(divide="ignore", invalid="ignore"):
             W = np.nan_to_num(densities / weights)
@@ -86,9 +75,7 @@ def _test_conventions(use_hist_method=True):
                      tuple(corner), tuple(deltas), qcoords,
                      maxRotInds, Npix)
     L.toggle_insert()
-    tinsert = time.time()
     L.trilinear_insertion(rot_idx, img)
-    tinsert = time.time()-tinsert
 
     with np.errstate(divide='ignore', invalid='ignore'):
         W2 = np.nan_to_num(L.densities()/ L.wts())
@@ -137,7 +124,7 @@ def _test_conventions(use_hist_method=True):
     qvecs = R['rlp'].as_numpy_array()
 
     prob_rot = O.orient_peaks(qvecs.ravel(), hcut, minPred, True)
-    # rotation index 0 (ground truth) should definitely be in the prob_rot list
+    # rotation index (ground truth) should definitely be in the prob_rot list
     assert rot_idx in prob_rot
     print("OK")
 
