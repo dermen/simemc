@@ -8,10 +8,64 @@ from simtbx.diffBragg import utils as db_utils
 from libtbx.phil import parse
 
 from simemc import sim_const
-from simemc.emc import lerpy
+try:
+    from simemc.emc import lerpy
+except ImportError:
+    lerpy = None
 from simemc import const
 from reborn.misc.interpolate import trilinear_insertion, trilinear_interpolation
 from cctbx import sgtbx
+
+
+
+def integrate_W(W):
+    a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
+    V = np.dot(a1, np.cross(a2,a3))
+    b1 = np.cross(a2,a3)/V
+    b2 = np.cross(a3,a1)/V
+    b3 = np.cross(a1,a2)/V
+
+    astar=np.linalg.norm(b1)
+    bstar=np.linalg.norm(b2)
+    cstar=np.linalg.norm(b3)
+
+    qX,qY,qZ = np.meshgrid(*([const.QCENT]*3), indexing='ij')
+
+    frac_h = qX / astar
+    frac_k = qY/ bstar
+    frac_l = qZ/ cstar
+
+    H = np.ceil(frac_h-0.5)
+    K = np.ceil(frac_k-0.5)
+    L = np.ceil(frac_l-0.5)
+    
+    hvals = np.arange(-H.max()+1, H.max(),1)
+    kvals = np.arange(-K.max()+1, K.max(),1)
+    lvals = np.arange(-L.max()+1, L.max(),1)
+
+    avals = hvals*astar
+    bvals = kvals*bstar
+    cvals = lvals*cstar
+
+    aidx = [np.argmin(np.abs(const.QCENT-a)) for a in avals]
+    bidx = [np.argmin(np.abs(const.QCENT-b)) for b in bvals]
+    cidx = [np.argmin(np.abs(const.QCENT-c)) for c in cvals]
+
+    hvals = hvals.astype(np.int32)
+    kvals = kvals.astype(np.int32)
+    lvals = lvals.astype(np.int32)
+
+    Ivals = []
+    hkl_idx = []
+    for a,h in zip(aidx, hvals):
+        for b,k in zip(bidx, kvals):
+            for c,l in zip(cidx, lvals):
+                hkl_idx.append( (h,k,l))
+                val = W[a,b,c] + W[a-1,b,c] + W[a+1,b,c] + \
+                    W[a,b-1,c] + W[a,b+1,c] + W[a,b,c-1] + W[a,b,c+1]
+                Ivals.append(val)
+
+    return hkl_idx, Ivals
 
 
 def get_W_init(ndom=20):
@@ -197,7 +251,7 @@ def calc_qmap(Det, Beam):
     # TODO generalize for panel thickness
     panel_fdim, panel_sdim = Det[0].get_image_size()
     num_panels = len(Det)
-    image_sh = num_panels, panel_sdim, panel_sdim
+    image_sh = num_panels, panel_sdim, panel_fdim
 
     Ki = np.array(Beam.get_unit_s0())
     wave = Beam.get_wavelength()
@@ -359,6 +413,9 @@ def symmetrize(density, symbol="P43212", dens_sh=(256,256,256),
     :param symbol: space group lookup symbol
     :param dens_sh: 3d shape of density
     """
+    if how==0:
+        if lerpy is None:
+            raise ImportError("emc extension module failed to load")
     sgi = sgtbx.space_group_info(symbol)
     sg = sgtbx.space_group(sgi.type().hall_symbol())
     O = sg.all_ops()
@@ -454,8 +511,8 @@ def symmetrize(density, symbol="P43212", dens_sh=(256,256,256),
 
         d /= len(sym_xyz)
 
-    #if friedel:
-    #    d = 0.5*(d +np.flip(d))
+    if friedel:
+        d = 0.5*(d +np.flip(d))
 
     return d
 
