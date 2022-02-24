@@ -5,23 +5,20 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
 from scipy.stats import pearsonr
-import dxtbx
 from dxtbx.model import Crystal
 from dials.array_family import flex
 from dxtbx.model import ExperimentList, Experiment
 
 from reborn.misc.interpolate import trilinear_insertion
-from simemc import utils, const
+from simemc import utils, const, sim_utils, sim_const
 from simemc.emc import probable_orients, lerpy
 
 
-@pytest.mark.skip(reason="test currently depends on hard-coded paths")
 @pytest.mark.mpi_skip()
 def test_conventions_reborn_insert():
     _test_conventions(False)
 
 
-@pytest.mark.skip(reason="test currently depends on hard-coded paths")
 def test_conventions_hist_insert():
     _test_conventions(True)
 
@@ -33,12 +30,23 @@ def _test_conventions(use_hist_method=True):
     max_num_strong_spots = 1000
 
     print("loading qmap and image")
-    qx,qy,qz =utils.load_qmap("../qmap.npy")
+    qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
+    qx,qy,qz = map(lambda x: x.ravel(), qmap)
+    #loader = dxtbx.load("../quick_sim/rank0/shot0.cbf")
     #img = loader.get_raw_data().as_numpy_array()
-    loader = dxtbx.load("../quick_sim/rank0/shot0.cbf")
-    img = loader.get_raw_data().as_numpy_array()
+    np.random.seed(0)
+    C = sim_utils.random_crystal()
+    print(C.get_U())
+
+    SIM = sim_utils.get_noise_sim(0)
+    Famp = sim_utils.get_famp()
+    img = sim_utils.synthesize_cbf(
+        SIM, C, Famp,
+        dev_id=0,
+        xtal_size=0.002, outfile=None, background=0, just_return_img=True )
+
     qcoords = np.vstack((qx,qy,qz)).T
-    Amat = np.load("../quick_sim/rank0/shot0.npz")["A"].reshape((3,3))
+    Amat = np.reshape(C.get_A(), (3,3))
 
     real_a, real_b, real_c = map(tuple, np.linalg.inv(Amat) )
     cdict = {"real_space_a": real_a, "real_space_b": real_b, "real_space_c": real_c, "space_group_hall_symbol": "-P 4 2", "__id__": "crystal"}
@@ -72,22 +80,18 @@ def _test_conventions(use_hist_method=True):
 
     Npix = maxNumQ
 
-    rotMats = Rotation.random(num_rot_mats, random_state=0).as_matrix()
-    rotMats[0] = Umat
+    rotMats = Rotation.random(num_rot_mats).as_matrix()
+    rot_idx = 1
+    rotMats[rot_idx] = Umat
 
     print("Allocate a lerpy")
     L = lerpy()
     L.allocate_lerpy(gpu_device, rotMats, W, maxNumQ,
                      tuple(corner), tuple(deltas), qcoords,
                      maxRotInds, Npix)
-    # get the interpolated values for rot mat 0
-    Umat_idx = 0
-    img2 = L.trilinear_interpolation(Umat_idx,True).reshape(img.shape)
-
-
     L.toggle_insert()
     tinsert = time.time()
-    L.trilinear_insertion(0, img)
+    L.trilinear_insertion(rot_idx, img)
     tinsert = time.time()-tinsert
 
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -111,7 +115,7 @@ def _test_conventions(use_hist_method=True):
     L.equation_two(inds)
     Rdr = L.get_out()
     # the first rotation matrix is the ground truth:
-    assert np.argmax(Rdr)==0
+    assert np.argmax(Rdr)==rot_idx
 
     # see if the strong spots are enough to determine the most probable orientation
     O = probable_orients()
@@ -125,12 +129,10 @@ def _test_conventions(use_hist_method=True):
     R = flex.reflection_table.from_file("../quick_sim/proc/strong_idx-shot0.refl")
     minPred=3
     hcut=0.05
-    Det = loader.get_detector()
-    Beam = loader.get_beam()
     El = ExperimentList()
     E = Experiment()
-    E.detector= Det
-    E.beam = Beam
+    E.detector= sim_const.DETECTOR
+    E.beam = sim_const.BEAM
     El.append(E)
     R.centroid_px_to_mm(El)
     R.map_centroids_to_reciprocal_space(El)
@@ -139,7 +141,7 @@ def _test_conventions(use_hist_method=True):
 
     prob_rot = O.orient_peaks(qvecs.ravel(), hcut, minPred, True)
     # rotation index 0 (ground truth) should definitely be in the prob_rot list
-    assert 0 in prob_rot
+    assert rot_idx in prob_rot
     print("OK")
 
 
