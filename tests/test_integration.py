@@ -5,7 +5,9 @@ from simtbx.diffBragg import utils as db_utils
 from scipy.stats import pearsonr
 import numpy as np
 
+import pytest
 
+@pytest.mark.mpi_skip()
 def test():
     gpu_device = 0
     maxRotInds = 10000

@@ -18,6 +18,7 @@ def test_conventions_reborn_insert():
     _test_conventions(False)
 
 
+@pytest.mark.mpi_skip()
 def test_conventions_hist_insert():
     _test_conventions(True)
 

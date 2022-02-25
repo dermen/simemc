@@ -3,7 +3,10 @@ from simemc.emc import lerpy
 from simemc.dragon_geom import DET, BEAM
 from simemc import const
 from scipy.spatial.transform import Rotation
+import pytest
 
+
+@pytest.mark.mpi_skip()
 def test():
     L = lerpy()
     dev_id = 0
