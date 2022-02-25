@@ -1,5 +1,3 @@
-from mpi4py import MPI
-COMM = MPI.COMM_WORLD
 import numpy as np
 import pytest
 
@@ -14,6 +12,8 @@ def test_send_recv_pattern():
     this form of communication occurs in each emc iteration
     when computing te tomograms from images that exist on separate MPI ranks
     """
+    from mpi4py import MPI
+    COMM = MPI.COMM_WORLD
     assert COMM.size > 1
     np.random.seed(COMM.rank)
     nsend = 25

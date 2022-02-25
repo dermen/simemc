@@ -4,12 +4,15 @@ import os
 import h5py
 import glob
 import numpy as np
+from simtbx.diffBragg import mpi_logger
+import logging
 
 from dxtbx.model import ExperimentList
 from simtbx.diffBragg.utils import image_data_from_expt
 
 
 from simemc.compute_radials import RadPros
+import logging
 
 
 def print0(*args, **kwargs):
@@ -37,7 +40,7 @@ def make_dir(dirname):
     COMM.barrier()
 
 
-def load_emc_input(input_dir, dt=None):
+def load_emc_input(input_dir, dt=None, max_num=None):
     RENORM = 169895.59872560613 / 100
     inputNames_Shots = None
     if COMM.rank==0:
@@ -49,6 +52,9 @@ def load_emc_input(input_dir, dt=None):
             expt_names = h['expts'][()]
             N = len(expt_names)
             inputNames_Shots += list(zip([f]*N, list(range(N))))
+        if max_num is not None:
+            assert max_num <= len(inputNames_Shots)
+            inputNames_Shots = inputNames_Shots[:max_num]
         ntot = len(inputNames_Shots)
         printR("Found %d total expst to load" % ntot, flush=True)
     inputNames_Shots = COMM.bcast(inputNames_Shots)
@@ -99,3 +105,67 @@ def load_emc_input(input_dir, dt=None):
         data = np.ascontiguousarray(data).ravel()
         n_to_load = n_to_load -1
         yield data, background, rot_inds, fname, i_shot, n_to_load
+
+
+
+def setup_profile_log_files(logdir, name='simemc.profile', overwrite=True):
+    """params: PHIL params, see simtbx.diffBragg.hopper phil string"""
+    make_dir(logdir)
+
+    mpi_logger._make_logger(name,
+                 os.path.join(logdir, mpi_logger.HOST+"-profile"),
+                 level=logging.INFO,
+                 overwrite=overwrite,
+                 formatter=logging.Formatter(mpi_logger.SIMPLE_FORMAT))
+
+
+
+def print_profile(stats, timed_methods, loggerName='simemc.profile'):
+    #PROFILE_LOGGER = logging.getLogger(loggerName)
+    for method in stats.timings.keys():
+        filename, header_ln, name = method
+        if name not in timed_methods:
+            continue
+        info = stats.timings[method]
+        printR("\n")
+        printR("FILE: %s" % filename)
+        if not info:
+            #PROFILE_LOGGER.info("<><><><><><><><><><><><><><><><><><><><><><><>")
+            #PROFILE_LOGGER.info("METHOD %s : Not profiled because never called" % (name))
+            #PROFILE_LOGGER.info("<><><><><><><><><><><><><><><><><><><><><><><>")
+            continue
+        unit = stats.unit
+
+        line_nums, ncalls, timespent = zip(*info)
+        fp = open(filename, 'r').readlines()
+        total_time = sum(timespent)
+        header_line = fp[header_ln-1][:-1]
+        #PROFILE_LOGGER.info(header_line)
+        #PROFILE_LOGGER.info("TOTAL FUNCTION TIME: %f ms" % (total_time*unit*1e3))
+        #PROFILE_LOGGER.info("<><><><><><><><><><><><><><><><><><><><><><><>")
+        #PROFILE_LOGGER.info("%5s%14s%9s%10s" % ("Line#", "Time", "%Time", "Line" ))
+        #PROFILE_LOGGER.info("%5s%14s%9s%10s" % ("", "(ms)", "", ""))
+        #PROFILE_LOGGER.info("<><><><><><><><><><><><><><><><><><><><><><><>")
+        print(header_line)
+        printR("TOTAL FUNCTION TIME: %f ms" % (total_time*unit*1e3))
+        printR("<><><><><><><><><><><><><><><><><><><><><><><>")
+        printR("%5s%14s%9s%10s" % ("Line#", "Time", "%Time", "Line" ))
+        printR("%5s%14s%9s%10s" % ("", "(ms)", "", ""))
+        printR("<><><><><><><><><><><><><><><><><><><><><><><>")
+        for i_l, l in enumerate(line_nums):
+            frac_t = timespent[i_l] / total_time * 100.
+            line = fp[l-1][:-1]
+            #PROFILE_LOGGER.info("%5d%14.2f%9.2f%s" % (l, timespent[i_l]*unit*1e3, frac_t, line))
+            printR("%5d%14.2f%9.2f%s" % (l, timespent[i_l]*unit*1e3, frac_t, line))
+
+
+def do_emc(L, shots, prob_rots):
+    """
+    run emc, the resulting density is stored in the L (emc.lerpy) object
+    see call to this method in ests/test_emc_iteration
+    :param L: instance of emc.lerpy in insert mode
+    :param shots: array of images (Nshot, Npanel, slowDim, fastDim)
+    :param prob_rots: list of array containing indices of probable orientations
+    :return: optimized density. Also L instance should be modified in-place
+    """
+    raise NotImplementedError()
