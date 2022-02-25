@@ -109,7 +109,7 @@ class _():
         :return:
         """
         vals = self.check_arrays(vals)
-        self._trilinear_insertion(rot_idx, vals, verbose)
+        self._trilinear_insertion(int(rot_idx), vals, verbose)
 
     def update_density(self, new_dens):
         """
