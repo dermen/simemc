@@ -4,6 +4,8 @@ import numpy as np
 
 from simemc import emc
 
+from simemc import utils
+
 
 def add_check_arrays(cls):
     """
@@ -77,7 +79,6 @@ class _():
         probable_rot_inds = np.where(is_prob)[0]
         return probable_rot_inds
 
-
 @bp.inject_into(emc.lerpy)
 @add_check_arrays
 class _():
@@ -97,8 +98,12 @@ class _():
         """
         rotMats = self.check_arrays(rotMats)
         densities = self.check_arrays(densities)
-        qvecs = self.check_arrays(qvecs)
-        self._allocate_lerpy(dev_id, rotMats, densities, maxNumQ, tuple(corners), tuple(deltas), qvecs, maxNumRotInds, numDataPix)
+        #qvecs = self.check_arrays(qvecs)
+        self.qvecs = self.check_arrays(qvecs)
+        self._allocate_lerpy(dev_id, rotMats, densities, maxNumQ, tuple(corners), tuple(deltas), self.qvecs, maxNumRotInds, numDataPix)
+
+    def trilinear_interpolation(self, rot_idx, verbose=False):
+        return self._trilinear_interpolation(int(rot_idx), verbose)
 
     def trilinear_insertion(self, rot_idx, vals, verbose=False):
         """
@@ -113,10 +118,14 @@ class _():
 
     def update_density(self, new_dens):
         """
-
         :param new_dens:
         :return:
         """
+        new_dens = self.check_arrays(new_dens)
+        self._update_density(new_dens)
+
+    def normalize_density(self):
+        new_dens = utils.errdiv(self.densities(), self.wts())
         new_dens = self.check_arrays(new_dens)
         self._update_density(new_dens)
 

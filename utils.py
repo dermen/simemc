@@ -5,6 +5,8 @@ from simemc.compute_radials import RadPros
 from dials.command_line.stills_process import phil_scope
 from dxtbx.model import ExperimentList
 from simtbx.diffBragg import utils as db_utils
+from dials.array_family import flex
+from dials.algorithms.spot_finding.factory import SpotFinderFactory
 from libtbx.phil import parse
 
 from simemc import sim_const
@@ -15,7 +17,59 @@ except ImportError:
 from simemc import const
 from reborn.misc.interpolate import trilinear_insertion, trilinear_interpolation
 from cctbx import sgtbx
+from scipy import ndimage as ni
+from dials.algorithms.spot_finding.factory import FilterRunner
+from dials.model.data import PixelListLabeller, PixelList
+from dials.algorithms.spot_finding.finder import pixel_list_to_reflection_table
 
+
+def whole_punch_W(W, width=1):
+    """
+    set all values far from the Bragg peaks to 0
+    :param W: input density
+    :param width: increase the width to increase the size of the Bragg peaks
+        The unit is arbitrary, 0 would is a single pixel at every Bragg peaks
+        1 keeps 17(?) pixels at every Bragg peak
+    :return: W with 0s in between the Bragg reflections
+    """
+    a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
+    V = np.dot(a1, np.cross(a2,a3))
+    b1 = np.cross(a2,a3)/V
+    b2 = np.cross(a3,a1)/V
+    b3 = np.cross(a1,a2)/V
+
+    astar=np.linalg.norm(b1)
+    bstar=np.linalg.norm(b2)
+    cstar=np.linalg.norm(b3)
+
+    qX,qY,qZ = np.meshgrid(*([const.QCENT]*3), indexing='ij')
+
+    frac_h = qX / astar
+    frac_k = qY/ bstar
+    frac_l = qZ/ cstar
+
+    H = np.ceil(frac_h-0.5)
+    K = np.ceil(frac_k-0.5)
+    L = np.ceil(frac_l-0.5)
+
+    hvals = np.arange(-H.max()+1, H.max(),1)
+    kvals = np.arange(-K.max()+1, K.max(),1)
+    lvals = np.arange(-L.max()+1, L.max(),1)
+
+    avals = hvals*astar
+    bvals = kvals*bstar
+    cvals = lvals*cstar
+
+    aidx = [np.argmin(np.abs(const.QCENT-a)) for a in avals]
+    bidx = [np.argmin(np.abs(const.QCENT-b)) for b in bvals]
+    cidx = [np.argmin(np.abs(const.QCENT-c)) for c in cvals]
+
+    Imap = np.zeros((256,256,256),bool)
+    A,B,C = np.meshgrid(aidx, bidx, cidx, indexing='ij')
+    Imap[A,B,C] = True
+    Imap = ni.binary_dilation(Imap.astype(bool), iterations=width)
+    Imap = Imap.reshape(W.shape)
+    return W*Imap
 
 
 def integrate_W(W):
@@ -109,10 +163,6 @@ def get_W_init(ndom=20):
     W_init = np.exp(-hkl_rad_sq*2/0.63)
 
     return W_init
-
-
-if __name__=="__main__":
-    get_W_init()
 
 
 def corners_and_deltas(shape, x_min, x_max):
@@ -334,6 +384,24 @@ def load_geom(input_geo, strip_thick=True):
 
 class RotInds(dict):
 
+    #def __init__(self, *args, **kwargs):
+    #    super().__init__(*args, **kwargs)
+
+    def add_record(self, rot_ind, i_data, rank, P_dr):
+        if rot_ind not in self:
+            self[rot_ind] = {}
+            self[rot_ind]["i_data"] = []
+            self[rot_ind]["rank"] = []
+            self[rot_ind]["P_dr"] = []
+        self[rot_ind]["i_data"].append(i_data)
+        self[rot_ind]["rank"].append(rank)
+        self[rot_ind]["P_dr"].append(P_dr)
+
+    def iter_record(self, rot_ind):
+        rec = self[rot_ind]
+        for i_data, rank, P_dr in zip(rec["i_data"], rec["rank"], rec["P_dr"]):
+            yield i_data, rank, P_dr
+
     def merge(self, other):
         for rot_ind in other:
             if rot_ind not in self:
@@ -529,3 +597,76 @@ def qs_inbounds(qcoords, dens_sh, x_min, x_max):
     bad = np.logical_or(kji < 0, kji > dens_sh[0]-2)
     inbounds = ~np.any(bad, axis=1)
     return inbounds
+
+
+def dials_find_spots(data_img, params, trusted_flags=None):
+    """
+
+    :param data_img: numpy array image
+    :param params: instance of stills_process params.spotfinder
+    :param trusted_flags:
+    :return:
+    """
+    if trusted_flags is None:
+        trusted_flags = np.ones(data_img.shape, bool)
+    thresh = SpotFinderFactory.configure_threshold(params)
+    flex_data = flex.double(np.ascontiguousarray(data_img))
+    flex_trusted_flags = flex.bool(np.ascontiguousarray(trusted_flags))
+    spotmask = thresh.compute_threshold(flex_data, flex_trusted_flags)
+    return spotmask.as_numpy_array()
+
+
+def refls_from_sims(panel_imgs, detector, beam, thresh=0, filter=None, panel_ids=None,
+                    max_spot_size=1000, phil_file=None, **kwargs):
+    """
+    This is for converting the centroids in the noiseless simtbx images
+    to a multi panel reflection table
+    :param panel_imgs: list or 3D array of detector panel simulations
+    :param detector: dxtbx  detector model of a caspad
+    :param beam:  dxtxb beam model
+    :param thresh: threshol intensity for labeling centroids
+    :param filter: optional filter to apply to images before
+        labeling threshold, typically one of scipy.ndimage's filters
+    :param pids: panel IDS , else assumes panel_imgs is same length as detector
+    :param kwargs: kwargs to pass along to the optional filter
+    :return: a reflection table of spot centroids
+    """
+    if panel_ids is None:
+        panel_ids = np.arange(len(detector))
+    pxlst_labs = []
+    for i, pid in enumerate(panel_ids):
+        plab = PixelListLabeller()
+        img = panel_imgs[i]
+        if phil_file is not None:
+            params = stills_process_params_from_file(phil_file)
+            mask = dials_find_spots(img, params)
+        elif filter is not None:
+            mask = filter(img, **kwargs) > thresh
+        else:
+            mask = img > thresh
+        img_sz = detector[int(pid)].get_image_size()  # for some reason the int cast is necessary in Py3
+        flex_img = flex.double(img)
+        flex_img.reshape(flex.grid(img_sz))
+
+        flex_mask = flex.bool(mask)
+        flex_mask.resize(flex.grid(img_sz))
+        pl = PixelList(0, flex.double(img), flex.bool(mask))
+        plab.add(pl)
+
+        pxlst_labs.append(plab)
+
+    El = db_utils.explist_from_numpyarrays(panel_imgs, detector, beam)
+    iset = El.imagesets()[0]
+    refls = pixel_list_to_reflection_table(
+        iset, pxlst_labs,
+        min_spot_size=1,
+        max_spot_size=max_spot_size,  # TODO: change this ?
+        filter_spots=FilterRunner(),  # must use a dummie filter runner!
+        write_hot_pixel_mask=False)[0]
+    if phil_file is not None:
+        x,y,z = refls['xyzobs.px.value'].parts()
+        x -=0.5
+        y -=0.5
+        refls['xyzobs.px.value'] = flex.vec3_double(x,y,z)
+
+    return refls

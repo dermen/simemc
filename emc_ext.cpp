@@ -105,7 +105,7 @@ class lerpyExt{
         bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
         np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
         np::ndarray output = np::from_data(&gpu.out[0], dt, shape, stride, bp::object());
-        return output;
+        return output.copy();
     }
     
     inline void trilinear_insertion(int rot_idx, np::ndarray vals, bool verbose){
@@ -275,7 +275,7 @@ BOOST_PYTHON_MODULE(emc){
         
         .def ("toggle_insert", &lerpyExt::toggle_insert, "Prepare for trilinear insertions.")
 
-        .def("trilinear_interpolation",
+        .def("_trilinear_interpolation",
              &lerpyExt::trilinear_interpolation,
              (bp::arg("rot_idx"), bp::arg("verbose")=true),
              "interpolate the qvecs according to the supplied densities")
