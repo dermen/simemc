@@ -73,9 +73,6 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
             dev_id=dev_id,
             xtal_size=0.002, outfile=None, background=water, just_return_img=True )
 
-        #img = img*correction
-        #np.save("img%d" % i_shot,img)
-
         if rots_from_grid:
             this_ranks_rot_indices.append(rot_idx)
         this_ranks_imgs.append(np.array([img], np.float32))
@@ -85,9 +82,6 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
     max_num_strong_spots = 1000
     O.allocate_orientations(dev_id, rots.ravel(), max_num_strong_spots)
     O.Bmatrix = sim_const.CRYSTAL.get_B()
-
-    #min_pred=7
-    #hcut=0.03
 
     this_ranks_prob_rot =[]
     for i_img, img in enumerate(this_ranks_imgs):
@@ -163,49 +157,14 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
         den = utils.errdiv(den, wts)
         L.update_density(den)
 
-
-    beta_init = 0.001
     beta_init = 1
     emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
                         min_p=1e-6,
                         outdir=outdir,
                         beta=beta_init)
-    #plot_models(emc, init=True)
     init_models = emc.success_rate(init=True, return_models=True)
     emc.do_emc(niter)
     models = emc.success_rate(init=False, return_models=True)
-    #from IPython import embed;embed()
-    #exit()
-
-    #plot_models(emc)
-    #from IPython import embed;embed()
-    #from scipy.stats import pearsonr
-    #for i_shot in range(emc.nshots):
-    #    pvals = emc.shot_P_dr[i_shot]
-    #    order = np.argsort(pvals)[::-1]
-
-    #    i_max_p = np.argmax(pvals)
-    #    rot_ind_with_max_p = emc.prob_rots[i_shot][i_max_p]
-    #    model = emc.L.trilinear_interpolation(rot_ind_with_max_p)
-    #    data = emc.shots[i_shot].ravel()
-    #    sel = data > 0
-    #    c = pearsonr(data[sel], model[sel])[0]
-    #    print(c, max(pvals))
-
-
-
-
-    #emc.gt_inds = this_ranks_rot_indices
-    #for be in 0.001, 0.01, 0.1, 1:
-    #    emc.outdir="beta_" + str(be)
-    #    emc.beta=be
-    #    emc.do_emc(20)
-    #emc.do_emc(10)
-    #emc.beta=0.1
-    #emc.do_emc(10)
-    #emc.beta=1
-    #emc.do_emc(10)
-
     print0("OK")
 
 
