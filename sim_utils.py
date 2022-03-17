@@ -74,12 +74,11 @@ def synthesize_cbf(
     noise_sim.raw_pixels += flex.double((img_with_bg).ravel())
     noise_sim.add_noise()
 
-    if just_return_img:
-        return noise_sim.raw_pixels.as_numpy_array()
-    else:
+    if not just_return_img:
         noise_sim.to_cbf(outfile)
         np.savez(outfile+".npz",
                  A=CRYSTAL.get_A(), B=CRYSTAL.get_B(), U=CRYSTAL.get_U())
+    return noise_sim.raw_pixels.as_numpy_array()
 
 
 def get_water_scattering():

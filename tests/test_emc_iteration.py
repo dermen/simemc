@@ -19,7 +19,7 @@ printR = mpi_utils.printRf
 @pytest.mark.skip(reason="in development")
 @pytest.mark.mpi(min_size=1)
 def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with_relp=False, outdir=None,
-                       add_water=False, niter=100, phil_file=None, min_pred=7, hcut=0.03):
+                       add_water=False, niter=100, phil_file=None, min_pred=7, hcut=0.03, cbfdir=None, xtal_size=0.002):
     from mpi4py import MPI
     COMM = MPI.COMM_WORLD
     np.random.seed(COMM.rank)
@@ -58,6 +58,9 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
         correction = radProMaker.POLAR * radProMaker.OMEGA
         correction /= correction.mean()
 
+    gt_rots = []
+    if cbfdir is not None:
+        mpi_utils.make_dir(cbfdir)
     for i_shot in range(nshot):
         if i_shot % COMM.size != COMM.rank:
             continue
@@ -68,14 +71,24 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
         if rots_from_grid:
             Umat = rots[rot_idx]
             C.set_U(Umat.ravel())
+        gt_rots.append(np.reshape(C.get_U(), (3,3)))
+        outfile = None
+        if cbfdir is not None:
+            outfile = os.path.join(cbfdir, "shot%d.cbf" % i_shot)
         img = sim_utils.synthesize_cbf(
             SIM, C, Famp,
             dev_id=dev_id,
-            xtal_size=0.002, outfile=None, background=water, just_return_img=True )
+            xtal_size=xtal_size, outfile=outfile,
+            background=water, just_return_img=outfile is None )
 
         if rots_from_grid:
             this_ranks_rot_indices.append(rot_idx)
         this_ranks_imgs.append(np.array([img], np.float32))
+    #COMM.barrier()
+    #exit()
+
+    gt_rots = np.array(gt_rots)
+
 
     rots = rots.astype(np.float32)
     O = probable_orients()
@@ -102,7 +115,7 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
             R = db_utils.refls_from_sims(img, sim_const.DETECTOR, sim_const.BEAM)
 
         qvecs = db_utils.refls_to_q(R, sim_const.DETECTOR, sim_const.BEAM)
-        qvecs = qvecs.astype(np.float32)
+        qvecs = qvecs.astype(O.array_type)
         prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
         print0("%d probable rots on shot " % len(prob_rot))
         if rots_from_grid:
@@ -112,50 +125,75 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
         this_ranks_prob_rot.append(prob_rot)
     O.free_device()
 
-    # Now, assemble a starting point
-    if start_with_relp:
+    Winit = np.zeros(const.DENSITY_SHAPE, np.float32)
+
+    qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
+    qx,qy,qz = map(lambda x: x.ravel(), qmap)
+    corner, deltas = utils.corners_and_deltas(const.DENSITY_SHAPE, const.X_MIN, const.X_MAX)
+    qcoords = np.vstack([qx,qy,qz]).T
+    maxRotInds = 20000
+
+    #L = lerpy()
+    #L.allocate_lerpy(dev_id, gt_rots.ravel(), Wstart.ravel(), 2463*2527,
+    #                 corner, deltas, qcoords.ravel(),
+    #                 len(gt_rots), 2463*2527)
+
+    #L.toggle_insert()
+    #assert len(this_ranks_imgs) == len(gt_rots)
+    #for i_rot, img in enumerate(this_ranks_imgs):
+    #    L.trilinear_insertion(i_rot, img)
+    #den= L.densities()
+    #wt = L.wts()
+    #den = COMM.bcast(COMM.reduce(den))
+    #wt = COMM.bcast(COMM.reduce(wt))
+    #gt_merge = utils.errdiv(den, wt)
+    #if COMM.rank==0:
+    #    np.save("gt_merge", gt_merge)
+
+    #L.free()
+    #del L
+    #L = None
+
+    L = lerpy()
+    rots = rots.astype(L.array_type)
+    Winit = Winit.astype(L.array_type)
+    qcoords = qcoords.astype(L.array_type)
+    for i,img in enumerate(this_ranks_imgs):
+        this_ranks_imgs[i] = img.astype(L.array_type).ravel()
+
+    L.allocate_lerpy(dev_id, rots.ravel(), Winit.ravel(), 2463*2527,
+                     corner, deltas, qcoords.ravel(),
+                     maxRotInds, 2463*2527)
+
+    #if rots_from_grid:
+    #    L.toggle_insert()
+    #    for i_img, (img, rot_ind) in enumerate(zip(this_ranks_imgs, this_ranks_rot_indices)):
+    #        print0("Inserting gt img %d / %d" % (i_img+1, len(this_ranks_imgs)))
+    #        L.trilinear_insertion(rot_ind, img, False)
+    #    den = COMM.bcast(COMM.reduce(L.densities()))
+    #    wts = COMM.bcast(COMM.reduce(L.wts()))
+    #    gt_den = utils.errdiv(den, wts)
+    ##TODO add get_gt_den using ground truth crystal Umats (merge_gt method as a function)
+
+    L.toggle_insert()
+    if not start_with_relp:
+        for i_img, (img, rot_inds) in enumerate(zip(this_ranks_imgs, this_ranks_prob_rot)):
+            print0("Inserting img %d / %d" % (i_img+1, len(this_ranks_imgs)))
+            #rot_inds = [this_ranks_rot_indices[i_img]]
+            for r in rot_inds:
+                L.trilinear_insertion(r, img, False)
+        den = COMM.bcast(COMM.reduce(L.densities()))
+        wts = COMM.bcast(COMM.reduce(L.wts()))
+        den = utils.errdiv(den, wts)
+        L.update_density(den)
+    else:
         Wstart = utils.get_W_init()
         scale_factor = max([img[img > 0].mean() for img in this_ranks_imgs])
         scale_factor = COMM.bcast(COMM.reduce(scale_factor, MPI.MAX))
         print0("Maximum pixel value=%f" % scale_factor)
         Wstart /= Wstart.max()
         Wstart *= scale_factor
-    else:
-        Wstart = np.zeros(const.DENSITY_SHAPE, np.float32)
-
-    L = lerpy()
-    qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
-    qx,qy,qz = map(lambda x: x.ravel(), qmap)
-    corner, deltas = utils.corners_and_deltas(const.DENSITY_SHAPE, const.X_MIN, const.X_MAX)
-    qcoords = np.vstack([qx,qy,qz]).T
-    qcoords = qcoords.astype(np.float32)
-    maxRotInds = 20000
-    L.allocate_lerpy(dev_id, rots.ravel(), Wstart.ravel(), 2463*2527,
-                     corner, deltas, qcoords.ravel(),
-                     maxRotInds, 2463*2527)
-
-    if rots_from_grid:
-        L.toggle_insert()
-        for i_img, (img, rot_ind) in enumerate(zip(this_ranks_imgs, this_ranks_rot_indices)):
-            print0("Inserting gt img %d / %d" % (i_img+1, len(this_ranks_imgs)))
-            L.trilinear_insertion(rot_ind, img.ravel(), False)
-        den = COMM.bcast(COMM.reduce(L.densities()))
-        wts = COMM.bcast(COMM.reduce(L.wts()))
-        gt_den = utils.errdiv(den, wts)
-    #TODO add get_gt_den using ground truth crystal Umats (merge_gt method as a function)
-
-    # make the ground truth merge
-    if not start_with_relp:
-        L.toggle_insert()
-        for i_img, (img, rot_inds) in enumerate(zip(this_ranks_imgs, this_ranks_prob_rot)):
-            print0("Inserting img %d / %d" % (i_img+1, len(this_ranks_imgs)))
-        #    rot_inds = [this_ranks_rot_indices[i_img]]
-            for r in rot_inds:
-                L.trilinear_insertion(r, img.ravel(), False)
-        den = COMM.bcast(COMM.reduce(L.densities()))
-        wts = COMM.bcast(COMM.reduce(L.wts()))
-        den = utils.errdiv(den, wts)
-        L.update_density(den)
+        L.update_density(Wstart)
 
     beta_init = 1
     emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
@@ -163,7 +201,38 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
                         outdir=outdir,
                         beta=beta_init)
     init_models = emc.success_rate(init=True, return_models=True)
-    emc.do_emc(niter)
+    from line_profiler import LineProfiler
+    import inspect
+    lp = LineProfiler()
+    func_names, funcs = zip(*inspect.getmembers(mpi_utils.EMC, predicate=inspect.isfunction))
+    for f in funcs:
+        lp.add_function(f)
+    RUN = lp(emc.do_emc)
+    RUN(100)
+    stats = lp.get_stats()
+    mpi_utils.print_profile(stats)
+
+    #emc.do_emc(niter)
+    #try:
+    #    from line_profiler import LineProfiler
+    #except ImportError:
+    #    LineProfiler = None
+    #if LineProfiler is not None:
+    #    lp = LineProfiler()
+    #    RUN = lp(main)
+    #else:
+    #    lp = None
+    #    RUN = main
+
+    #mpi_utils.setup_profile_log_files("logTest")
+
+    #RUN()
+
+    #if lp is not None:
+    #    stats = lp.get_stats()
+    #    mpi_utils.print_profile(stats,["main"], "simemc.profile")
+
+
     models = emc.success_rate(init=False, return_models=True)
     print0("OK")
 
@@ -201,6 +270,8 @@ if __name__=="__main__":
     parser.add_argument("--phil", type=str, default=None, help="path to a stills process phil file (for spot finding). Required if --water flag is used")
     parser.add_argument("--minpred", type=int, default=7, help="minimum number of strong spots that need to be predicted well by an orientation for it to be flagged as probable for the shots crystal")
     parser.add_argument("--hcut", type=float, default=0.03, help="maximum distance (in hkl units) to Bragg peaks from prediction for prediction Bragg peak to be considered part of the lattice ")
+    parser.add_argument("--xtalsize", type=float, default=0.002, help="size of the crystallite in mm")
+    parser.add_argument("--cbfdir", type=str, default=None, help="if not None , store CBFs here")
     args = parser.parse_args()
     ndev = sys.argv[1]
     if args.water:
@@ -208,4 +279,5 @@ if __name__=="__main__":
     test_emc_iteration(int(ndev), nshots_per_rank=args.nshot,
                        start_with_relp=args.relp, rots_from_grid=not args.nogrid,
                        outdir=args.outdir, add_water=args.water, niter=args.niter,
-                       phil_file=args.phil, min_pred=args.minpred, hcut=args.hcut)
+                       phil_file=args.phil, min_pred=args.minpred, hcut=args.hcut,
+                       cbfdir=args.cbfdir, xtal_size=args.xtalsize)

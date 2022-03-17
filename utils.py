@@ -499,14 +499,16 @@ def symmetrize(density, symbol="P43212", dens_sh=(256,256,256),
     qvecs = np.vstack(tuple(map(lambda x: x.ravel(), np.meshgrid(const.QCENT, const.QCENT, const.QCENT) ))).T
     if how==0:
         L = lerpy()
+        qvecs = qvecs.astype(L.array_type)
         num_data_pix = maxNumQ = const.NBINS**3
         maxRotInds = len(sym_rot_mats)
         corners, deltas = corners_and_deltas(dens_sh, const.X_MIN, const.X_MAX)
-        W = np.zeros(dens_sh)
+        W = np.zeros(dens_sh, L.array_type)
         dev_id = 0
         L.allocate_lerpy(
-            dev_id, sym_rot_mats, W, int(maxNumQ),
-            tuple(corners), tuple(deltas), qvecs,
+            dev_id, sym_rot_mats.astype(L.array_type).ravel(),
+            W.ravel(), int(maxNumQ),
+            tuple(corners), tuple(deltas), qvecs.ravel(),
             maxRotInds, int(num_data_pix))
 
         L.toggle_insert()
@@ -515,10 +517,9 @@ def symmetrize(density, symbol="P43212", dens_sh=(256,256,256),
 
         d = L.densities()
         w = L.wts()
-        with np.errstate(divide='ignore',  invalid='ignore'):
-            d = np.nan_to_num(d / w)
-            if reshape:
-                d = d.reshape(dens_sh)
+        d = errdiv(d,w)
+        if reshape:
+            d = d.reshape(dens_sh)
         L.free()
     elif how==1:
         A = np.zeros(dens_sh)

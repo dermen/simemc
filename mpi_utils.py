@@ -127,15 +127,16 @@ def setup_profile_log_files(logdir, name='simemc.profile', overwrite=True):
 
 
 
-def print_profile(stats, timed_methods, loggerName='simemc.profile'):
+def print_profile(stats, timed_methods=None):
+
     #PROFILE_LOGGER = logging.getLogger(loggerName)
     for method in stats.timings.keys():
         filename, header_ln, name = method
-        if name not in timed_methods:
+        if timed_methods is not None and name not in timed_methods:
             continue
         info = stats.timings[method]
         printR("\n")
-        printR("FILE: %s" % filename)
+        printR("FILE: %s --- FUNC: %s" % (filename, name))
         if not info:
             #PROFILE_LOGGER.info("<><><><><><><><><><><><><><><><><><><><><><><>")
             #PROFILE_LOGGER.info("METHOD %s : Not profiled because never called" % (name))
@@ -169,18 +170,28 @@ def print_profile(stats, timed_methods, loggerName='simemc.profile'):
 class EMC:
 
     def __init__(self, L, shots, prob_rots, min_p=0, outdir=None, beta=1,
-                 symmetrize=True, whole_punch=True):
+                 symmetrize=True, whole_punch=True, img_sh=None):
         """
         run emc, the resulting density is stored in the L (emc.lerpy) object
         see call to this method in ests/test_emc_iteration
         :param L: instance of emc.lerpy in insert mode
-        :param shots: array of images (Nshot, Npanel, slowDim, fastDim)
+        :param shots: array of images (Nshot, Npanel , slowDim , fastDim) or (Nshot, Npanel x slowDim x fastDim)
         :param prob_rots: list of array containing indices of probable orientations
         :return: optimized density. Also L instance should be modified in-place
         """
         self.L = L
         self.shots = shots
+        for i,s in enumerate(self.shots):
+            if s.dtype != L.array_type:
+                s = s.astype(L.array_type)
+            self.shots[i] = s.ravel()
+
         self.prob_rots = prob_rots
+        for i,rots in enumerate(self.prob_rots):
+            if rots.dtype != np.int32:
+                rots = rots.astype(np.int32)
+            self.prob_rots[i] = rots
+
         self.nshots = len(shots)
         self.min_p = min_p
         self.P_dr = None
@@ -189,7 +200,11 @@ class EMC:
         self.send_to = None
         self.recv_from = None
         self.rot_inds_on_one_rank_only = None
-        self.num_data_pix = 2463*2527
+        if img_sh is None:
+            self.img_sh = 1, 2527, 2463
+        else:
+            self.img_sh = img_sh
+        self.num_data_pix = int(np.product(self.img_sh))
         self.Wprev = L.densities()
         self.whole_punch = whole_punch
         self.symmetrize = symmetrize
@@ -220,16 +235,11 @@ class EMC:
                 self.finite_rot_inds.add_record(rot_ind, self.i_shot, COMM.rank, P_dr)
 
     def distribute_rot_ind_records(self):
-        #finite_rot_inds_each_rank = COMM.gather(self.finite_rot_inds)
         if COMM.rank==0:
             rot_inds_global = deepcopy(self.finite_rot_inds)
             for rank in range(1,COMM.size):
                 rot_inds = COMM.recv(source=rank)
                 rot_inds_global.merge(rot_inds)
-
-            #rot_inds_global = utils.RotInds()
-            #for finite_rot_inds in finite_rot_inds_each_rank:
-            #    rot_inds_global.merge(finite_rot_inds)
 
             self.send_to, self.recv_from = rot_inds_global.tomogram_sends_and_recvs()
             self.rot_inds_on_one_rank_only = rot_inds_global.on_one_rank
@@ -245,11 +255,11 @@ class EMC:
         for i_rot_ind, rot_ind in enumerate(self.finite_rot_inds):
             if rot_ind not in self.rot_inds_on_one_rank_only:
                 continue
-            self.print("Finite rot ind %d / %d" %(i_rot_ind,len(self.finite_rot_inds) ))
-            W_rt = np.zeros(self.num_data_pix)
+            self.print("Finite rot ind %d / %d" %(i_rot_ind+1,len(self.finite_rot_inds) ))
+            W_rt = np.zeros(self.num_data_pix, self.L.array_type)
             P_dr_sum = 0
             for i_shot, _, P_dr in self.finite_rot_inds.iter_record(rot_ind):
-                W_rt += self.shots[i_shot].ravel()*P_dr
+                W_rt += self.shots[i_shot]*P_dr
                 P_dr_sum += P_dr
             W_rt = utils.errdiv(W_rt, P_dr_sum)
             self.L.trilinear_insertion(rot_ind, W_rt)
@@ -266,7 +276,7 @@ class EMC:
             rot_inds_recv_info = self.recv_from[COMM.rank]['comms_info']
             for i_recv, (rot_ind, recv_info) in enumerate(zip(rot_inds_to_recv, rot_inds_recv_info)):
                 self.print("recv %d (%d / %d)" % (rot_ind, i_recv+1, len(rot_inds_to_recv)))
-                W_rt = np.zeros(self.num_data_pix)
+                W_rt = np.zeros(self.num_data_pix, self.L.array_type)
                 P_dr_sum = 0
                 for source, P_dr, tag in recv_info:
                     assert source != COMM.rank, "though supported we dont permit self sending"
@@ -279,7 +289,7 @@ class EMC:
                 self.print("Done recv %d /%d" %(i_recv+1, len(rot_inds_to_recv)))
                 assert rot_ind in self.finite_rot_inds # this is True by definition if you read the RotInds class method above
                 for i_data, rank, P_dr in self.finite_rot_inds.iter_record(rot_ind):
-                    W_rt += self.shots[i_data].ravel() * P_dr
+                    W_rt += self.shots[i_data] * P_dr
                     P_dr_sum += P_dr
                 W_rt = utils.errdiv(W_rt, P_dr_sum)
                 self.L.trilinear_insertion(rot_ind, W_rt)
@@ -297,8 +307,6 @@ class EMC:
         self.L.update_density(den)
 
         self.apply_density_rules()
-        #Wresid = np.sqrt(np.mean((self.Wprev - den)**2))
-        #self.all_Wresid.append(Wresid)
 
     def apply_density_rules(self):
         den = self.L.densities()
@@ -329,15 +337,19 @@ class EMC:
                 self.add_records()
 
             self.distribute_rot_ind_records()
+            COMM.barrier()
             self.L.toggle_insert()
+            COMM.barrier()
             self.insert_one_rankers()
+            COMM.barrier()
             self.insert_multi_rankers()
             COMM.barrier()
             self.reduce_density()
-            #self.success_rate()
-            self.plot_models(init=False)
-
+            COMM.barrier()
+            #self.plot_models(init=False)
+            #COMM.barrier()
             self.write_to_outdir()
+            COMM.barrier()
 
             self.i_emc +=1
             #if self.i_emc % self.save_model_freq==0 or self.i_emc==num_iter:
@@ -394,17 +406,17 @@ class EMC:
             density_file = os.path.join(self.outdir, "Witer%d.h5" % (self.i_emc+1))
             self.save_h5(density_file)
 
-            plt.figure(1)
-            self.ax.clear()
-            self.ax.plot(np.arange(len(self.all_Wresid)), self.all_Wresid , marker='x')
-            self.ax.set_xlabel("iteration", fontsize=11)
-            self.ax.set_ylabel("$|W'-W|$",fontsize=11)
-            self.ax.set_yscale("log")
-            self.ax.grid(which='both', axis='y', ls='--')
-            figname = os.path.join(self.outdir, "w_convergence%d.png" % (self.i_emc+1))
-            plt.savefig(figname)
-            #plt.draw()
-            #plt.pause(0.1)
+            #plt.figure(1)
+            #self.ax.clear()
+            #self.ax.plot(np.arange(len(self.all_Wresid)), self.all_Wresid , marker='x')
+            #self.ax.set_xlabel("iteration", fontsize=11)
+            #self.ax.set_ylabel("$|W'-W|$",fontsize=11)
+            #self.ax.set_yscale("log")
+            #self.ax.grid(which='both', axis='y', ls='--')
+            #figname = os.path.join(self.outdir, "w_convergence%d.png" % (self.i_emc+1))
+            #plt.savefig(figname)
+            ##plt.draw()
+            ##plt.pause(0.1)
 
     def save_h5(self, density_file):
         den = self.L.densities()
@@ -426,7 +438,7 @@ class EMC:
             #i_max_p = np.argmax(pvals)
             #rot_ind_with_max_p = self.prob_rots[i_shot][i_max_p]
             psum = 0
-            model = np.zeros_like(self.shots[0]).ravel()
+            model = np.zeros_like(self.shots[0])
             for i_rot, p in enumerate(pvals):
                 if p > 0.001:
                     rot_ind = self.prob_rots[i_shot][i_rot]
@@ -434,7 +446,7 @@ class EMC:
                     model += self.L.trilinear_interpolation(rot_ind) * p
                     psum += p
             model = utils.errdiv(model, psum)
-            data = self.shots[i_shot].ravel()
+            data = self.shots[i_shot]
             sel = data > 0
             c = pearsonr(data[sel], model[sel])[0]
             if c > self.success_corr:
@@ -451,7 +463,8 @@ class EMC:
         if return_models:
             return models
 
-    def plot_models(self, init=False):
+    def plot_models(self, init=False, pid=0):
+        # TODO: generalize to Npanel ?
         self.print("Plotting models")
         models = self.success_rate(init=init, return_models=True)
         if self.outdir is None:
@@ -459,8 +472,11 @@ class EMC:
         fig, axs = plt.subplots(nrows=2, ncols=4)
         fig.set_size_inches((9.81,4.8))
         N = min(4, self.nshots)
-        for i in range(4):
-            imgs = models[i].reshape((2527, 2463)), self.shots[i][0]
+        for i in range(N):
+            mod_img = models[i].reshape(self.img_sh)[pid]
+            dat_img = self.shots[i].reshape(self.img_sh)[pid]
+            imgs = mod_img, dat_img
+
             img_ax = axs[0,i], axs[1,i]
             for ax,img in zip(img_ax, imgs):
                 m = img.mean()

@@ -7,16 +7,25 @@ from simemc import emc
 from simemc import utils
 
 
-def add_check_arrays(cls):
+def add_type_methods(cls):
     """
     :param cls: either lerpy or probable_orients
     """
+    @property
+    def array_type(self):
+        if self.size_of_cudareal==4:
+            return np.float32
+        else:
+            return np.float64
+    cls.array_type = array_type
+
     def check_arrays(self, vals, dt=None):
         """
         :param vals:
         :param dt: optional np.dtype
         :return:
         """
+
         if len(vals.shape) > 1:
             print("copy  / ravel")
             vals = vals.copy().ravel()
@@ -52,7 +61,7 @@ def add_check_arrays(cls):
 
 
 @bp.inject_into(emc.probable_orients)
-@add_check_arrays
+@add_type_methods
 class _():
     def allocate_orientations(self, dev_id, rotMats, maxNumQ):
         """
@@ -80,7 +89,7 @@ class _():
         return probable_rot_inds
 
 @bp.inject_into(emc.lerpy)
-@add_check_arrays
+@add_type_methods
 class _():
 
     def allocate_lerpy(self, dev_id, rotMats, densities, maxNumQ, corners, deltas, qvecs, maxNumRotInds, numDataPix):
