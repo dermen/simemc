@@ -5,6 +5,8 @@ spotfinder.threshold.dispersion.sigma_strong=3
 spotfinder.threshold.dispersion.sigma_background=6
 spotfinder.filter.min_spot_size=4
 
+dispatch.hit_finder.minimum_number_of_spots=3
+
 output.composite_output=False
 output.strong_filename="%s_strong.refl"
 output.experiments_filename="%s_strong.expt"
