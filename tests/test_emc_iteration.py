@@ -120,7 +120,7 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
         if rots_from_grid:
             rot_idx = this_ranks_rot_indices[i_img]
             assert rot_idx in prob_rot
-        #TODO: add and else statement and assert prob_rot is "close" to the crystal Umat for that shot
+        #TODO: add an else statement and assert prob_rot is "close" to the crystal Umat for that shot
         this_ranks_prob_rot.append(prob_rot)
     O.free_device()
 
