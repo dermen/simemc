@@ -1,7 +1,7 @@
 from mpi4py import MPI
 
 from copy import deepcopy
-import utils
+from simemc import utils
 import sympy
 from simemc import const
 

@@ -3,6 +3,8 @@ import pytest
 import pylab as plt
 import numpy as np
 import os
+from line_profiler import LineProfiler
+import inspect
 from simtbx.diffBragg import utils as db_utils
 from simemc import utils
 from simemc import sim_const, sim_utils
@@ -10,7 +12,7 @@ from simemc import mpi_utils
 from simemc.compute_radials import RadPros
 from simemc.emc import lerpy, probable_orients
 
-import const
+from simemc import const
 
 print0 = mpi_utils.print0f
 printR = mpi_utils.printRf
@@ -43,7 +45,6 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
     water = 0
     radProMaker = None
     correction = 1
-    #scale = 1
     if add_water:
         if COMM.rank==0:
             print("Simulating water scattering...")
@@ -84,8 +85,6 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
         if rots_from_grid:
             this_ranks_rot_indices.append(rot_idx)
         this_ranks_imgs.append(np.array([img], np.float32))
-    #COMM.barrier()
-    #exit()
 
     gt_rots = np.array(gt_rots)
 
@@ -133,27 +132,6 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
     qcoords = np.vstack([qx,qy,qz]).T
     maxRotInds = 20000
 
-    #L = lerpy()
-    #L.allocate_lerpy(dev_id, gt_rots.ravel(), Wstart.ravel(), 2463*2527,
-    #                 corner, deltas, qcoords.ravel(),
-    #                 len(gt_rots), 2463*2527)
-
-    #L.toggle_insert()
-    #assert len(this_ranks_imgs) == len(gt_rots)
-    #for i_rot, img in enumerate(this_ranks_imgs):
-    #    L.trilinear_insertion(i_rot, img)
-    #den= L.densities()
-    #wt = L.wts()
-    #den = COMM.bcast(COMM.reduce(den))
-    #wt = COMM.bcast(COMM.reduce(wt))
-    #gt_merge = utils.errdiv(den, wt)
-    #if COMM.rank==0:
-    #    np.save("gt_merge", gt_merge)
-
-    #L.free()
-    #del L
-    #L = None
-
     L = lerpy()
     rots = rots.astype(L.array_type)
     Winit = Winit.astype(L.array_type)
@@ -165,21 +143,10 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
                      corner, deltas, qcoords.ravel(),
                      maxRotInds, 2463*2527)
 
-    #if rots_from_grid:
-    #    L.toggle_insert()
-    #    for i_img, (img, rot_ind) in enumerate(zip(this_ranks_imgs, this_ranks_rot_indices)):
-    #        print0("Inserting gt img %d / %d" % (i_img+1, len(this_ranks_imgs)))
-    #        L.trilinear_insertion(rot_ind, img, False)
-    #    den = COMM.bcast(COMM.reduce(L.densities()))
-    #    wts = COMM.bcast(COMM.reduce(L.wts()))
-    #    gt_den = utils.errdiv(den, wts)
-    ##TODO add get_gt_den using ground truth crystal Umats (merge_gt method as a function)
-
     L.toggle_insert()
     if not start_with_relp:
         for i_img, (img, rot_inds) in enumerate(zip(this_ranks_imgs, this_ranks_prob_rot)):
             print0("Inserting img %d / %d" % (i_img+1, len(this_ranks_imgs)))
-            #rot_inds = [this_ranks_rot_indices[i_img]]
             for r in rot_inds:
                 L.trilinear_insertion(r, img, False)
         den = COMM.bcast(COMM.reduce(L.densities()))
@@ -201,39 +168,15 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
                         outdir=outdir,
                         beta=beta_init)
     init_models = emc.success_rate(init=True, return_models=True)
-    from line_profiler import LineProfiler
-    import inspect
     lp = LineProfiler()
     func_names, funcs = zip(*inspect.getmembers(mpi_utils.EMC, predicate=inspect.isfunction))
     for f in funcs:
         lp.add_function(f)
     RUN = lp(emc.do_emc)
-    RUN(100)
+    RUN(niter)
     stats = lp.get_stats()
     mpi_utils.print_profile(stats)
 
-    #emc.do_emc(niter)
-    #try:
-    #    from line_profiler import LineProfiler
-    #except ImportError:
-    #    LineProfiler = None
-    #if LineProfiler is not None:
-    #    lp = LineProfiler()
-    #    RUN = lp(main)
-    #else:
-    #    lp = None
-    #    RUN = main
-
-    #mpi_utils.setup_profile_log_files("logTest")
-
-    #RUN()
-
-    #if lp is not None:
-    #    stats = lp.get_stats()
-    #    mpi_utils.print_profile(stats,["main"], "simemc.profile")
-
-
-    models = emc.success_rate(init=False, return_models=True)
     print0("OK")
 
 
