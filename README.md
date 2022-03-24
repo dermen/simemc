@@ -22,7 +22,9 @@ From the repository root run `libtbx.pytest`. Then, optionally test the `mpi4py`
 Here we simulate 999 shots on a machine with 24 processors and 1 v100 GPU. The script then runs them through EMC for a set number of iterations 
 
 ```
-DIFFBRAGG_USE_CUDA=1 mpirun -n 3 libtbx.python tests/test_emc_iteration.py  1 333  water_sims/1um --water --phil proc.phil  --minpred 4 --hcut=0.04 --cbfdir water_sims/1um-cbfs --xtalsize 0.00125 --niter 15
+DIFFBRAGG_USE_CUDA=1 mpirun -n 3 libtbx.python tests/test_emc_iteration.py  \
+  1 333  water_sims/1um --water --phil proc.phil  --minpred 4 \
+  --hcut=0.04 --cbfdir water_sims/1um-cbfs --xtalsize 0.00125 --niter 15
 ```
 
 Process the images using the standard stills process framework as a comparison:
