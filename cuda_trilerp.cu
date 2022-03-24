@@ -176,7 +176,6 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         if (verbose)printf("Trilinear insertion!\n");
         MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
 //      NOTE: here gpu.data are the insert values
-printf("tomogram wt=%f\n", gpu.tomogram_wt);
         trilinear_insertion_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
                 (gpu.densities, gpu.wts, gpu.data, gpu.tomogram_wt, gpu.qVecs,
                  rotMat, gpu.numQ,
@@ -346,7 +345,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
         CUDAREAL*  densities,
         CUDAREAL*  wts,
         CUDAREAL* insertion_values,
-        CUDAREAL tomo_wt;
+        CUDAREAL tomo_wt,
         VEC3 *vectors,
         MAT3 rotMat, int num_qvec,
         int nx, int ny, int nz,
