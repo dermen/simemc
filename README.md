@@ -12,6 +12,6 @@ diffraction simulations and EMC
 * possible some other python dependencies, Try running the tests and install missing dependencies using PIP
 
 ## Testing
-From the repository root run `pytest`. Then, if pytest-mpi is installed,  run e.g. `mpirun -n 2 pytest --with-mpi --no-summary -q`.
+From the repository root run `pytest`. Then, optionally test the `mpi4py` installation using e.g. `mpirun -n 2 pytest --with-mpi --no-summary -q` (provided `pytest-mpi` is installed).
 
 
