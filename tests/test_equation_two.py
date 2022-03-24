@@ -6,11 +6,19 @@ from simemc import utils
 from scipy.spatial.transform import Rotation
 from reborn.misc.interpolate import trilinear_interpolation
 import time
+from scipy.stats import pearsonr, linregress
 import pytest
 
 
 @pytest.mark.mpi_skip()
-def test(maxRotInds=10):
+def test_equation_two():
+    main()
+
+@pytest.mark.mpi_skip()
+def test_equation_two_deriv():
+    main(finite_diff=True)
+
+def main(maxRotInds=10, finite_diff=False):
 
     fdim = 2463
     sdim = 2527
@@ -22,28 +30,20 @@ def test(maxRotInds=10):
                      [-0.19088188, -0.26711064,  0.94457187],
                      [ 0.86588284,  0.40746519,  0.29020516]])
 
-    #from dxtbx.model import ExperimentList
-    #El = ExperimentList.from_file()
-
     np.random.seed(789)
     data1 = np.random.random(N) * 100
     data1 = data1.astype(np.float32).astype(np.float64)
 
     # do interpolation
-    #qx, qy, qz = utils.load_qmap("../qmap.npy")
     qx = np.random.uniform(-0.25, 0.25, N)
     qy = np.random.uniform(-0.25, 0.25,N)
     qz = np.random.uniform(0, 0.25, N)
     qcoords = np.vstack((qx,qy,qz)).T
     qmags = np.linalg.norm(qcoords, axis=1)
-    qcoords_rot = np.dot(qcoords, Umat)
     inbounds = np.logical_and(qmags > qmin, qmags < qmax)
 
-    #I = np.load("../resultTestBG.npz")['result']
-    #qbins = np.load("../resultTestBG.npz")['qbins']
     I = np.random.uniform(-0.01, 10, (256,256,256))
     qbins = np.linspace(-0.25, 0.25, 257)
-    #rotMats, wts = utils.load_quat_file("quatgrid/c-quaternion20.bin")
     rotMats = Rotation.random(400000, random_state=0).as_matrix()
     rotMats[0] = Umat
 
@@ -76,8 +76,42 @@ def test(maxRotInds=10):
         raise RuntimeError("Auto type check failed")
     except TypeError:
         L.auto_convert_arrays = True
-        L.equation_two(inds)
-    Rgpu = L.get_out()
+        L.equation_two(inds, shot_scale_factor=1)
+    Rgpu = np.array(L.get_out())
+    if finite_diff:
+        # in this case we only wish to test the derivative of equation 2 using finite differences
+        L.equation_two(inds, verbose=False, shot_scale_factor=1, deriv=True)
+        deriv_Rgpu = np.array(L.get_out())
+        percs = [2**i * 0.00005 for i in range(8)]
+        errors = []
+        for perc in percs:
+            scale_factor_shifted = 1 + perc
+            L.equation_two(inds, verbose=False, shot_scale_factor=scale_factor_shifted)
+            Rgpu_shifted = np.array(L.get_out())
+            delta_Rgpu = Rgpu_shifted - Rgpu
+            finite_diff = delta_Rgpu / perc
+            error = np.mean(np.abs(finite_diff - deriv_Rgpu)/deriv_Rgpu)
+            print("FINITE DIFF SCALING: ", perc, error)
+            errors.append(error)
+        l = linregress(percs, errors)
+        assert l.slope > 0, l.slope
+        assert l.rvalue > 0.999, l.rvalue
+        print("ok")
+
+        # compute P_dr
+        P_dr = utils.compute_P_dr_from_log_R_dr(Rgpu)
+        deriv_P_dr = utils.deriv_P_dr_from_Q_and_dQ(Rgpu, deriv_Rgpu)
+
+        #for perc in percs:
+        #    scale_factor_shifted = 1 + perc
+        #    L.equation_two(inds, verbose=False, shot_scale_factor=scale_factor_shifted)
+        #    Rgpu_shifted = np.array(L.get_out())
+        #    P_dr_shifted = utils.compute_P_dr_from_log_R_dr(Rgpu_shifted)
+        #    delta_P = P_dr_shifted - P_dr
+        #    finite_diff_P = delta_P / perc
+        #    error = np.mean(np.abs(finite_diff_P - deriv_P_dr))
+        print("FINITE DIFF SCALING: ", perc, error)
+        return
     t2 = time.time() - t2
     print("First 3 R_dr values:")
     print("GPU:",np.round(Rgpu[:3], 3), "(%.4f sec)" % t2)
@@ -104,7 +138,6 @@ def test(maxRotInds=10):
         print("Results are identical!")
     except:
         print("WARNING: results are not all close, maybe due to compiling GPU code with CUDAREAL defined as float")
-        from scipy.stats import pearsonr, linregress
         l = linregress(Rgpu, Rcpu)
         c,p = pearsonr(Rgpu, Rcpu)
         assert c > 0.99
@@ -120,4 +153,4 @@ def test(maxRotInds=10):
 
 
 if __name__=="__main__":
-    test(int(sys.argv[1]))
+    main(int(sys.argv[1]), int(sys.argv[2]))

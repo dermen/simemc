@@ -58,14 +58,17 @@ def test_send_recv_pattern():
     if COMM.rank in send_to:
         for i, (dest,tag) in enumerate(send_to[COMM.rank]):
             print("sent packet rank %d -> rank %d !" % (COMM.rank, dest), flush=True)
-            req =COMM.isend(data[i], dest=dest, tag=tag)
+            # send a dummie scale factor of 1
+            scale_factor = 1
+            # we will routinely send images with there scale factors as part of the compression EMC step
+            req =COMM.isend((data[i], scale_factor), dest=dest, tag=tag)
             sent_req.append(req)
             
     packet_data = np.zeros(img_sh)
     if COMM.rank in receive_from:
         for i, (source, tag) in enumerate(receive_from[COMM.rank]):
-            packet = COMM.recv(source=source, tag=tag)
-            packet_data += packet
+            packet_img, packet_scale = COMM.recv(source=source, tag=tag)
+            packet_data += packet_img*packet_scale
     for req in sent_req:
         req.wait()
 

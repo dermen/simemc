@@ -108,7 +108,7 @@ class lerpyExt{
         return output.copy();
     }
     
-    inline void trilinear_insertion(int rot_idx, np::ndarray vals, bool verbose){
+    inline void trilinear_insertion(int rot_idx, np::ndarray vals, bool verbose, CUDAREAL tomo_wt){
         if (rot_idx < 0 || rot_idx >= gpu.numRot) {
             PyErr_SetString(PyExc_TypeError,
                             "Rot index is out of bounds, check size of allocated rotMats\n");
@@ -131,7 +131,8 @@ class lerpyExt{
         // copy the insertion values to the device 
         shot_data_to_device(gpu,vals);
 
-        // 2 specifies to do a trilinear insertion only do interpolation
+        // 2 specifies to do a trilinear insertion
+        gpu.tomogram_wt = tomo_wt;
         do_a_lerp(gpu, rot_inds, verbose, 2);
 
     }
@@ -162,14 +163,17 @@ class lerpyExt{
         return output.copy();
     }
     
-    inline void do_equation_two(np::ndarray rot_idx, bool verbose){
+    inline void do_equation_two(np::ndarray rot_idx, bool verbose, CUDAREAL shot_scale, const bool deriv){
         int nrot = rot_idx.shape(0);
         std::vector<int> rot_inds;
         for (int i_rot=0; i_rot < nrot; i_rot++)
             rot_inds.push_back(  bp::extract<int>(rot_idx[i_rot])  );
-
-        // 1 specifies to run through equation two for the  specified rotation inds
-        do_a_lerp(gpu, rot_inds, verbose, 1);
+        gpu.shot_scale = shot_scale;
+        // 1 specifies to run through EMC equation two (from the dragon fly paper) for the  specified rotation inds
+        if (deriv)
+            do_a_lerp(gpu, rot_inds, verbose, 3);
+        else
+            do_a_lerp(gpu, rot_inds, verbose, 1);
 
     }
 
@@ -282,12 +286,13 @@ BOOST_PYTHON_MODULE(emc){
         
         .def("_trilinear_insertion",
              &lerpyExt::trilinear_insertion,
-             (bp::arg("rot_idx"), bp::arg("vals"), bp::arg("verbose")=true),
+             (bp::arg("rot_idx"), bp::arg("vals"), bp::arg("verbose")=true, bp::arg("tomo_wt")=1),
              "insert the vals according into the densities")
 
         .def("_equation_two",
              &lerpyExt::do_equation_two,
-             (bp::arg("rot_idx"), bp::arg("verbose")=true),
+             (bp::arg("rot_idx"), bp::arg("verbose")=true, bp::arg("shot_scale")=1,
+                     bp::arg("deriv")=false),
              "compute equation to for the supplied rotation indices")
         .add_property("auto_convert_arrays",
                        make_getter(&lerpyExt::auto_convert_arrays,rbv()),

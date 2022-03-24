@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import sympy
 from scipy.spatial.transform import Rotation
 from simemc.compute_radials import RadPros
 from dials.command_line.stills_process import phil_scope
@@ -671,3 +672,71 @@ def refls_from_sims(panel_imgs, detector, beam, thresh=0, filter=None, panel_ids
         refls['xyzobs.px.value'] = flex.vec3_double(x,y,z)
 
     return refls
+
+
+def compute_P_dr_from_log_R_dr(log_R_dr, beta=1, min_p=0):
+    R_dr = []
+    R_dr_sum = sympy.S(0)
+    for val in log_R_dr:
+        r =  sympy.exp(sympy.S(val)) ** beta
+        R_dr.append(r)
+        R_dr_sum += r
+
+    P_dr = []
+    for r in R_dr:
+        p = r / R_dr_sum
+        p = float(p)
+        P_dr.append(p)
+
+    P_dr = np.array(P_dr)
+    y = P_dr.sum()
+    P_dr[P_dr < min_p] = 0
+    x = errdiv(y, P_dr.sum())
+    P_dr *= x
+    return P_dr
+
+
+def deriv_P_dr_from_Q_and_dQ(Q, dQ_dphi):
+    dQ = np.array(dQ_dphi)
+    P = compute_P_dr_from_log_R_dr(Q)
+    sum_P_dQ = np.sum(P*dQ)
+    dP = P*(dQ_dphi - sum_P_dQ)
+    return dP
+
+
+def compute_log_R_dr(L, shots, prob_rots, shot_scales, deriv=False, verbose=False):
+    shot_log_R_dr = []
+    shot_deriv_logR = []
+    nshots = len(shots)
+    for i_shot, (img, rot_inds, scale_factor) in enumerate(zip(shots, prob_rots, shot_scales)):
+        if verbose:
+            print("Getting Rdr %d / %d (scale=%f)" % ( i_shot+1, nshots, scale_factor))
+        L.copy_image_data(img.ravel())
+        L.equation_two(rot_inds, False, scale_factor)
+        log_R_dr_vals = np.array(L.get_out())
+        shot_log_R_dr.append(log_R_dr_vals)
+
+        if deriv:
+            L.equation_two(rot_inds, False, scale_factor, deriv=True)
+            deriv_log_R_dr = np.array(L.get_out())
+            shot_deriv_logR.append(deriv_log_R_dr)
+    if not deriv:
+        return shot_log_R_dr
+    else:
+        return shot_log_R_dr, shot_deriv_logR
+
+
+def signal_level_of_image(R, img):
+    """
+    :param R: DIALS reflection table for image (strong spots, needs bbox and pid)
+    :param img: numpy image array (3-dim), shape should be (numPanels, panelSlowDim,panelFastDim)
+    :return: average signal in strong spot on image
+    """
+    signal_level = 0
+    for i in range(len(R)):
+        refl = R[i]
+        x1,x2,y1,y2,_,_ = refl["bbox"]
+        pid = refl['panel']
+        signal_level += img[pid, y1:y2, x1:x2].mean()
+    signal_level /= len(R)
+    return signal_level

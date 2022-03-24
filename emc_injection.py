@@ -114,16 +114,19 @@ class _():
     def trilinear_interpolation(self, rot_idx, verbose=False):
         return self._trilinear_interpolation(int(rot_idx), verbose)
 
-    def trilinear_insertion(self, rot_idx, vals, verbose=False):
+    def trilinear_insertion(self, rot_idx, vals, verbose=False, tomo_wt=1):
         """
 
+        :param tomo_wt:
         :param rot_idx:
         :param vals:
         :param verbose:
         :return:
         """
+        if not isinstance(tomo_wt, float):
+            tomo_wt = float(tomo_wt)
         vals = self.check_arrays(vals)
-        self._trilinear_insertion(int(rot_idx), vals, verbose)
+        self._trilinear_insertion(int(rot_idx), vals, verbose, tomo_wt)
 
     def update_density(self, new_dens):
         """
@@ -147,12 +150,15 @@ class _():
         pixels = self.check_arrays(pixels)
         self._copy_image_data(pixels)
 
-    def equation_two(self, rot_inds, verbose=True):
+    def equation_two(self, rot_inds, verbose=True, shot_scale_factor=1, deriv=False):
         """
 
         :param rot_inds:
         :param verbose:
+        :param shot_scale_factor:
         :return:
         """
+        if not isinstance(shot_scale_factor, float):
+            shot_scale_factor = float(shot_scale_factor)
         rot_inds = self.check_arrays(rot_inds, np.int32)
-        self._equation_two(rot_inds, verbose)
+        self._equation_two(rot_inds, verbose, shot_scale_factor, deriv)

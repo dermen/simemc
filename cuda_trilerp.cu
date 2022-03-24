@@ -16,6 +16,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
         CUDAREAL * densities,
         CUDAREAL * wts,
         CUDAREAL* insertion_values,
+        CUDAREAL tomo_wt,
         VEC3 *vectors,
         MAT3 rotMat, int num_qvec,
         int nx, int ny, int nz,
@@ -25,12 +26,14 @@ __global__ void trilinear_insertion_rotate_on_GPU(
 
 __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
                                  const CUDAREAL* __restrict__ data,
+                                 CUDAREAL scale_factor,
                                  VEC3*vectors, CUDAREAL* out_rot,
                                  MAT3* rotMats, int * rot_inds,
                                  int numRot, int num_qvec,
                                  int nx, int ny, int nz,
                                  CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
-                                 CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
+                                 CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
+                                 const bool compute_derivative);
 
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities, 
@@ -132,7 +135,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     int numRotInds = rot_inds.size();
     for (int i=0; i< numRotInds; i++){
         gpu.rotInds[i] = rot_inds[i];
-        if(task==1){
+        if(task==1 || task==3){
             gpu.out_equation_two[i] = 0;
         }
     }
@@ -157,16 +160,15 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                  gpu.delta[0], gpu.delta[1], gpu.delta[2]
                 );
     }
-    else if(task==1) {
+    else if(task==1 || task==3) {
         if (verbose)printf("Running equation 2!\n");
-
         EMC_equation_two<<<gpu.numBlocks, gpu.blockSize>>>
-                (gpu.densities,  gpu.data, gpu.qVecs,
-                 gpu.out_equation_two,
+                (gpu.densities,  gpu.data, gpu.shot_scale,
+                 gpu.qVecs, gpu.out_equation_two,
                  gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
                  256, 256, 256,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
-                 gpu.delta[0], gpu.delta[1], gpu.delta[2]
+                 gpu.delta[0], gpu.delta[1], gpu.delta[2], task==3
                 );
 
     }
@@ -174,8 +176,9 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         if (verbose)printf("Trilinear insertion!\n");
         MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
 //      NOTE: here gpu.data are the insert values
+printf("tomogram wt=%f\n", gpu.tomogram_wt);
         trilinear_insertion_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
-                (gpu.densities, gpu.wts, gpu.data, gpu.qVecs, 
+                (gpu.densities, gpu.wts, gpu.data, gpu.tomogram_wt, gpu.qVecs,
                  rotMat, gpu.numQ,
                  256, 256, 256,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
@@ -183,23 +186,22 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                 );
    
     }
-    else {
-        if (verbose)printf("Symmetrize density!\n");
-        // zero out the densities
-        toggle_insert_mode(gpu);
+    //else {
+    //    // TODO remove this block of code, dont think its used ...
+    //    printf("Symmetrize density!\n");
+    //    // zero out the densities
+    //    toggle_insert_mode(gpu);
 
-        MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
-//      NOTE: here gpu.data are the insert values
-        trilinear_insertion_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
-                (gpu.densities, gpu.wts, gpu.data, gpu.qVecs,
-                 rotMat, gpu.numQ,
-                 256, 256, 256,
-                 gpu.corner[0], gpu.corner[1], gpu.corner[2],
-                 gpu.delta[0], gpu.delta[1], gpu.delta[2]
-                );
-
-
-    }
+    //    MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
+//  //    NOTE: here gpu.data are the insert values
+    //    trilinear_insertion_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
+    //            (gpu.densities, gpu.wts, gpu.data, gpu.qVecs,
+    //             rotMat, gpu.numQ,
+    //             256, 256, 256,
+    //             gpu.corner[0], gpu.corner[1], gpu.corner[2],
+    //             gpu.delta[0], gpu.delta[1], gpu.delta[2]
+    //            );
+    //}
     error_msg(cudaGetLastError(), "after kernel call");
     cudaDeviceSynchronize();
     if (verbose) {
@@ -209,7 +211,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     }
 
     gettimeofday(&t1, 0);
-    if (task==1){
+    if (task==1 || task==3){
         bp::list outList;
         for (int i = 0; i < numRotInds; i++)
             outList.append(gpu.out_equation_two[i]);
@@ -344,6 +346,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
         CUDAREAL*  densities,
         CUDAREAL*  wts,
         CUDAREAL* insertion_values,
+        CUDAREAL tomo_wt;
         VEC3 *vectors,
         MAT3 rotMat, int num_qvec,
         int nx, int ny, int nz,
@@ -396,6 +399,9 @@ __global__ void trilinear_insertion_rotate_on_GPU(
         x1y0 = x1*y0;
         x0y1 = x0*y1;
 
+        z1 *= tomo_wt;
+        z0 *= tomo_wt;
+
         a0 = x1y1 * z1;
         a1 = x0y1 * z1;
         a2 = x1y0 * z1;
@@ -439,12 +445,14 @@ __global__ void trilinear_insertion_rotate_on_GPU(
  */
 __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                                  const CUDAREAL * __restrict__ data,
+                                 CUDAREAL scale_factor,
                                  VEC3 *vectors,
                                  CUDAREAL * out_rot,
                                  MAT3* rotMats, int* rot_inds, int numRot, int num_qvec,
                                  int nx, int ny, int nz,
                                  CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
-                                 CUDAREAL dx, CUDAREAL dy, CUDAREAL dz){
+                                 CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
+                                 const bool compute_derivative){
 
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int thread_stride = blockDim.x * gridDim.x;
@@ -530,9 +538,14 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                    fma(I5,a5,
                    fma(I6,a6,
                    fma(I7,a7,0))))))));
-            
-            if (W_rt  > 0){
-                R_dr_thread += K_t*log(W_rt) - W_rt;
+            if (compute_derivative) {
+                if (W_rt > 0)
+                    R_dr_thread += K_t/scale_factor - W_rt;
+            }
+            else{
+                //W_rt *= scale_factor;
+                if (W_rt > 0)
+                    R_dr_thread += K_t * log(W_rt*scale_factor) - W_rt*scale_factor;
             }
 
         }

@@ -1,17 +1,18 @@
 from mpi4py import MPI
-
+import time
 from copy import deepcopy
 from simemc import utils
 import sympy
 from simemc import const
-
 from scipy.stats import pearsonr
-COMM = MPI.COMM_WORLD
 import os
 import h5py
+from simtbx.diffBragg.refiners.parameters import Parameters, RangedParameter
+from scipy.optimize import minimize
 import glob
 import numpy as np
 from simtbx.diffBragg import mpi_logger
+from scipy.optimize import fmin_l_bfgs_b
 
 from dxtbx.model import ExperimentList
 from simtbx.diffBragg.utils import image_data_from_expt
@@ -21,10 +22,13 @@ import pylab as plt
 from simemc.compute_radials import RadPros
 import logging
 
+COMM = MPI.COMM_WORLD
+
 
 def print0(*args, **kwargs):
     if COMM.rank==0:
         print(*args, **kwargs)
+
 
 def print0f(*args, **kwargs):
     kwargs['flush'] = True
@@ -34,6 +38,7 @@ def print0f(*args, **kwargs):
 
 def printR(*args, **kwargs):
     print("rank%d"%COMM.rank,*args, **kwargs)
+
 
 def printRf(*args, **kwargs):
     kwargs['flush'] = True
@@ -138,9 +143,6 @@ def print_profile(stats, timed_methods=None):
         printR("\n")
         printR("FILE: %s --- FUNC: %s" % (filename, name))
         if not info:
-            #PROFILE_LOGGER.info("<><><><><><><><><><><><><><><><><><><><><><><>")
-            #PROFILE_LOGGER.info("METHOD %s : Not profiled because never called" % (name))
-            #PROFILE_LOGGER.info("<><><><><><><><><><><><><><><><><><><><><><><>")
             continue
         unit = stats.unit
 
@@ -148,13 +150,7 @@ def print_profile(stats, timed_methods=None):
         fp = open(filename, 'r').readlines()
         total_time = sum(timespent)
         header_line = fp[header_ln-1][:-1]
-        #PROFILE_LOGGER.info(header_line)
-        #PROFILE_LOGGER.info("TOTAL FUNCTION TIME: %f ms" % (total_time*unit*1e3))
-        #PROFILE_LOGGER.info("<><><><><><><><><><><><><><><><><><><><><><><>")
-        #PROFILE_LOGGER.info("%5s%14s%9s%10s" % ("Line#", "Time", "%Time", "Line" ))
-        #PROFILE_LOGGER.info("%5s%14s%9s%10s" % ("", "(ms)", "", ""))
-        #PROFILE_LOGGER.info("<><><><><><><><><><><><><><><><><><><><><><><>")
-        print(header_line)
+        printR(header_line)
         printR("TOTAL FUNCTION TIME: %f ms" % (total_time*unit*1e3))
         printR("<><><><><><><><><><><><><><><><><><><><><><><>")
         printR("%5s%14s%9s%10s" % ("Line#", "Time", "%Time", "Line" ))
@@ -163,24 +159,32 @@ def print_profile(stats, timed_methods=None):
         for i_l, l in enumerate(line_nums):
             frac_t = timespent[i_l] / total_time * 100.
             line = fp[l-1][:-1]
-            #PROFILE_LOGGER.info("%5d%14.2f%9.2f%s" % (l, timespent[i_l]*unit*1e3, frac_t, line))
             printR("%5d%14.2f%9.2f%s" % (l, timespent[i_l]*unit*1e3, frac_t, line))
 
 
 class EMC:
 
     def __init__(self, L, shots, prob_rots, min_p=0, outdir=None, beta=1,
-                 symmetrize=True, whole_punch=True, img_sh=None):
+                 symmetrize=True, whole_punch=True, img_sh=None, shot_scales=None,
+                 refine_scale_factors=False, ave_signal_level=1):
         """
         run emc, the resulting density is stored in the L (emc.lerpy) object
         see call to this method in ests/test_emc_iteration
         :param L: instance of emc.lerpy in insert mode
         :param shots: array of images (Nshot, Npanel , slowDim , fastDim) or (Nshot, Npanel x slowDim x fastDim)
         :param prob_rots: list of array containing indices of probable orientations
+        :param beta: float , controls the probability distribution for orientations. lower beta makes more orientations probable
+        :param symmetrize: bool, update W after each iteration according to the space group symmetry operators
+        :param whole_punch: bool, if True, values in W far away from Bragg peaks are set to 0 after each iterations
+        :param shot_scales: list of floats, one per shot, same length as shots and prob_rots. Scale factor applied to
+            tomograms for each shot
+        :param refine_scale_factors: bool, update scale factors with 3d density
         :return: optimized density. Also L instance should be modified in-place
         """
+        self.ave_signal_level=ave_signal_level
         self.L = L
         self.shots = shots
+        self.shot_sums = np.zeros(len(self.shots))
         for i,s in enumerate(self.shots):
             if s.dtype != L.array_type:
                 s = s.astype(L.array_type)
@@ -191,6 +195,14 @@ class EMC:
             if rots.dtype != np.int32:
                 rots = rots.astype(np.int32)
             self.prob_rots[i] = rots
+
+        if shot_scales is None:
+            self.shot_scales = np.ones(len(shots))
+        else:
+            assert len(shots) == len(shot_scales)
+            self.shot_scales = np.array(shot_scales)
+        if refine_scale_factors:
+            self.shot_scales *= self.ave_signal_level / self.shot_scales.mean()
 
         self.nshots = len(shots)
         self.min_p = min_p
@@ -218,6 +230,12 @@ class EMC:
         self.save_model_freq = 10
         self.qs_inbounds = utils.qs_inbounds(self.L.qvecs.reshape((-1,3)), const.DENSITY_SHAPE, const.X_MIN, const.X_MAX)
         self.apply_density_rules()
+        self.ave_time_per_iter = 0
+        self.refine_scale_factors = refine_scale_factors
+        self.update_scale_factors = False  # if the specific iteration is updating the per-shot scale factors
+        self.update_density = True  # if the specific iteration is updating the density
+        for i,s in enumerate(self.shots):
+            self.shot_sums[i] = s[self.qs_inbounds].sum()
 
         if outdir is not None:
             make_dir(outdir)
@@ -226,7 +244,7 @@ class EMC:
                 self.ax = plt.gca()
                 init_density_file = os.path.join(self.outdir, "Winit.h5")
                 self.save_h5(init_density_file)
-            self.plot_models(init=True)
+            #self.plot_models(init=True)
 
     def add_records(self):
         for i_rot, rot_ind in enumerate(self.prob_rots[self.i_shot]):
@@ -252,6 +270,10 @@ class EMC:
         self.rot_inds_on_one_rank_only = COMM.bcast(self.rot_inds_on_one_rank_only)
 
     def insert_one_rankers(self):
+        """
+        for rotations that are only ever sampled by one rank, then the trilinear insertion can be done
+        without MPI comms
+        """
         for i_rot_ind, rot_ind in enumerate(self.finite_rot_inds):
             if rot_ind not in self.rot_inds_on_one_rank_only:
                 continue
@@ -260,15 +282,20 @@ class EMC:
             P_dr_sum = 0
             for i_shot, _, P_dr in self.finite_rot_inds.iter_record(rot_ind):
                 W_rt += self.shots[i_shot]*P_dr
-                P_dr_sum += P_dr
+                P_dr_sum += P_dr*self.shot_scales[i_shot]
             W_rt = utils.errdiv(W_rt, P_dr_sum)
             self.L.trilinear_insertion(rot_ind, W_rt)
 
     def insert_multi_rankers(self):
+        """
+        if a rotation is sampled by more than one rank, then we need to insert the tomograms and the weights
+        across all the ranks that sample that rotation.
+        One rank is chosen to do trilinear insertion, and the relevant shot data from other ranks are sent to chosen rank
+        """
         send_req = []
         if COMM.rank in self.send_to:
             for dest, i_data, tag in self.send_to[COMM.rank]:
-                req = COMM.isend(self.shots[i_data], dest=dest, tag=tag)
+                req = COMM.isend((self.shots[i_data], self.shot_scales[i_data]), dest=dest, tag=tag)
                 send_req.append(req)
 
         if COMM.rank in self.recv_from:
@@ -282,15 +309,16 @@ class EMC:
                     assert source != COMM.rank, "though supported we dont permit self sending"
                     self.print("get from rank %d, tag=%d" % (source, tag))
                     shot_data = COMM.recv(source=source, tag=tag)
+                    shot_img, shot_scale = shot_data
                     self.print("GOT from rank %d, tag=%d" % (source, tag))
-                    W_rt += shot_data.ravel()*P_dr
-                    P_dr_sum += P_dr
+                    W_rt += shot_img.ravel()*P_dr
+                    P_dr_sum += P_dr*shot_scale
 
                 self.print("Done recv %d /%d" %(i_recv+1, len(rot_inds_to_recv)))
                 assert rot_ind in self.finite_rot_inds # this is True by definition if you read the RotInds class method above
                 for i_data, rank, P_dr in self.finite_rot_inds.iter_record(rot_ind):
                     W_rt += self.shots[i_data] * P_dr
-                    P_dr_sum += P_dr
+                    P_dr_sum += P_dr*self.shot_scales[i_data]
                 W_rt = utils.errdiv(W_rt, P_dr_sum)
                 self.L.trilinear_insertion(rot_ind, W_rt)
         for req in send_req:
@@ -304,6 +332,7 @@ class EMC:
         den = COMM.bcast(COMM.reduce(den))
         wts = COMM.bcast(COMM.reduce(wts))
         den = utils.errdiv(den, wts)
+        self.print("MEAN DENSITY:", den.mean())
         self.L.update_density(den)
 
         self.apply_density_rules()
@@ -325,8 +354,14 @@ class EMC:
 
     def do_emc(self, num_iter):
         self.i_emc = 0
+        iter_times = []
         while self.i_emc < num_iter:
-            self.finite_rot_inds = utils.RotInds()
+            t = time.time()
+
+            self.update_scale_factors = (self.i_emc % 2 == 1) and self.refine_scale_factors
+            self.update_density = not self.update_scale_factors
+
+            self.finite_rot_inds = utils.RotInds()  # empty dictionary container for storing finite rot in info
             self.shot_P_dr = []
             log_R_per_shot = self.log_R_dr()
             for self.i_shot in range(self.nshots):
@@ -336,34 +371,52 @@ class EMC:
                 #assert np.any(self.P_dr > self.min_p)
                 self.add_records()
 
-            self.distribute_rot_ind_records()
-            COMM.barrier()
-            self.L.toggle_insert()
-            COMM.barrier()
-            self.insert_one_rankers()
-            COMM.barrier()
-            self.insert_multi_rankers()
-            COMM.barrier()
-            self.reduce_density()
-            COMM.barrier()
-            #self.plot_models(init=False)
-            #COMM.barrier()
-            self.write_to_outdir()
-            COMM.barrier()
+            if self.update_scale_factors:
+                updater = ScaleUpdater(self)
+                maxiters = self.nshots*COMM.size*50
+                #updater.update(bfgs=True, maxiter=maxiters, reparam=True, max_scale=1e6)
+                updater.update(analytical=True)
+                self.shot_scales *= self.ave_signal_level / np.mean(self.shot_scales)
+                self.i_emc += 1
+                t = time.time()-t
+                iter_times.append(t)
+                self.ave_time_per_iter = np.mean(iter_times)
+                continue
 
-            self.i_emc +=1
+            self.distribute_rot_ind_records()
+            self.L.toggle_insert()
+            self.insert_one_rankers()
+            self.insert_multi_rankers()
+            self.reduce_density()
+            #self.plot_models(init=False)
+
+            self.write_to_outdir()
+
+            self.i_emc += 1
+            t = time.time()-t
+            iter_times.append(t)
+            self.ave_time_per_iter = np.mean(iter_times)
             #if self.i_emc % self.save_model_freq==0 or self.i_emc==num_iter:
             #   self.plot_models()
 
-    def log_R_dr(self):
+    def log_R_dr(self, deriv=False):
         shot_log_R_dr = []
-        for i_shot, (img, rot_inds) in enumerate(zip(self.shots, self.prob_rots)):
-            self.print("Getting Rdr %d / %d" % ( i_shot+1, self.nshots))
+        shot_deriv_logR = []
+        for i_shot, (img, rot_inds, scale_factor) in enumerate(zip(self.shots, self.prob_rots, self.shot_scales)):
+            self.print("Getting Rdr %d / %d (scale=%f)" % ( i_shot+1, self.nshots, scale_factor))
             self.L.copy_image_data(img.ravel())
-            self.L.equation_two(rot_inds, False)
-            log_R_dr = np.array(self.L.get_out())
-            shot_log_R_dr.append(log_R_dr)
-        return shot_log_R_dr
+            self.L.equation_two(rot_inds, False, scale_factor)
+            log_R_dr_vals = np.array(self.L.get_out())
+            shot_log_R_dr.append(log_R_dr_vals)
+
+            if deriv:
+                self.L.equation_two(rot_inds, False, scale_factor, deriv=True)
+                deriv_log_R_dr = np.array(self.L.get_out())
+                shot_deriv_logR.append(deriv_log_R_dr)
+        if not deriv:
+            return shot_log_R_dr
+        else:
+            return shot_log_R_dr, shot_deriv_logR
 
     def get_P_dr(self, log_R_dr):
         """
@@ -374,7 +427,7 @@ class EMC:
         R_dr = []
         R_dr_sum = sympy.S(0)
         for val in log_R_dr:
-            r =  sympy.exp(sympy.S(val)) ** self.beta
+            r = sympy.exp(sympy.S(val)) ** self.beta
             R_dr.append(r)
             R_dr_sum += r
 
@@ -382,7 +435,7 @@ class EMC:
         for r in R_dr:
             p = r / R_dr_sum
             p = float(p)
-            P_dr.append( p)
+            P_dr.append(p)
 
         P_dr = np.array(P_dr)
         y = P_dr.sum()
@@ -392,10 +445,9 @@ class EMC:
         return P_dr
 
     def print(self, *args, **kwargs):
-        #rnk = np.random.choice(COMM.size)
-        #if COMM.rank==rnk:
         kwargs["flush"] = True
-        print0("[Rnk%d; EmcStp %d]" % (COMM.rank, self.i_emc), *args, **kwargs)
+        update_s = "fixed W" if self.update_scale_factors else "fixed PHI"
+        print0("[Rnk%d; EmcStp %d; sec/it=%f; %s]" % (COMM.rank, self.i_emc, self.ave_time_per_iter, update_s), *args, **kwargs)
 
     def write_to_outdir(self):
         self.print("Write to outputdir")
@@ -498,3 +550,123 @@ class EMC:
             figname = os.path.join(self.outdir, "model_agreement_iter%d_rank%d.png" % (self.i_emc+1, COMM.rank) )
             plt.suptitle("model versus data (iter=%d)" % (self.i_emc+1))
         plt.savefig(figname)
+
+
+class ScaleUpdater:
+
+    def __init__(self, emc):
+        self.emc = emc
+        self.params = None
+        self.reparam = True
+        self.shot_names = ["rank%d-shot%d" % (COMM.rank, i_shot) for i_shot in range(self.emc.nshots)]
+        all_shot_names = COMM.reduce(self.shot_names)
+        shot_name_xpos = None
+        if COMM.rank==0:
+            shot_name_xpos = {name: i for i, name in enumerate(all_shot_names)}
+        self.shot_name_xpos = COMM.bcast(shot_name_xpos)
+
+    def update(self, bfgs=True, maxiter=None, reparam=True, max_scale=1e6, analytical=False):
+        if analytical:
+            for i_shot, shot_sum in enumerate(self.emc.shot_sums):
+                P_dr = self.emc.shot_P_dr[i_shot]
+                new_scale = np.sum(P_dr) * shot_sum
+                new_scale_norm = 0
+                for i_rot, rot_ind in enumerate(self.emc.prob_rots[i_shot]):
+                    W_ir = self.emc.L.trilinear_interpolation(rot_ind)
+                    Wsum = W_ir[self.emc.qs_inbounds].sum()
+                    new_scale_norm += Wsum*P_dr[i_rot]
+                if new_scale_norm > 0:
+                    new_scale /= new_scale_norm
+                    self.emc.shot_scales[i_shot] = new_scale
+                    self.emc.print("New scale (shot %d) =%f" % ( i_shot, new_scale))
+                else:
+                    self.emc.print("New scale (shot %d) had norm=0 so not updating" % (i_shot))
+            return
+
+        init_shot_scales = np.zeros(len(self.shot_name_xpos))
+        self.params = Parameters()
+        self.reparam = reparam
+        for scale, name in zip(self.emc.shot_scales, self.shot_names):
+            p = RangedParameter(init=scale, minval=1e-7, maxval=max_scale, name=name)
+            self.params.add(p)
+            xpos = self.shot_name_xpos[name]
+            init_shot_scales[xpos] = scale
+
+        x0 = np.ones(len(self.shot_name_xpos))
+        bounds = None
+        if not reparam:
+            x0 = init_shot_scales
+            bounds = [(1e-7,max_scale)] * len(init_shot_scales)
+        if bfgs:
+            out = fmin_l_bfgs_b(self, x0=x0, fprime=self.jac, bounds=bounds)
+            xopt = out[0]
+        else:
+            out = minimize(self, x0=x0, method="Nelder-Mead", options={'maxiter': maxiter})
+            xopt = out.x
+
+        new_scales = []
+        for i, name in enumerate(self.shot_names):
+            p = self.params[name]
+            xpos = self.shot_name_xpos[name]
+            xval = xopt[xpos]
+            if reparam:
+                new_scale = p.get_val(xval)
+            else:
+                new_scale = xval
+            self.emc.shot_scales[i] = new_scale
+            new_scales.append(new_scale)
+
+    def jac(self, x, *args):
+        return self.gra
+
+    def __call__(self, x, *args):
+        f, self.gra = self.target(x)
+        return f
+
+    def target(self, x):
+        """
+        returns the functional and its gradient , w.r.t. x
+        :param x: refiner parameters (all shot scale factors across all MPI ranks)
+        :return: 2-tuple of (float, np.ndarray) (same length as x )
+        """
+        emc = self.emc
+        functional = 0
+        grad = np.zeros(len(x))
+
+        scale_on_rank = []
+        for name in self.shot_names:
+            p = self.params[name]
+            xpos = self.shot_name_xpos[name]
+            xval = x[xpos]
+            if self.reparam:
+                scale = p.get_val(xval)
+            else:
+                scale = xval
+            scale_on_rank.append(scale)
+        scale_on_rank = np.array(scale_on_rank)
+        Q_per_shot, dQ_per_shot = utils.compute_log_R_dr(
+            emc.L, emc.shots, emc.prob_rots, scale_on_rank, deriv=True, verbose=COMM.rank == 0)
+
+        for i_shot, (Q, dQ) in enumerate(zip(Q_per_shot, dQ_per_shot)):
+
+            Q = np.array(Q)
+            dQ = np.array(dQ)
+
+            P_dr = emc.shot_P_dr[i_shot]
+            grad_term = P_dr*dQ
+
+            functional += (P_dr*Q).sum()
+            gsum = grad_term.sum()
+            name = self.shot_names[i_shot]
+            p = self.params[name]
+            xpos = self.shot_name_xpos[name]
+            if self.reparam:
+                g = p.get_deriv(x[xpos], gsum)
+            else:
+                g = gsum
+            grad[xpos] = g
+
+        grad = COMM.bcast(COMM.reduce(grad))
+        functional = COMM.bcast(COMM.reduce(functional))
+        # running a minimizer so return the negative loglike and its gradient
+        return -functional, -grad

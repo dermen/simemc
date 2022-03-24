@@ -2,7 +2,7 @@
 #define CUDA_EMC_H
 
 #include <Eigen/Dense>
-typedef float CUDAREAL;
+typedef double CUDAREAL;
 typedef Eigen::Matrix<CUDAREAL,3,1> VEC3;
 typedef Eigen::Matrix<CUDAREAL,3,3> MAT3;
 #include <iostream>
@@ -34,6 +34,8 @@ struct lerpy {
   int maxNumRotInds;
   VEC3 corner;
   VEC3 delta;
+  CUDAREAL shot_scale=1;
+  CUDAREAL tomogram_wt=1;
 };
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
@@ -45,7 +47,6 @@ void densities_to_device(lerpy& gpu, np::ndarray& new_densities);
 // fills the gpu.out array with interpolated values, 1 for each qvec
 void do_a_lerp(lerpy& gpu,
                std::vector<int>& rot_inds,
-               //np::ndarray qvecs,
                bool verbose, int task);
 
 void toggle_insert_mode(lerpy& gpu);
