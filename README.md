@@ -30,11 +30,14 @@ DIFFBRAGG_USE_CUDA=1 mpirun -n 3 libtbx.python tests/test_emc_iteration.py  \
 Process the images using the standard stills process framework as a comparison:
 
 ```
-mpirun  -n 24 dials.stills_process proc.phil  water_sims/1um-cbfs/*.cbf output.output_dir=water_sims/1um-proc mp.method=mpi
+mpirun  -n 24 dials.stills_process \
+  proc.phil  water_sims/1um-cbfs/*.cbf \
+  output.output_dir=water_sims/1um-proc mp.method=mpi
 ```
 
 ```
-mpirun -n 24 cctbx.xfel.merge merge.phil  input.path=water_sims/1um-proc output.output_dir=water_sims/1um-xfelmerge
+mpirun -n 24 cctbx.xfel.merge merge.phil \
+  input.path=water_sims/1um-proc output.output_dir=water_sims/1um-xfelmerge
 ```
 
 Because we ran a simulation, we know the ground truth structure factors. We can plot the correlation between the EMC-determined structure factors with the ground truth. We can do the same for `stills_process` / `xfel.merge` determined structure factors. See the script `make_corr_plot.py`:
