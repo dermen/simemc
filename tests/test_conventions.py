@@ -1,5 +1,4 @@
 
-import time
 import sys
 import numpy as np
 import pytest
@@ -7,18 +6,19 @@ from scipy.spatial.transform import Rotation
 from scipy.stats import pearsonr
 from dials.array_family import flex
 from dxtbx.model import ExperimentList, Experiment
+from simtbx.diffBragg import utils as db_utils
 
 from reborn.misc.interpolate import trilinear_insertion
 from simemc import utils, const, sim_utils, sim_const
 from simemc.emc import probable_orients, lerpy
 
 
-@pytest.mark.skip()
+@pytest.mark.mpi_skip()
 def test_conventions_reborn_insert():
     _test_conventions(False)
 
 
-@pytest.mark.skip()
+@pytest.mark.mpi_skip()
 def test_conventions_hist_insert():
     _test_conventions(True)
 
@@ -92,7 +92,6 @@ def _test_conventions(use_hist_method=True):
 
     L.update_density(W)
 
-
     print("Copy image data to lerpy")
     L.copy_image_data(img.ravel())
     inds = np.arange(maxRotInds).astype(np.int32)
@@ -111,7 +110,8 @@ def _test_conventions(use_hist_method=True):
     assert np.allclose(O.Bmatrix, C.get_B())
 
     # load the strong spot reflections
-    R = flex.reflection_table.from_file("../quick_sim/proc/strong_idx-shot0.refl")
+    R = db_utils.refls_from_sims(np.array([img]), sim_const.DETECTOR, sim_const.BEAM)
+    R['id'] = flex.int(len(R), 0)
     minPred=3
     hcut=0.05
     El = ExperimentList()
