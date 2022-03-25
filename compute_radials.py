@@ -43,6 +43,7 @@ class RadPros:
     def __init__(self, refGeom, maskFile=None, numBins=500):
         """
         :param refGeom: either a dict with {'D': dxtbx_detector, 'B': dxtbx_beam} or a string that points to an experiment containing a beam and detector
+        :param maskFile: optional mask file (numpy .npy file). mask should be a boolean array same shape as detector (3dim), True is a trusted pixel
         :param numBins: number of radial bins for the radial profiles
         """
 
@@ -81,6 +82,17 @@ class RadPros:
         self.POLAR = np.ones(self.img_sh)
         self.OMEGA = np.ones(self.img_sh)
         self._index = np.arange(1, self.numBins+1)
+
+    @property
+    def mask(self):
+        return self._mask
+
+    @mask.setter
+    def mask(self, val):
+        assert isinstance(val, np.ndarray)
+        assert val.dtype==bool
+        assert val.shape==self.img_sh
+        self._mask = val
 
     def _setupQbins(self):
         Qmags = {}
