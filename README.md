@@ -13,6 +13,63 @@ diffraction simulations and EMC
 
 ## Building
 
+1) Clone simemc (if not using ssh keys for github, change URL)
+
+```
+git clone git@github.com:dermen/simemc.git
+```
+
+2) Install dev CCTBX (edit and run the script `build_cctbx_dev_gpu_mpi.sh`) . Note what you set as the value of CCTBXROOT. This might take some tinkering with (DIALS/CCTBX mailining lists are active and responsive)
+
+```
+cd simemc
+./build_cctbx_dev_gpu_mpi.sh
+```
+
+3) Activate the cctbx environment
+
+```
+source CCTBXROOT/build/conda_setpaths.sh
+# Note, to deactivate run CCTBXROOT/build/conda_unsetpaths.sh
+```
+
+4) Install reborn. Edit the value of CCTBXROOT in `build_reborn.sh` and run the script
+
+```
+./build_reborn.sh
+```
+
+5) Get the other python dependencies
+
+```
+libtbx.pip install pytest-mpi line_profiler sympy
+```
+
+6) Build the `simemc` extension module from the root of the simemc repository (copy the `build_trilerp.sh` example script, and edit it accordingly)
+
+```
+cd simemc
+./build_trilperp.sh
+```
+
+7) Softlink `simemc` to the cctbx modules folder
+
+```
+ln -s /full/path/to/simemc $CCTBXROOT/modules
+```
+
+8) Make a startup script that can be sourced at *each new login*. Example:
+
+```
+#!/bin/bash
+export PATH=/usr/local/cuda/bin:$PATH
+export CUDA_HOME=/usr/local/cuda
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64
+export CCTBXROOT=~/xtal_gpu  # see the build_cctbx script
+source $CCTBXROOT/build/conda_setpaths.sh
+```
+
+
 
 ## Testing
 From the repository root run `libtbx.pytest`. Then, optionally test the `mpi4py` installation using e.g. `mpirun -n 2 libtbx.pytest --with-mpi --no-summary -q` (provided `pytest-mpi` is installed).
