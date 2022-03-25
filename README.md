@@ -65,7 +65,7 @@ ln -s /full/path/to/simemc $CCTBXROOT/modules
 export PATH=/usr/local/cuda/bin:$PATH
 export CUDA_HOME=/usr/local/cuda
 export LD_LIBRARY_PATH=/usr/local/cuda/lib64
-export CCTBXROOT=~/xtal_gpu  # see the build_cctbx script
+export CCTBXROOT=~/xtal_gpu  # whatever this was set as when CCTBX was built
 source $CCTBXROOT/build/conda_setpaths.sh
 ```
 
