@@ -3,13 +3,13 @@ diffraction simulations and EMC
 
 ## Dependencies
 
-* Developer build of CCTBX with mpi4py support
+* Developer build of [CCTBX](https://github.com/cctbx/cctbx_project) with [mpi4py](https://mpi4py.readthedocs.io/en/stable/#) support
 * [reborn](https://kirianlab.gitlab.io/reborn/)
 * [sympy](https://www.sympy.org/en/index.html)
 * [pytest-mpi](https://pypi.org/project/pytest-mpi/) (optional)
 * [kern line profiler](https://github.com/rkern/line_profiler.git)
 * [CUB](https://nvlabs.github.io/cub/) (for doing block reduction in CUDA, see the example `build_trilerp.sh` script)
-* possible some other python dependencies, Try running the tests and install missing dependencies using PIP
+* Possibly some other python dependencies, run the tests and install any missing dependencies using PIP
 
 ## Building
 
@@ -74,9 +74,22 @@ source $CCTBXROOT/build/conda_setpaths.sh
 ## Testing
 From the repository root run `libtbx.pytest`. Then, optionally test the `mpi4py` installation using e.g. `mpirun -n 2 libtbx.pytest --with-mpi --no-summary -q` (provided `pytest-mpi` is installed).
 
+The first time you run the tests, first run `iotbx.fetch_pdb 4bs7`. That command will download the PDB file used in the simulations. 
+
 ## Run the pipeline
 
-Here we simulate 999 shots on a machine with 24 processors and 1 v100 GPU. The script then runs them through EMC for a set number of iterations 
+Here we simulate 999 shots on a machine with 24 processors and 1 v100 GPU. We need to first downloaded the PDB file `4bs7` using `iotbx.fetch_pdb 4bs7`. We then create a quaternion file containing the orientation samples.
+
+```
+# prep (from the simemc repository root):
+iotbx.fetch_pdb 4bs7
+cd quat
+gcc make-quaternion.c -O3 -lm -o quat
+./quat -bin 70
+cd ../
+```
+
+The script then runs them through EMC for a set number of iterations 
 
 ```
 DIFFBRAGG_USE_CUDA=1 mpirun -n 3 libtbx.python tests/test_emc_iteration.py  \
