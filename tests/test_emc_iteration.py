@@ -170,7 +170,10 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
 
         else:
             R = db_utils.refls_from_sims(img, sim_const.DETECTOR, sim_const.BEAM)
-        signal_level = utils.signal_level_of_image(R, img)
+        if R is not None:
+            signal_level = utils.signal_level_of_image(R, img)
+        else:
+            signal_level = np.percentil(img, 99)
         this_ranks_signal_levels.append(signal_level)
 
         prob_rot_file = None
@@ -224,6 +227,7 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
         wts = COMM.bcast(COMM.reduce(L.wts()))
         den = utils.errdiv(den, wts)
         L.update_density(den)
+        np.save(os.path.join(outdir, "Starting_density_insert"), den)
     else:
         Wstart = utils.get_W_init()
         scale_factor = max([img[img > 0].mean() for img in this_ranks_imgs])
@@ -232,6 +236,7 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
         Wstart /= Wstart.max()
         Wstart *= scale_factor
         L.update_density(Wstart)
+        np.save(os.path.join(outdir, "Starting_density_relp"), Wstart)
 
     all_ranks_signal_level = COMM.reduce(this_ranks_signal_levels)
     ave_signal_level = None
