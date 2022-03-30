@@ -142,13 +142,19 @@ class _():
         self._update_density(new_dens)
 
 
-    def copy_image_data(self, pixels):
+    def copy_image_data(self, pixels, mask=None):
         """
         :param pixels:
+        :param mask:
         :return:
         """
         pixels = self.check_arrays(pixels)
-        self._copy_image_data(pixels)
+        if mask is None:
+            mask = np.ones(pixels.shape, dtype=bool)
+        else:
+            assert mask.dtype==bool
+            assert mask.shape == pixels.shape
+        self._copy_image_data(pixels, mask)
 
     def equation_two(self, rot_inds, verbose=True, shot_scale_factor=1, deriv=False):
         """

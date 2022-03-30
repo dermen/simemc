@@ -67,14 +67,18 @@ class lerpyExt{
         gpu.delta[2] = bp::extract<double>(delta[2]);
         prepare_for_lerping( gpu, rotations, densities, qvecs);
     }
-    inline void copy_pixels( np::ndarray& pixels){
+    inline void copy_pixels( np::ndarray& pixels, np::ndarray& mask){
         // assert len pixels matches up
         if (pixels.shape(0) != gpu.numQ){
             PyErr_SetString(PyExc_TypeError, "Number of pixels passed does not agree with number of allocated pixels on device\n");
             bp::throw_error_already_set();
         }
+        else if (mask.shape(0) != gpu.numQ){
+            PyErr_SetString(PyExc_TypeError, "Number of mask flags passed does not agree with number of allocated pixels on device\n");
+            bp::throw_error_already_set();
+        }
         else{
-            shot_data_to_device(gpu,pixels);
+            shot_data_and_mask_to_device(gpu,pixels,mask);
         }
     }
 

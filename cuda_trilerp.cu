@@ -26,6 +26,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
 
 __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
                                  const CUDAREAL* __restrict__ data,
+                                 const bool* is_trusted,
                                  CUDAREAL scale_factor,
                                  VEC3*vectors, CUDAREAL* out_rot,
                                  MAT3* rotMats, int * rot_inds,
@@ -53,6 +54,7 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
     gpuErr(cudaMallocManaged((void **)&gpu.qVecs, gpu.maxNumQ*sizeof(VEC3)));
     gpuErr(cudaMallocManaged((void **)&gpu.rotInds, gpu.maxNumRotInds*sizeof(int)));
     gpuErr(cudaMallocManaged((void **)&gpu.data, gpu.numDataPixels*sizeof(CUDAREAL)));
+    gpuErr(cudaMallocManaged((void **)&gpu.mask, gpu.numDataPixels*sizeof(bool)));
 
     MAT3 Umat; // orientation matrix
     CUDAREAL* Umats_ptr = reinterpret_cast<CUDAREAL*>(Umats.get_data());
@@ -94,6 +96,16 @@ void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data){
     CUDAREAL* data_ptr = reinterpret_cast<CUDAREAL*>(shot_data.get_data());
     for (int i=0; i < num_pix; i++) {
         gpu.data[i] = *(data_ptr + i);
+    }
+}
+
+void shot_data_and_mask_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_mask){
+    unsigned int num_pix = shot_data.shape(0);
+    CUDAREAL* data_ptr = reinterpret_cast<CUDAREAL*>(shot_data.get_data());
+    bool* mask_ptr = reinterpret_cast<bool*>(shot_mask.get_data());
+    for (int i=0; i < num_pix; i++) {
+        gpu.data[i] = *(data_ptr + i);
+        gpu.mask[i] = *(mask_ptr + i);
     }
 }
 
@@ -163,8 +175,8 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     else if(task==1 || task==3) {
         if (verbose)printf("Running equation 2!\n");
         EMC_equation_two<<<gpu.numBlocks, gpu.blockSize>>>
-                (gpu.densities,  gpu.data, gpu.shot_scale,
-                 gpu.qVecs, gpu.out_equation_two,
+                (gpu.densities,  gpu.data, gpu.mask,
+                 gpu.shot_scale, gpu.qVecs, gpu.out_equation_two,
                  gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
                  256, 256, 256,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
@@ -185,22 +197,6 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                 );
    
     }
-    //else {
-    //    // TODO remove this block of code, dont think its used ...
-    //    printf("Symmetrize density!\n");
-    //    // zero out the densities
-    //    toggle_insert_mode(gpu);
-
-    //    MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
-//  //    NOTE: here gpu.data are the insert values
-    //    trilinear_insertion_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
-    //            (gpu.densities, gpu.wts, gpu.data, gpu.qVecs,
-    //             rotMat, gpu.numQ,
-    //             256, 256, 256,
-    //             gpu.corner[0], gpu.corner[1], gpu.corner[2],
-    //             gpu.delta[0], gpu.delta[1], gpu.delta[2]
-    //            );
-    //}
     error_msg(cudaGetLastError(), "after kernel call");
     cudaDeviceSynchronize();
     if (verbose) {
@@ -444,6 +440,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
  */
 __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                                  const CUDAREAL * __restrict__ data,
+                                 const bool * is_trusted,
                                  CUDAREAL scale_factor,
                                  VEC3 *vectors,
                                  CUDAREAL * out_rot,
@@ -479,6 +476,9 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
         r = rot_inds[i_rot];
         R = rotMats[r];
         for (t=tid; t < num_qvec; t += thread_stride){
+            if (! is_trusted[t]){
+                continue;
+            }
             K_t = __ldg(&data[t]);
             Q = R*vectors[t];
             qx = Q[0];
