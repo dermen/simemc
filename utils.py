@@ -346,15 +346,32 @@ def stills_process_params_from_file(phil_file):
     return params
 
 
-def save_expt_refl_file(filename, expts, refls):
+def save_expt_refl_file(filename, expts, refls, check_exists=False):
+    """
+    Save an input file for bg_and_probOri (the EMC initializer script)
+    expt and refl names will be given absolute paths
+    :param filename: input expt_refl name to be written (passable to script bg_and_probOri.py)
+    :param expts: list of experiments
+    :param refls: list of reflection tables
+    :param check_exists: ensure files actually exist
+    :return:
+    """
     with open(filename, "w") as o:
         for expt, refl in zip(expts, refls):
             expt = os.path.abspath(expt)
             refl = os.path.abspath(refl)
+            if check_exists:
+                assert os.path.exists(expt)
+                assert os.path.refls(refl)
             o.write("%s %s\n" % (expt, refl))
 
 
 def load_expt_refl_file(input_file):
+    """
+
+    :param input_file: file created by method save_expt_refl_file
+    :return: two lists, one for expts, one for refls
+    """
     expts,refls = [],[]
     lines = open(input_file, "r").readlines()
     for l in lines:
@@ -587,9 +604,18 @@ def symmetrize(density, symbol="P43212", dens_sh=(256,256,256),
     return d
 
 
-def errdiv(v1, v2):
+def errdiv(v1, v2, posinf=0, neginf=0):
+    """
+    carefully divide v1 by v2. Note posinf,neginf set to 0 because:
+        https://stackoverflow.com/q/71667082/2077270
+    :param v1:
+    :param v2:
+    :param posinf:
+    :param neginf:
+    :return:
+    """
     with np.errstate(divide='ignore', invalid='ignore'):
-        v3 = np.nan_to_num(v1 / v2)
+        v3 = np.nan_to_num(v1 / v2, posinf=posinf, neginf=neginf)
     return v3
 
 
@@ -704,14 +730,24 @@ def deriv_P_dr_from_Q_and_dQ(Q, dQ_dphi):
     return dP
 
 
-def compute_log_R_dr(L, shots, prob_rots, shot_scales, deriv=False, verbose=False):
+def compute_log_R_dr(L, shots, prob_rots, shot_scales, masks=None, deriv=False, verbose=False):
+    assert len(shots) > 0
+
     shot_log_R_dr = []
     shot_deriv_logR = []
     nshots = len(shots)
+    assert len(prob_rots)== nshots
+    if masks is not None:
+        assert len(masks) == nshots
+        assert masks[0].shape == shots[0].shape
+    else:
+        img_mask = np.ones(shots[0].shape, bool)
     for i_shot, (img, rot_inds, scale_factor) in enumerate(zip(shots, prob_rots, shot_scales)):
-        if verbose:
-            print("Getting Rdr %d / %d (scale=%f)" % ( i_shot+1, nshots, scale_factor))
-        L.copy_image_data(img.ravel())
+        #if verbose:
+        #    print("Getting Rdr %d / %d (scale=%f)" % ( i_shot+1, nshots, scale_factor))
+        if masks is not None:
+            img_mask = masks[i_shot]
+        L.copy_image_data(img.ravel(), img_mask)
         L.equation_two(rot_inds, False, scale_factor)
         log_R_dr_vals = np.array(L.get_out())
         shot_log_R_dr.append(log_R_dr_vals)
