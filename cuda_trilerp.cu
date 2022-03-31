@@ -16,6 +16,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
         CUDAREAL * densities,
         CUDAREAL * wts,
         CUDAREAL* insertion_values,
+        const bool* is_trusted,
         CUDAREAL tomo_wt,
         VEC3 *vectors,
         MAT3 rotMat, int num_qvec,
@@ -189,7 +190,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
 //      NOTE: here gpu.data are the insert values
         trilinear_insertion_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
-                (gpu.densities, gpu.wts, gpu.data, gpu.tomogram_wt, gpu.qVecs,
+                (gpu.densities, gpu.wts, gpu.data, gpu.mask, gpu.tomogram_wt, gpu.qVecs,
                  rotMat, gpu.numQ,
                  256, 256, 256,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
@@ -341,6 +342,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
         CUDAREAL*  densities,
         CUDAREAL*  wts,
         CUDAREAL* insertion_values,
+        const bool* is_trusted,
         CUDAREAL tomo_wt,
         VEC3 *vectors,
         MAT3 rotMat, int num_qvec,
@@ -362,6 +364,9 @@ __global__ void trilinear_insertion_rotate_on_GPU(
     int idx0,idx1,idx2,idx3,idx4,idx5,idx6,idx7;
     CUDAREAL val;
     for (i=tid; i < num_qvec; i += thread_stride){
+        if (!is_trusted[i]){
+            continue;
+        }
         val = insertion_values[i];
         Q = rotMat*vectors[i];
         qx = Q[0];

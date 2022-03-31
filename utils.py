@@ -730,24 +730,29 @@ def deriv_P_dr_from_Q_and_dQ(Q, dQ_dphi):
     return dP
 
 
-def compute_log_R_dr(L, shots, prob_rots, shot_scales, masks=None, deriv=False, verbose=False):
+def compute_log_R_dr(L, shots, prob_rots, shot_scales, mask=None, deriv=False):
+    """
+    helper function called by ScaleUpdater (TODO: update methods in EMC class to use this method)
+    :param L: lerpy instance
+    :param shots: list of numpy arrays shots
+    :param prob_rots: list of probable orientation index lists
+    :param shot_scales: list of per-shot scales
+    :param mask: mask, same shape as one of the shots (boolean array, True is masked)
+    :param deriv: whether to also compute and return the gradients in which case return val is a tuple
+    :return:
+    """
     assert len(shots) > 0
 
     shot_log_R_dr = []
     shot_deriv_logR = []
     nshots = len(shots)
     assert len(prob_rots)== nshots
-    if masks is not None:
-        assert len(masks) == nshots
-        assert masks[0].shape == shots[0].shape
+    if mask is not None:
+        assert mask.shape == shots[0].shape
     else:
-        img_mask = np.ones(shots[0].shape, bool)
+        mask = np.ones(shots[0].shape, bool)
     for i_shot, (img, rot_inds, scale_factor) in enumerate(zip(shots, prob_rots, shot_scales)):
-        #if verbose:
-        #    print("Getting Rdr %d / %d (scale=%f)" % ( i_shot+1, nshots, scale_factor))
-        if masks is not None:
-            img_mask = masks[i_shot]
-        L.copy_image_data(img.ravel(), img_mask)
+        L.copy_image_data(img.ravel(), mask)
         L.equation_two(rot_inds, False, scale_factor)
         log_R_dr_vals = np.array(L.get_out())
         shot_log_R_dr.append(log_R_dr_vals)

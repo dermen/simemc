@@ -47,6 +47,8 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
     """
     from mpi4py import MPI
     COMM = MPI.COMM_WORLD
+    if not os.path.exists(outdir):
+        mpi_utils.make_dir(outdir)
     np.random.seed(COMM.rank)
     quat_file = os.path.join(os.path.dirname(__file__), "../quatgrid/c-quaternion70.bin")
     if not os.path.exists(quat_file):

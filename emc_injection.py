@@ -114,7 +114,7 @@ class _():
     def trilinear_interpolation(self, rot_idx, verbose=False):
         return self._trilinear_interpolation(int(rot_idx), verbose)
 
-    def trilinear_insertion(self, rot_idx, vals, verbose=False, tomo_wt=1):
+    def trilinear_insertion(self, rot_idx, vals, mask=None, verbose=False, tomo_wt=1):
         """
 
         :param tomo_wt:
@@ -126,7 +126,13 @@ class _():
         if not isinstance(tomo_wt, float):
             tomo_wt = float(tomo_wt)
         vals = self.check_arrays(vals)
-        self._trilinear_insertion(int(rot_idx), vals, verbose, tomo_wt)
+        if mask is None:
+            mask = np.ones(vals.shape, bool)
+        else:
+            assert isinstance(mask, np.ndarray)
+            assert mask.dtype==bool
+            assert mask.shape==vals.shape
+        self._trilinear_insertion(int(rot_idx), vals, mask, verbose, tomo_wt)
 
     def update_density(self, new_dens):
         """

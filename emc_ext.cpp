@@ -112,7 +112,7 @@ class lerpyExt{
         return output.copy();
     }
     
-    inline void trilinear_insertion(int rot_idx, np::ndarray vals, bool verbose, CUDAREAL tomo_wt){
+    inline void trilinear_insertion(int rot_idx, np::ndarray vals, np::ndarray mask, bool verbose, CUDAREAL tomo_wt){
         if (rot_idx < 0 || rot_idx >= gpu.numRot) {
             PyErr_SetString(PyExc_TypeError,
                             "Rot index is out of bounds, check size of allocated rotMats\n");
@@ -128,12 +128,17 @@ class lerpyExt{
                             "For insertion the number of vals should be the same as the number of Qvecs on device\n");
             bp::throw_error_already_set();
         }
+        if (mask.shape(0) != vals.shape(0)) {
+            PyErr_SetString(PyExc_TypeError,
+                            "For insertion the mask and vals should have same shape\n");
+            bp::throw_error_already_set();
+        }
 
         std::vector<int> rot_inds;
         rot_inds.push_back(rot_idx);
            
         // copy the insertion values to the device 
-        shot_data_to_device(gpu,vals);
+        shot_data_and_mask_to_device(gpu,vals, mask);
 
         // 2 specifies to do a trilinear insertion
         gpu.tomogram_wt = tomo_wt;
