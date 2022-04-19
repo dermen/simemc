@@ -82,6 +82,7 @@ def load_emc_input(input_dirs, dt=None, max_num=None, min_prob_ori=0, max_prob_o
     for i_f, f in enumerate(all_inputs):
         if i_f % COMM.size != COMM.rank:
             continue
+        print0f("Examining emc-input %s (%d/%d)" % (f, i_f+1, len(all_inputs)))
         with h5py.File(f, 'r') as h:
             prob_inds = h['probable_rot_inds']
             nprob = np.array([len(p) for p in prob_inds])
@@ -417,7 +418,7 @@ class EMC:
             den = COMM.bcast(den)
 
         if self.whole_punch:
-            den = utils.whole_punch_W(den)
+            den = utils.whole_punch_W(den, 2)
         self.L.update_density(den)
 
     def prep_for_insertion(self):
@@ -452,7 +453,7 @@ class EMC:
         while self.i_emc < num_iter:
             t = time.time()
 
-            self.update_scale_factors = (self.i_emc % 2 == 1) and self.refine_scale_factors
+            self.update_scale_factors = self.i_emc > 4 and (self.i_emc % 2 == 1) and self.refine_scale_factors
             self.update_density = not self.update_scale_factors
 
             self.finite_rot_inds = utils.RotInds()  # empty dictionary container for storing finite rot in info
@@ -474,6 +475,12 @@ class EMC:
                 norm_factor = self.ave_signal_level / np.mean(self.shot_scales)
                 self.print("Normalizing scale factors... Multiplying all scale factors by %f" % norm_factor)
                 self.shot_scales *= norm_factor
+                #if self.scale_changed is not None:
+                #    ave_scale = COMM.gather(self.shot_scales)
+                #    if COMM.rank==0:
+                #        ave_scale = np.mean(np.hstack(ave_scale))
+                #    ave_scale = COMM.bcast(ave_scale)
+                            
                 self.i_emc += 1
                 t = time.time()-t
                 iter_times.append(t)

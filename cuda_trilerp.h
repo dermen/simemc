@@ -37,6 +37,8 @@ struct lerpy {
   VEC3 delta;
   CUDAREAL shot_scale=1;
   CUDAREAL tomogram_wt=1;
+  bool use_poisson_stats=true; // if False, a Gaussian random variable is used to describe the pixel measurements
+  CUDAREAL sigma_r_sq=0.25;  // variance model for each pixel (e.g. dark noise variance)
 };
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,

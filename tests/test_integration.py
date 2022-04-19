@@ -24,7 +24,7 @@ def test():
     img = sim_utils.synthesize_cbf(
         SIM, C, Famp,
         dev_id=0,
-        xtal_size=0.002, outfile=None, background=0, just_return_img=True )
+        xtal_size=0.0025, outfile=None, background=0, just_return_img=True )
 
     qcoords = np.vstack((qx,qy,qz)).T
     Umat = np.reshape(C.get_U(), (3,3))
@@ -59,7 +59,8 @@ def test():
     vals1 = [Imap1[h] for h in hcommon]
     vals2 = [Imap2[h] for h in hcommon]
 
-    assert pearsonr(vals1, vals2)[0] > 0.99
+    # the integrated intensities should be correlated with the structure factor intensities
+    assert pearsonr(vals1, vals2)[0] > 0.9
     print("OK")
 
 if __name__=="__main__":

@@ -55,16 +55,14 @@ def main(maxRotInds=10, finite_diff=False):
 
     talloc = time.time()
     L = lerpy()
-    qcoords_alloc  = qcoords[inbounds]
-    data1_alloc = data1[inbounds]
     L.allocate_lerpy(0, rotMats, I, maxNumQ,
-                     tuple(c), tuple(d), qcoords_alloc,
+                     tuple(c), tuple(d), qcoords,
                      maxRotInds, N)
     talloc = time.time()-talloc
     print("Took %.4f sec to allocate device (this only ever happens once per EMC computation)" % talloc)
 
     tcopy = time.time()
-    L.copy_image_data(data1_alloc)
+    L.copy_image_data(data1, mask=inbounds)
     tcopy = time.time()-tcopy
     print("Takes %.4f sec to copy data to GPU" % tcopy)
 
@@ -98,18 +96,6 @@ def main(maxRotInds=10, finite_diff=False):
         assert l.rvalue > 0.999, l.rvalue
         print("ok")
 
-        # compute P_dr
-        P_dr = utils.compute_P_dr_from_log_R_dr(Rgpu)
-        deriv_P_dr = utils.deriv_P_dr_from_Q_and_dQ(Rgpu, deriv_Rgpu)
-
-        #for perc in percs:
-        #    scale_factor_shifted = 1 + perc
-        #    L.equation_two(inds, verbose=False, shot_scale_factor=scale_factor_shifted)
-        #    Rgpu_shifted = np.array(L.get_out())
-        #    P_dr_shifted = utils.compute_P_dr_from_log_R_dr(Rgpu_shifted)
-        #    delta_P = P_dr_shifted - P_dr
-        #    finite_diff_P = delta_P / perc
-        #    error = np.mean(np.abs(finite_diff_P - deriv_P_dr))
         print("FINITE DIFF SCALING: ", perc, error)
         return
     t2 = time.time() - t2
@@ -117,8 +103,10 @@ def main(maxRotInds=10, finite_diff=False):
     print("GPU:",np.round(Rgpu[:3], 3), "(%.4f sec)" % t2)
 
     Rcpu = []
+    Rcpu2 = []
     t = time.time()
     twaste = 0
+    epsilon=1e-6
     for i_rot in range(maxRotInds):
         qcoords_rot = np.dot(qcoords, rotMats[i_rot])
         W = trilinear_interpolation(I, qcoords_rot, x_min=xmin, x_max=xmax)
@@ -129,8 +117,11 @@ def main(maxRotInds=10, finite_diff=False):
         sel = np.logical_and( inbounds, np.logical_and(good, W > 0))
         twaste += time.time()-tt
         Wsel = W[sel]
-        r = np.sum(data1[sel]*np.log(Wsel)-Wsel)
+        r = np.sum(data1[sel]*np.log(Wsel+epsilon)-Wsel)
         Rcpu.append(r)
+        Wr = L.trilinear_interpolation(i_rot)
+        r2 = np.sum(data1*np.log1p(Wr+epsilon) - Wr)
+        Rcpu2.append(r2)
     t = time.time()-t - twaste
     print("CPU:",np.round(Rcpu[:3],3), "(%.3f sec)" % t)
     try:

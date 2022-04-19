@@ -26,7 +26,8 @@ def test_conventions_hist_insert():
 def _test_conventions(use_hist_method=True):
     gpu_device = 0
     num_rot_mats = 10000000
-    maxRotInds = 10000
+    #maxRotInds = 10000
+    maxRotInds = 5
     max_num_strong_spots = 1000
 
     qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
@@ -41,31 +42,30 @@ def _test_conventions(use_hist_method=True):
         SIM, C, Famp,
         dev_id=0,
         xtal_size=0.002, outfile=None, background=0, just_return_img=True )
+    print("IMG MEAN=", img.mean())
 
     qcoords = np.vstack((qx,qy,qz)).T
 
     Umat = np.reshape(C.get_U(), (3,3))
-    qcoords_rot = np.dot( Umat.T, qcoords.T).T
+    qcoords_rot = np.dot(Umat.T, qcoords.T).T
     qbins = const.QBINS
     maxNumQ = qcoords_rot.shape[0]
     dens_shape = const.DENSITY_SHAPE
     corner,deltas = utils.corners_and_deltas(dens_shape, const.X_MIN, const.X_MAX )
+    inbounds = utils.qs_inbounds(qcoords_rot, dens_shape, const.X_MIN, const.X_MAX)
     if use_hist_method:
         W = utils.insert_slice(img.ravel(), qcoords_rot, qbins)
     else:
-        good = utils.qs_inbounds(qcoords_rot, dens_shape, const.X_MIN, const.X_MAX)
         densities = np.zeros(dens_shape)
         weights = np.zeros(dens_shape)
 
         trilinear_insertion(
             densities, weights,
-            vectors=np.ascontiguousarray(qcoords_rot[good]),
-            insert_vals=img.ravel()[good],  x_min=const.X_MIN, x_max=const.X_MAX)
+            vectors=np.ascontiguousarray(qcoords_rot[inbounds]),
+            insert_vals=img.ravel()[inbounds],  x_min=const.X_MIN, x_max=const.X_MAX)
 
-        with np.errstate(divide="ignore", invalid="ignore"):
-            W = np.nan_to_num(densities / weights)
+        W = utils.errdiv(densities, weights)
 
-    Npix = maxNumQ
 
     rotMats = Rotation.random(num_rot_mats).as_matrix()
     rot_idx = 1
@@ -74,32 +74,47 @@ def _test_conventions(use_hist_method=True):
     L = lerpy()
     L.allocate_lerpy(gpu_device, rotMats, W, maxNumQ,
                      tuple(corner), tuple(deltas), qcoords,
-                     maxRotInds, Npix)
-    L.toggle_insert()
-    L.trilinear_insertion(rot_idx, img)
+                     maxRotInds, maxNumQ)
 
-    with np.errstate(divide='ignore', invalid='ignore'):
-        W2 = np.nan_to_num(L.densities()/ L.wts())
-    W2 = W2.reshape(W.shape)
-    if not use_hist_method:
-        # quantitative comparison should only be done if reborn insertion was used to get W
-        assert np.sum(W> 0) == np.sum(W2>0)
+    #L.toggle_insert()
+    #L.trilinear_insertion(rot_idx, img.ravel(), mask=inbounds.ravel())
 
-        if L.size_of_cudareal==8:
-            assert np.allclose(W, W2.reshape(W.shape))
-        else:
-            assert pearsonr(W[W> 0], W2[W2 > 0])[0] > 0.99
+    #W2 = utils.errdiv(L.densities(), L.wts())
+    #W2 = W2.reshape(W.shape)
+    #if not use_hist_method:
+    #    # quantitative comparison should only be done if reborn insertion was used to get W
+    #    assert np.sum(W> 0) == np.sum(W2>0)
 
-    L.update_density(W)
+    #    if L.size_of_cudareal==8:
+    #        assert np.allclose(W, W2.reshape(W.shape))
+    #    else:
+    #        assert pearsonr(W[W> 0], W2[W2 > 0])[0] > 0.99
+    #L.update_density(W)
 
+    all_Wr_simemc = []
+    all_log_Rdr = []
+    for i_rot in range(maxRotInds):
+
+        Wr_simemc = L.trilinear_interpolation(i_rot).reshape(img.shape)
+        all_Wr_simemc.append(Wr_simemc)
+
+        assert np.all(Wr_simemc >-1e-6)
+        log_Rdr_simemc = (np.log(Wr_simemc+1e-6)*img - Wr_simemc)[inbounds.reshape(img.shape)].sum()
+        print("Rot%d, log_Rdr= %f "
+              % (i_rot, log_Rdr_simemc,))
+        print(Wr_simemc.min(), Wr_simemc.max(), Wr_simemc.mean())
+        all_log_Rdr.append(log_Rdr_simemc)
+
+    assert np.argmax(all_log_Rdr)==rot_idx
     print("Copy image data to lerpy")
-    L.copy_image_data(img.ravel())
+    L.copy_image_data(img.ravel(), mask=inbounds.ravel())
     inds = np.arange(maxRotInds).astype(np.int32)
     print("Compute equation two for all orientations")
     L.equation_two(inds)
-    Rdr = L.get_out()
+    log_Rdr = L.get_out()
+    Pdr = utils.compute_P_dr_from_log_R_dr(log_Rdr)
     # the first rotation matrix is the ground truth:
-    assert np.argmax(Rdr)==rot_idx
+    assert np.argmax(Pdr) == rot_idx
 
     # see if the strong spots are enough to determine the most probable orientation
     O = probable_orients()
@@ -113,7 +128,7 @@ def _test_conventions(use_hist_method=True):
     R = db_utils.refls_from_sims(np.array([img]), sim_const.DETECTOR, sim_const.BEAM)
     R['id'] = flex.int(len(R), 0)
     minPred=3
-    hcut=0.05
+    hcut=0.02
     El = ExperimentList()
     E = Experiment()
     E.detector= sim_const.DETECTOR
@@ -131,7 +146,8 @@ def _test_conventions(use_hist_method=True):
 
 
 if __name__=="__main__":
-    if int(sys.argv[1]):
+    use_hist = int(sys.argv[1])
+    if use_hist:
         test_conventions_hist_insert()
     else:
         test_conventions_reborn_insert()

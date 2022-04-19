@@ -6,9 +6,8 @@ if COMM.rank==0:
     parser = ArgumentParser()
     parser.add_argument("nshot", type=int, help="number of shots to simulate")
     parser.add_argument("outdir", type=str, help="Path to an output folder, will be created if non-existent")
+    parser.add_argument("--xtalsize", default=0.00125, type=float, help="size of xtal in mm (default=0.00125)")
     parser.add_argument("--ndev", default=1, type=int, help="number of GPUs per compute node")
-    parser.add_argument("--sparse", action="store_true",
-                        help="Generate sparse patterns with few spots, only matters if the flag `--no-water` is no present")
     parser.add_argument("--no-water", dest="no_water",action="store_true", help="Dont include background")
     parser.add_argument("--no-calib-noise", dest="no_calib", action="store_true", help="No per-pixel gain errors")
     args = parser.parse_args()
@@ -29,10 +28,7 @@ if __name__=="__main__":
     # variables
     NUM_DEV=args.ndev
     num_shots = args.nshot
-    if args.sparse:
-        XTAL_SIZE = 0.002  # mm
-    else:
-        XTAL_SIZE = 0.02
+    XTAL_SIZE = args.xtalsize
     calib_noise_percent = 0 if args.no_calib else 3
     add_background= not args.no_water
     #######################################

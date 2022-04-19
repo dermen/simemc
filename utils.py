@@ -2,6 +2,7 @@ import numpy as np
 import os
 import sympy
 from scipy.spatial.transform import Rotation
+from scipy import ndimage as nd
 from simemc.compute_radials import RadPros
 from dials.command_line.stills_process import phil_scope
 from dxtbx.model import ExperimentList
@@ -641,7 +642,21 @@ def dials_find_spots(data_img, params, trusted_flags=None):
     flex_data = flex.double(np.ascontiguousarray(data_img))
     flex_trusted_flags = flex.bool(np.ascontiguousarray(trusted_flags))
     spotmask = thresh.compute_threshold(flex_data, flex_trusted_flags)
-    return spotmask.as_numpy_array()
+    spotmask = spotmask.as_numpy_array()
+    lab, nlab = nd.label(spotmask)
+    npix_per_ref = nd.sum(spotmask, lab, index=list(range(1, nlab+1)))
+    minpix = 1
+    if isinstance(params.spotfinder.filter.min_spot_size, int):
+        minpix = params.spotfinder.filter.min_spot_size
+    maxpix = np.inf
+    if isinstance(params.spotfinder.filter.max_spot_size, int):
+        maxpix = params.spotfinder.filter.max_spot_size
+    bad_ref_labels = np.where( np.logical_or(npix_per_ref < minpix, npix_per_ref > maxpix))[0]
+    spotmask2 = spotmask.copy()
+    for i_lab in bad_ref_labels:
+        spotmask[lab==i_lab+1] = False
+
+    return spotmask
 
 
 def refls_from_sims(panel_imgs, detector, beam, thresh=0, filter=None, panel_ids=None,

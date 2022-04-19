@@ -107,6 +107,8 @@ def get_noise_sim(calib_noise_percent):
     noise_sim.beamsize_mm = SC.BEAMSIZE
     noise_sim.detector_calibration_noise_pct = calib_noise_percent
     noise_sim.exposure_s = 1
+    noise_sim.calib_seed=0
+    noise_sim.seed=0
     noise_sim.flux = SC.TOTAL_FLUX
     noise_sim.adc_offset_adu =0
     noise_sim.detector_psf_kernel_radius_pixels = 5

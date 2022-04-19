@@ -35,7 +35,7 @@ __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
                                  int nx, int ny, int nz,
                                  CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
                                  CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
-                                 const bool compute_derivative);
+                                 const bool compute_derivative, const bool poisson, CUDAREAL sigma_r_sq);
 
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities, 
@@ -174,14 +174,17 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                 );
     }
     else if(task==1 || task==3) {
-        if (verbose)printf("Running equation 2!\n");
+        if (verbose)printf("Running equation 2! Shotscale=%f\n", gpu.shot_scale);
+        bool use_poisson_stats=true;
+        CUDAREAL sigma_r_sq = 0.5;
         EMC_equation_two<<<gpu.numBlocks, gpu.blockSize>>>
                 (gpu.densities,  gpu.data, gpu.mask,
                  gpu.shot_scale, gpu.qVecs, gpu.out_equation_two,
                  gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
                  256, 256, 256,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
-                 gpu.delta[0], gpu.delta[1], gpu.delta[2], task==3
+                 gpu.delta[0], gpu.delta[1], gpu.delta[2], task==3,
+                 use_poisson_stats, sigma_r_sq
                 );
 
     }
@@ -453,7 +456,7 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                                  int nx, int ny, int nz,
                                  CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
                                  CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
-                                 const bool compute_derivative){
+                                 const bool compute_derivative, const bool poisson, CUDAREAL sigma_r_sq){
 
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int thread_stride = blockDim.x * gridDim.x;
@@ -471,6 +474,8 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
     CUDAREAL W_rt;
     int t,r;
 
+    CUDAREAL u,v;  // for gaussian model, these are the model residual and the variance of the pixel;
+    CUDAREAL model; // for the poisson model, this is scale_factor * tomogram
     CUDAREAL R_dr_thread, R_dr_block;
     typedef cub::BlockReduce<CUDAREAL, 128> BlockReduce;
     __shared__ typename BlockReduce::TempStorage temp_storage;
@@ -542,14 +547,22 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                    fma(I5,a5,
                    fma(I6,a6,
                    fma(I7,a7,0))))))));
-            if (compute_derivative) {
-                if (W_rt > 0)
-                    R_dr_thread += K_t/scale_factor - W_rt;
+            if (poisson){
+                model = W_rt*scale_factor;
+                if (compute_derivative) {
+                    if (model > -1e-6)
+                        R_dr_thread += K_t/scale_factor - W_rt;
+                }
+                else{
+                    if (model > -1e-6)
+                        R_dr_thread += K_t * log(model+1e-6) - model;
+                }
             }
             else{
-                //W_rt *= scale_factor;
-                if (W_rt > 0)
-                    R_dr_thread += K_t * log(W_rt*scale_factor) - W_rt*scale_factor;
+                u = K_t-W_rt;
+                v = W_rt + sigma_r_sq;
+                if (v >0)
+                    R_dr_thread += -0.5* (log(v) + u*u/v);
             }
 
         }
