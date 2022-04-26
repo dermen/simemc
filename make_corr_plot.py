@@ -50,6 +50,7 @@ for wname in args.W:
     print(wname, c)
     plot(gt_vals, vals,'.', label=wname + " --- CC=%.4f" % c)
 
+#np.savez("corr_vals", gt=gt_vals, emc=vals, mtz=mtz_vals)
 if Fmtz_map is not None:
     c = pearsonr(mtz_vals, gt_vals)[0]
     plot( gt_vals, mtz_vals, '.', label="%s; --- CC= %.4f" % (args.mtz, c))

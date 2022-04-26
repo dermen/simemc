@@ -45,6 +45,8 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
     :param perturb_scale: perturb the scale factors at the beginning of EMC
     :return:
     """
+    MIN_REF_PER_SHOT=4
+
     from mpi4py import MPI
     COMM = MPI.COMM_WORLD
     if not os.path.exists(outdir):
@@ -130,7 +132,11 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
 
     this_ranks_prob_rot =[]
     this_ranks_signal_levels = []
+    this_ranks_num_refs = []
     R = None
+    nbad_shot = 0
+    nref_on_bad_shot = []
+    all_nref =[]
     for i_img, img in enumerate(this_ranks_imgs):
         t1 = time.time()
         water_file = None
@@ -172,10 +178,10 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
 
         else:
             R = db_utils.refls_from_sims(img, sim_const.DETECTOR, sim_const.BEAM)
-        if R is not None:
-            signal_level = utils.signal_level_of_image(R, img)
-        else:
-            signal_level = np.percentil(img, 99)
+        #if R is not None and len(R) > 0:
+        #    signal_level = utils.signal_level_of_image(R, img)
+        #else:
+        signal_level = np.percentile(img, 99.9)
         this_ranks_signal_levels.append(signal_level)
 
         prob_rot_file = None
@@ -185,20 +191,40 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
         if use_precomputed and cbfdir is not None and os.path.exists(prob_rot_file):
             prob_rot = np.load(prob_rot_file)
         else:
-            qvecs = db_utils.refls_to_q(R, sim_const.DETECTOR, sim_const.BEAM)
-            qvecs = qvecs.astype(O.array_type)
-            prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
+            if len(R) > 0:
+                qvecs = db_utils.refls_to_q(R, sim_const.DETECTOR, sim_const.BEAM)
+                qvecs = qvecs.astype(O.array_type)
+                prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
+            else:
+                prob_rot = np.array([], np.int32)
             if cbfdir is not None:
                 np.save(prob_rot_file, prob_rot)
         t1 = time.time()-t1
-        print0("%d probable rots on shot %d / %d (%f sec)" % ( len(prob_rot),i_img+1, len(this_ranks_imgs) , t1) )
+        nR = -1
+        if R is not None:
+            nR = len(R)
+            all_nref.append(nR)
+            this_ranks_num_refs.append(nR)
+        print0("%d probable rots on shot %d / %d with %d strongs (%f sec)" % ( len(prob_rot),i_img+1, len(this_ranks_imgs) , nR, t1) )
 
         if rots_from_grid:
             rot_idx = this_ranks_rot_indices[i_img]
-            assert rot_idx in prob_rot
+            if rot_idx not in prob_rot:
+                nbad_shot += 1
+                nref_on_bad_shot.append(len(R))
+            #assert rot_idx in prob_rot
         #TODO: add an else statement and assert prob_rot is "close" to the crystal Umat for that shot
         this_ranks_prob_rot.append(prob_rot)
     O.free_device()
+    nbad_shot = COMM.reduce(nbad_shot)
+    all_nref = COMM.reduce(all_nref)
+    nref_on_bad_shot = COMM.reduce(nref_on_bad_shot)
+    if COMM.rank==0:
+        if nbad_shot > 0:
+            print("mean, min, max number of ref on bad shots=%.1f,%.1f,%.1f"
+                  % (np.mean(nref_on_bad_shot), min(nref_on_bad_shot), max(nref_on_bad_shot)))
+            print("Number of shots with rot_idx not in prob_rot list=%d" % nbad_shot, flush=True)
+        print("mean number of ref on all shots=%.1f" % np.mean(all_nref))
 
     Winit = np.zeros(const.DENSITY_SHAPE, np.float32)
 
@@ -222,9 +248,9 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
     L.toggle_insert()
     if not start_with_relp:
         for i_img, (img, rot_inds) in enumerate(zip(this_ranks_imgs, this_ranks_prob_rot)):
-            print0("Inserting img %d / %d" % (i_img+1, len(this_ranks_imgs)))
+            printR("Inserting %d rots for img %d / %d" % (len(rot_inds), i_img+1, len(this_ranks_imgs)))
             for r in rot_inds:
-                L.trilinear_insertion(r, img, False)
+                L.trilinear_insertion(r, img, verbose=False)
         den = COMM.bcast(COMM.reduce(L.densities()))
         wts = COMM.bcast(COMM.reduce(L.wts()))
         den = utils.errdiv(den, wts)
@@ -240,6 +266,29 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
         L.update_density(Wstart)
         np.save(os.path.join(outdir, "Starting_density_relp"), Wstart)
 
+    # filter shots with 0 probable rot inds
+    temp_shots = []
+    temp_rot_indices = []
+    temp_prob_rot = []
+    temp_ishots = []
+    temp_signal_levels = [] 
+    for i_shot, shot in enumerate(this_ranks_imgs):
+        prob_rot = this_ranks_prob_rot[i_shot]
+        if prob_rot.size or this_ranks_num_refs[i_shot] >= MIN_REF_PER_SHOT:
+            temp_shots.append(shot)
+            temp_prob_rot.append(prob_rot)
+            temp_ishots.append(i_shot)
+            temp_signal_levels.append(this_ranks_signal_levels[i_shot])
+            if this_ranks_rot_indices:
+                temp_rot_indices.append(this_ranks_rot_indices[i_shot])
+    this_ranks_imgs = temp_shots
+    this_ranks_prob_rot = temp_prob_rot
+    this_ranks_rot_indices = temp_rot_indices
+    this_ranks_signal_levels = temp_signal_levels
+    this_ranks_ishots = temp_ishots
+    if not this_ranks_imgs:
+        raise RuntimeError("at least one rank has 0 shots fit for processing (perhaps too few refls). Increase number of shots per rank (shots arg) until this error goes away! Alternatively slowly increase xtalsize and maybe alter hcut and minpred to allow for more probable orientations")
+
     all_ranks_signal_level = COMM.reduce(this_ranks_signal_levels)
     ave_signal_level = None
     if COMM.rank==0:
@@ -251,9 +300,12 @@ def test_emc_iteration(ndev, nshots_per_rank=60, rots_from_grid=True, start_with
     if perturb_scale:
         init_shot_scales = np.random.uniform(1e-1, 1e3, len(this_ranks_imgs))
 
+    inbounds = utils.qs_inbounds(qcoords, const.DENSITY_SHAPE, const.X_MIN, const.X_MAX)
+    inbounds = inbounds.reshape(this_ranks_imgs[0].shape)
     print0("INIT SHOT SCALES:", init_shot_scales)
     emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
-                        min_p=0, #1e-6,
+                        shot_mask=inbounds,
+                        min_p=0,
                         outdir=outdir,
                         beta=beta_init,
                         shot_scales=init_shot_scales,

@@ -10,7 +10,7 @@ MOS_DOMS=1  # makes sim slow if this is high, but used to generate spherical cap
 MOS_SPREAD=0  # degrees, angular mosaicity if mos_doms > 1. Larger values require more domains (0.01-0.07 ish)
 PROFILE="gauss"  # square, round, tophat or gauss
 #TOTAL_FLUX=1e10
-TOTAL_FLUX=1e12 #5e9  # number of photons per pulse
+TOTAL_FLUX=5e9  # number of photons per pulse
 WATER_PATH=1  # mm
 
 # determines range of spots that will be on detector

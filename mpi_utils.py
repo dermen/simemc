@@ -443,9 +443,10 @@ class EMC:
         num_per_shot = list(seen_shots.values())
         num_per_shot = COMM.reduce(num_per_shot)
         if COMM.rank==0:
-            num_zero = sum(num_per_shot)
+            num_zero = sum(np.array(num_per_shot)==0)
             ave_pos = np.mean(num_per_shot).mean()
-            self.print("Number of shots with 0 finite rot inds= %d. Mean num rot inds=%d for shots with finite rot inds (total shots=%d)" % (num_zero, ave_pos, self.nshot_tot))
+            self.print("Number of shots with 0 finite rot inds= %d. Mean num rot inds=%d for shots with finite rot inds (total shots=%d)" \
+                       % (num_zero, ave_pos, self.nshot_tot))
 
     def do_emc(self, num_iter):
         self.i_emc = 0
