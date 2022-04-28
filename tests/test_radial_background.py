@@ -18,7 +18,6 @@ def test_radial_background():
     water_img = sim_utils.get_water_scattering()
 
     qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
-    qx,qy,qz = map(lambda x: x.ravel(), qmap)
     np.random.seed(0)
     C = sim_utils.random_crystal()
     print(C.get_U())
@@ -54,27 +53,34 @@ def test_radial_background():
     img *= correction
     water_img *= correction
 
+    # fit a radial profile to corrected water image
     rp_water = radProMaker.makeRadPro(
         data_pixels=water_img,
         strong_refl=R,
         apply_corrections=False, use_median=False)
 
-    bg_water_img = radProMaker.expand_background_1d_to_2d(rp_water, radProMaker.img_sh, radProMaker.all_Qbins)
-    diff_water_img = water_img - bg_water_img
+    fitted_water_img = radProMaker.expand_background_1d_to_2d(rp_water, radProMaker.img_sh, radProMaker.all_Qbins)
+    # take the difference between the fit
+    diff_water_img = water_img - fitted_water_img
 
+    # the radial profile of the difference should be mostly zeros
     rp_water_diff = radProMaker.makeRadPro(
         data_pixels=diff_water_img,
         strong_refl=R,
         apply_corrections=False, use_median=False)
     assert np.allclose(rp_water_diff, 0)
 
+    # fit a radial profile to the uncorrected water image (no solid angle or polarization correction)
     rp_water_uncor = radProMaker.makeRadPro(
         data_pixels=water_img_uncorrected,
         strong_refl=R,
         apply_corrections=False, use_median=False)
 
-    bg_water_img_uncor = radProMaker.expand_background_1d_to_2d(rp_water_uncor, radProMaker.img_sh, radProMaker.all_Qbins)
-    diff_water_img_uncor = water_img_uncorrected - bg_water_img_uncor
+    fitted_water_img_uncor = radProMaker.expand_background_1d_to_2d(rp_water_uncor, radProMaker.img_sh, radProMaker.all_Qbins)
+    diff_water_img_uncor = water_img_uncorrected - fitted_water_img_uncor
+
+    # fitting an azimuthally symmetric model to an uncorrected water image should result in significant
+    # anisotropic artifacts
 
     # sum along slow-scan indices 1000-1500, these traces should have signifcant structure
     # if polarization and solid angle were not corrected for
@@ -82,21 +88,22 @@ def test_radial_background():
     vals_uncor = diff_water_img_uncor[0, 1000:1500].mean(axis=0)
     # the magnitude of these structures should be at least 10x greated in the uncorrected images
     factor = np.abs(vals_uncor).mean() / np.abs(vals).mean()
-    assert factor > 10
+    assert factor > 10, str(factor)
 
-
+    # fit a radial to the corrected image with bragg peaks and water background combined
     rp_img = radProMaker.makeRadPro(
         data_pixels=img,
         strong_refl=R,
         apply_corrections=False, use_median=False)
-    bg_img = radProMaker.expand_background_1d_to_2d(rp_img, radProMaker.img_sh, radProMaker.all_Qbins)
-    diff_img = img - bg_img
+    # this should be an estimate of purely the water
+    fitted_bg_img = radProMaker.expand_background_1d_to_2d(rp_img, radProMaker.img_sh, radProMaker.all_Qbins)
+    diff_img = img - fitted_bg_img
 
     rp_diff = radProMaker.makeRadPro(
         data_pixels=diff_img,
         strong_refl=R,
         apply_corrections=False, use_median=False)
-
+    # the residuals should be zero
     assert np.allclose(rp_diff,0)
 
 
