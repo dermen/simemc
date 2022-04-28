@@ -1,8 +1,8 @@
-import numpy as np
-from simemc import utils, const, sim_utils, sim_const
-from simemc.compute_radials import RadPros
-import pytest
+
 import os
+import numpy as np
+from simemc import utils, sim_utils, sim_const
+from simemc.compute_radials import RadPros
 
 phil_str="""
 spotfinder.threshold.algorithm=dispersion
@@ -14,14 +14,8 @@ spotfinder.filter.min_spot_size=4
 """
 
 
-@pytest.mark.skip(reason="in development")
-def test_background():
+def test_radial_background():
     water_img = sim_utils.get_water_scattering()
-    gpu_device = 0
-    num_rot_mats = 10000000
-    #maxRotInds = 10000
-    maxRotInds = 5
-    max_num_strong_spots = 1000
 
     qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
     qx,qy,qz = map(lambda x: x.ravel(), qmap)
@@ -35,38 +29,76 @@ def test_background():
         SIM, C, Famp,
         dev_id=0,
         xtal_size=0.002, outfile=None, background=water_img, just_return_img=True )
+    img = np.array([img])
+    water_img = np.array([water_img])
     print("IMG MEAN=", img.mean())  # check mean to make sure its same each time script is run
 
     # detect peaks
     phil_file = "_test_radial_background.phil"
     with open(phil_file, "w") as o:
         o.write(phil_str)
-    R = utils.refls_from_sims(np.array([img]), sim_const.DETECTOR, sim_const.BEAM, phil_file=phil_file)
+    R = utils.refls_from_sims(img, sim_const.DETECTOR, sim_const.BEAM, phil_file=phil_file)
     os.remove(phil_file)
 
     refGeom = {"D": sim_const.DETECTOR, "B": sim_const.BEAM}
-    radProMaker = RadPros(refGeom, numBins=1500)
+    radProMaker = RadPros(refGeom, numBins=1000)
     radProMaker.polarization_correction()
     radProMaker.solidAngle_correction()
     correction = radProMaker.POLAR * radProMaker.OMEGA
     correction /= correction.mean()
 
-    img *= correction[0]
-    water_img *= correction[0]
-    radPro_median = radProMaker.makeRadPro(
-        data_pixels=np.array([water_img]),
-        strong_refl=R,
-        apply_corrections=False, use_median=True)
+    # apply polarization/solid angle corrections to image
+    img_uncorrected = img.copy()
+    water_img_uncorrected = water_img.copy()
 
-    radPro_mean = radProMaker.makeRadPro(
-        data_pixels=np.array([water_img]),
+    img *= correction
+    water_img *= correction
+
+    rp_water = radProMaker.makeRadPro(
+        data_pixels=water_img,
         strong_refl=R,
         apply_corrections=False, use_median=False)
 
-    bgImage_median = radProMaker.expand_background_1d_to_2d(radPro_median, radProMaker.img_sh, radProMaker.all_Qbins)
+    bg_water_img = radProMaker.expand_background_1d_to_2d(rp_water, radProMaker.img_sh, radProMaker.all_Qbins)
+    diff_water_img = water_img - bg_water_img
 
-    bgImage_mean = radProMaker.expand_background_1d_to_2d(radPro_mean, radProMaker.img_sh, radProMaker.all_Qbins)
+    rp_water_diff = radProMaker.makeRadPro(
+        data_pixels=diff_water_img,
+        strong_refl=R,
+        apply_corrections=False, use_median=False)
+    assert np.allclose(rp_water_diff, 0)
+
+    rp_water_uncor = radProMaker.makeRadPro(
+        data_pixels=water_img_uncorrected,
+        strong_refl=R,
+        apply_corrections=False, use_median=False)
+
+    bg_water_img_uncor = radProMaker.expand_background_1d_to_2d(rp_water_uncor, radProMaker.img_sh, radProMaker.all_Qbins)
+    diff_water_img_uncor = water_img_uncorrected - bg_water_img_uncor
+
+    # sum along slow-scan indices 1000-1500, these traces should have signifcant structure
+    # if polarization and solid angle were not corrected for
+    vals = diff_water_img[0, 1000:1500].mean(axis=0)
+    vals_uncor = diff_water_img_uncor[0, 1000:1500].mean(axis=0)
+    # the magnitude of these structures should be at least 10x greated in the uncorrected images
+    factor = np.abs(vals_uncor).mean() / np.abs(vals).mean()
+    assert factor > 10
+
+
+    rp_img = radProMaker.makeRadPro(
+        data_pixels=img,
+        strong_refl=R,
+        apply_corrections=False, use_median=False)
+    bg_img = radProMaker.expand_background_1d_to_2d(rp_img, radProMaker.img_sh, radProMaker.all_Qbins)
+    diff_img = img - bg_img
+
+    rp_diff = radProMaker.makeRadPro(
+        data_pixels=diff_img,
+        strong_refl=R,
+        apply_corrections=False, use_median=False)
+
+    assert np.allclose(rp_diff,0)
 
 
 if __name__=="__main__":
-    test_background()
+    test_radial_background()
