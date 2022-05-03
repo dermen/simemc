@@ -114,25 +114,20 @@ class _():
     def trilinear_interpolation(self, rot_idx, verbose=False):
         return self._trilinear_interpolation(int(rot_idx), verbose)
 
-    def trilinear_insertion(self, rot_idx, vals, mask=None, verbose=False, tomo_wt=1):
+    def trilinear_insertion(self, rot_idx, vals, mask=None, verbose=False, tomo_wt=1, bg=None):
         """
-
         :param tomo_wt:
         :param rot_idx:
         :param vals:
         :param verbose:
+        :param tomo_wt:
+        :param bg:
         :return:
         """
         if not isinstance(tomo_wt, float):
             tomo_wt = float(tomo_wt)
-        vals = self.check_arrays(vals)
-        if mask is None:
-            mask = np.ones(vals.shape, bool)
-        else:
-            assert isinstance(mask, np.ndarray)
-            assert mask.dtype==bool
-            assert mask.shape==vals.shape
-        self._trilinear_insertion(int(rot_idx), vals, mask, verbose, tomo_wt)
+        self.copy_image_data(vals, mask, bg)
+        self._trilinear_insertion(int(rot_idx), verbose, tomo_wt)
 
     def update_density(self, new_dens):
         """
@@ -147,11 +142,11 @@ class _():
         new_dens = self.check_arrays(new_dens)
         self._update_density(new_dens)
 
-
-    def copy_image_data(self, pixels, mask=None):
+    def copy_image_data(self, pixels, mask=None, bg=None):
         """
         :param pixels:
         :param mask:
+        :param bg:
         :return:
         """
         pixels = self.check_arrays(pixels)
@@ -160,16 +155,31 @@ class _():
         else:
             assert mask.dtype==bool
             assert mask.shape == pixels.shape
-        self._copy_image_data(pixels, mask)
+        if bg is None:
+            bg = np.zeros(pixels.shape, dtype=pixels.dtype)
+        else:
+            assert bg.dtype == pixels.dtype
+            assert bg.shape == pixels.shape
+        self._copy_image_data(pixels, mask, bg)
 
-    def equation_two(self, rot_inds, verbose=True, shot_scale_factor=1, deriv=False):
+    def equation_two(self, rot_inds, verbose=True, shot_scale_factor=1, deriv=0):
         """
 
-        :param rot_inds:
+        :param rot_inds: list of ints, corresponds to which orientations to compute equation_two for
         :param verbose:
-        :param shot_scale_factor:
+        :param shot_scale_factor: scale factor phi for the current shot
+        :param deriv: int, 0,1, or 2 .
+            0- no derivative, just compute log likelihood = sum_i K_i*log(model_i)-model_i
+                model_i = background_i + phi * W_ir
+            1- compute derivative of 0 w.r.t. scale factor phi
+            2- compute derivative of 0 w.r.t. the density W
         :return:
         """
+        if isinstance(deriv, bool):
+            print("WARNING! stop using bool for deriv, switch to int!")
+        deriv = int(deriv)
+        assert deriv in [0, 1, 2]
+
         if not isinstance(shot_scale_factor, float):
             shot_scale_factor = float(shot_scale_factor)
         rot_inds = self.check_arrays(rot_inds, np.int32)

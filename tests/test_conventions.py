@@ -41,7 +41,7 @@ def _test_conventions(use_hist_method=True):
     img = sim_utils.synthesize_cbf(
         SIM, C, Famp,
         dev_id=0,
-        xtal_size=0.002, outfile=None, background=0, just_return_img=True )
+        xtal_size=0.002, outfile=None, background=0)
     print("IMG MEAN=", img.mean())
 
     qcoords = np.vstack((qx,qy,qz)).T

@@ -27,7 +27,7 @@ def test_radial_background():
     img = sim_utils.synthesize_cbf(
         SIM, C, Famp,
         dev_id=0,
-        xtal_size=0.002, outfile=None, background=water_img, just_return_img=True )
+        xtal_size=0.002, outfile=None, background=water_img)
     img = np.array([img])
     water_img = np.array([water_img])
     print("IMG MEAN=", img.mean())  # check mean to make sure its same each time script is run

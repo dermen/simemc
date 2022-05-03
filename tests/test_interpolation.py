@@ -17,7 +17,7 @@ Famp = sim_utils.get_famp()
 img = sim_utils.synthesize_cbf(
     SIM, C, Famp,
     dev_id=0,
-    xtal_size=0.002, outfile=None, background=0, just_return_img=True)
+    xtal_size=0.002, outfile=None, background=0)
 
 # nominal qmap
 qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)

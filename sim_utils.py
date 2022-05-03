@@ -36,7 +36,7 @@ def get_famp():
 
 def synthesize_cbf(
         noise_sim, CRYSTAL, Famp,
-        dev_id, xtal_size, outfile=None, background=0, just_return_img=False):
+        dev_id, xtal_size, outfile=None, background=0):
     """
 
     :param noise_sim: nanoBragg instance, output of get_noise_sim
@@ -44,13 +44,10 @@ def synthesize_cbf(
     :param Famp: structure factor, output of get_famp
     :param dev_id: gpu device Id
     :param xtal_size: size of crystal in mm (0.02 mm)
-    :param outfile: if just_return_img=False, then write a cbf with this name
+    :param outfile: write a cbf with this name
     :param background: scattering to add to the simulated img
-    :param just_return_img: return the numpy array image of
     :return: optionally returns a numpy array, or else None
     """
-    if not just_return_img:
-        assert outfile is not None
 
     fluxes = [SC.TOTAL_FLUX]
     energies = [nb_utils.ENERGY_CONV / SC.BEAM.get_wavelength()]
@@ -74,7 +71,7 @@ def synthesize_cbf(
     noise_sim.raw_pixels += flex.double((img_with_bg).ravel())
     noise_sim.add_noise()
 
-    if not just_return_img:
+    if outfile is not None:
         noise_sim.to_cbf(outfile)
         np.savez(outfile+".npz",
                  A=CRYSTAL.get_A(), B=CRYSTAL.get_B(), U=CRYSTAL.get_U())

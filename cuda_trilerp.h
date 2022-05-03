@@ -19,6 +19,7 @@ struct lerpy {
   CUDAREAL* wts=NULL;
   CUDAREAL* data=NULL;
   bool* mask=NULL;
+  CUDAREAL* background=NULL;
   int numDataPixels;
   VEC3* qVecs=NULL;
   CUDAREAL* out=NULL;
@@ -44,8 +45,7 @@ struct lerpy {
 void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
                          np::ndarray qvectors);
 
-void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data);
-void shot_data_and_mask_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_mask);
+void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_mask, np::ndarray& shot_background);
 void densities_to_device(lerpy& gpu, np::ndarray& new_densities);
 
 // fills the gpu.out array with interpolated values, 1 for each qvec

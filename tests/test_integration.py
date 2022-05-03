@@ -24,7 +24,7 @@ def test():
     img = sim_utils.synthesize_cbf(
         SIM, C, Famp,
         dev_id=0,
-        xtal_size=0.0025, outfile=None, background=0, just_return_img=True )
+        xtal_size=0.0025, outfile=None, background=0)
 
     qcoords = np.vstack((qx,qy,qz)).T
     Umat = np.reshape(C.get_U(), (3,3))

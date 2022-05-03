@@ -67,7 +67,7 @@ class lerpyExt{
         gpu.delta[2] = bp::extract<double>(delta[2]);
         prepare_for_lerping( gpu, rotations, densities, qvecs);
     }
-    inline void copy_pixels( np::ndarray& pixels, np::ndarray& mask){
+    inline void copy_pixels( np::ndarray& pixels, np::ndarray& mask, np::ndarray& bg){
         // assert len pixels matches up
         if (pixels.shape(0) != gpu.numQ){
             PyErr_SetString(PyExc_TypeError, "Number of pixels passed does not agree with number of allocated pixels on device\n");
@@ -77,8 +77,12 @@ class lerpyExt{
             PyErr_SetString(PyExc_TypeError, "Number of mask flags passed does not agree with number of allocated pixels on device\n");
             bp::throw_error_already_set();
         }
+        else if (bg.shape(0) != gpu.numQ){
+            PyErr_SetString(PyExc_TypeError, "Number of background pixels passed does not agree with number of allocated pixels on device\n");
+            bp::throw_error_already_set();
+        }
         else{
-            shot_data_and_mask_to_device(gpu,pixels,mask);
+            shot_data_to_device(gpu,pixels,mask,bg);
         }
     }
 
@@ -112,34 +116,15 @@ class lerpyExt{
         return output.copy();
     }
     
-    inline void trilinear_insertion(int rot_idx, np::ndarray vals, np::ndarray mask, bool verbose, CUDAREAL tomo_wt){
+    inline void trilinear_insertion(int rot_idx, bool verbose, CUDAREAL tomo_wt){
         if (rot_idx < 0 || rot_idx >= gpu.numRot) {
             PyErr_SetString(PyExc_TypeError,
                             "Rot index is out of bounds, check size of allocated rotMats\n");
             bp::throw_error_already_set();
         }
-        if (vals.shape(0) > gpu.numDataPixels) {
-            PyErr_SetString(PyExc_TypeError,
-                            "Number of passed values does not agree with number of allocated data pixels\n");
-            bp::throw_error_already_set();
-        }
-        if (vals.shape(0) != gpu.numQ) {
-            PyErr_SetString(PyExc_TypeError,
-                            "For insertion the number of vals should be the same as the number of Qvecs on device\n");
-            bp::throw_error_already_set();
-        }
-        if (mask.shape(0) != vals.shape(0)) {
-            PyErr_SetString(PyExc_TypeError,
-                            "For insertion the mask and vals should have same shape\n");
-            bp::throw_error_already_set();
-        }
-
         std::vector<int> rot_inds;
         rot_inds.push_back(rot_idx);
            
-        // copy the insertion values to the device 
-        shot_data_and_mask_to_device(gpu,vals, mask);
-
         // 2 specifies to do a trilinear insertion
         gpu.tomogram_wt = tomo_wt;
         do_a_lerp(gpu, rot_inds, verbose, 2);
@@ -172,16 +157,19 @@ class lerpyExt{
         return output.copy();
     }
     
-    inline void do_equation_two(np::ndarray rot_idx, bool verbose, CUDAREAL shot_scale, const bool deriv){
+    inline void do_equation_two(np::ndarray rot_idx, bool verbose, CUDAREAL shot_scale, const int deriv){
         int nrot = rot_idx.shape(0);
         std::vector<int> rot_inds;
         for (int i_rot=0; i_rot < nrot; i_rot++)
             rot_inds.push_back(  bp::extract<int>(rot_idx[i_rot])  );
         gpu.shot_scale = shot_scale;
-        // 1 specifies to run through EMC equation two (from the dragon fly paper) for the  specified rotation inds
-        if (deriv)
-            do_a_lerp(gpu, rot_inds, verbose, 3);
+        if (deriv==1 || deriv==2)
+            if (deriv==1) // scale factor derivative (task 3)
+                do_a_lerp(gpu, rot_inds, verbose, 3);
+            else // density derivative (task 4)
+                do_a_lerp(gpu, rot_inds, verbose, 4);
         else
+            // run through EMC equation two (from the dragon fly paper) for the  specified rotation inds (task 1)
             do_a_lerp(gpu, rot_inds, verbose, 1);
 
     }
@@ -295,7 +283,7 @@ BOOST_PYTHON_MODULE(emc){
         
         .def("_trilinear_insertion",
              &lerpyExt::trilinear_insertion,
-             (bp::arg("rot_idx"), bp::arg("vals"), bp::arg("verbose")=true, bp::arg("tomo_wt")=1),
+             (bp::arg("rot_idx"), bp::arg("verbose")=true, bp::arg("tomo_wt")=1),
              "insert the vals according into the densities")
 
         .def("_equation_two",

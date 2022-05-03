@@ -27,6 +27,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
 
 __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
                                  const CUDAREAL* __restrict__ data,
+                                 const CUDAREAL* __restrict__ background,
                                  const bool* is_trusted,
                                  CUDAREAL scale_factor,
                                  VEC3*vectors, CUDAREAL* out_rot,
@@ -35,7 +36,9 @@ __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
                                  int nx, int ny, int nz,
                                  CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
                                  CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
-                                 const bool compute_derivative, const bool poisson, CUDAREAL sigma_r_sq);
+                                 const bool compute_scale_derivative,
+                                 const bool compute_density_derivative,
+                                 const bool poisson, CUDAREAL sigma_r_sq);
 
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities, 
@@ -56,6 +59,7 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
     gpuErr(cudaMallocManaged((void **)&gpu.rotInds, gpu.maxNumRotInds*sizeof(int)));
     gpuErr(cudaMallocManaged((void **)&gpu.data, gpu.numDataPixels*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.mask, gpu.numDataPixels*sizeof(bool)));
+    gpuErr(cudaMallocManaged((void **)&gpu.background, gpu.numDataPixels*sizeof(CUDAREAL)));
 
     MAT3 Umat; // orientation matrix
     CUDAREAL* Umats_ptr = reinterpret_cast<CUDAREAL*>(Umats.get_data());
@@ -92,21 +96,23 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
     }
 }
 
-void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data){
-    unsigned int num_pix = shot_data.shape(0);
-    CUDAREAL* data_ptr = reinterpret_cast<CUDAREAL*>(shot_data.get_data());
-    for (int i=0; i < num_pix; i++) {
-        gpu.data[i] = *(data_ptr + i);
-    }
-}
+//void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data){
+//    unsigned int num_pix = shot_data.shape(0);
+//    CUDAREAL* data_ptr = reinterpret_cast<CUDAREAL*>(shot_data.get_data());
+//    for (int i=0; i < num_pix; i++) {
+//        gpu.data[i] = *(data_ptr + i);
+//    }
+//}
 
-void shot_data_and_mask_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_mask){
+void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_mask, np::ndarray& shot_background){
     unsigned int num_pix = shot_data.shape(0);
     CUDAREAL* data_ptr = reinterpret_cast<CUDAREAL*>(shot_data.get_data());
+    CUDAREAL* background_ptr = reinterpret_cast<CUDAREAL*>(shot_background.get_data());
     bool* mask_ptr = reinterpret_cast<bool*>(shot_mask.get_data());
     for (int i=0; i < num_pix; i++) {
         gpu.data[i] = *(data_ptr + i);
         gpu.mask[i] = *(mask_ptr + i);
+        gpu.background[i] = *(background_ptr + i);
     }
 }
 
@@ -148,7 +154,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     int numRotInds = rot_inds.size();
     for (int i=0; i< numRotInds; i++){
         gpu.rotInds[i] = rot_inds[i];
-        if(task==1 || task==3){
+        if(task==1 || task==3 || task==4){
             gpu.out_equation_two[i] = 0;
         }
     }
@@ -173,17 +179,21 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                  gpu.delta[0], gpu.delta[1], gpu.delta[2]
                 );
     }
-    else if(task==1 || task==3) {
+    else if(task==1 || task==3 || task==4) {
         if (verbose)printf("Running equation 2! Shotscale=%f\n", gpu.shot_scale);
         bool use_poisson_stats=true;
         CUDAREAL sigma_r_sq = 0.5;
+        // task 1: compute image logLikelihood
+        // task 3: compute deriv of image logLikelihood w.r.t scale factor
+        // task 4: ""  "" w.r.t. density
         EMC_equation_two<<<gpu.numBlocks, gpu.blockSize>>>
-                (gpu.densities,  gpu.data, gpu.mask,
+                (gpu.densities,  gpu.data, gpu.background, gpu.mask,
                  gpu.shot_scale, gpu.qVecs, gpu.out_equation_two,
                  gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
                  256, 256, 256,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
-                 gpu.delta[0], gpu.delta[1], gpu.delta[2], task==3,
+                 gpu.delta[0], gpu.delta[1], gpu.delta[2],
+                 task==3, task==4,
                  use_poisson_stats, sigma_r_sq
                 );
 
@@ -210,7 +220,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     }
 
     gettimeofday(&t1, 0);
-    if (task==1 || task==3){
+    if (task==1 || task==3 || task==4){
         bp::list outList;
         for (int i = 0; i < numRotInds; i++)
             outList.append(gpu.out_equation_two[i]);
@@ -233,6 +243,10 @@ void free_lerpy(lerpy& gpu){
         gpuErr(cudaFree(gpu.rotMats));
     if (gpu.data!= NULL)
         gpuErr(cudaFree(gpu.data));
+    if (gpu.mask!= NULL)
+        gpuErr(cudaFree(gpu.mask));
+    if (gpu.background!= NULL)
+        gpuErr(cudaFree(gpu.background));
     if (gpu.out!= NULL)
         gpuErr(cudaFree(gpu.out));
     if (gpu.out_equation_two!= NULL)
@@ -448,6 +462,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
  */
 __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                                  const CUDAREAL * __restrict__ data,
+                                 const CUDAREAL * __restrict__ background,
                                  const bool * is_trusted,
                                  CUDAREAL scale_factor,
                                  VEC3 *vectors,
@@ -456,7 +471,9 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                                  int nx, int ny, int nz,
                                  CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
                                  CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
-                                 const bool compute_derivative, const bool poisson, CUDAREAL sigma_r_sq){
+                                 const bool compute_scale_derivative,
+                                 const bool compute_density_derivative,
+                                 const bool poisson, CUDAREAL sigma_r_sq){
 
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int thread_stride = blockDim.x * gridDim.x;
@@ -471,7 +488,7 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
 
     VEC3 Q;
     CUDAREAL K_t;
-    CUDAREAL W_rt;
+    CUDAREAL W_rt, W_rt_prime;
     int t,r;
 
     CUDAREAL u,v;  // for gaussian model, these are the model residual and the variance of the pixel;
@@ -480,7 +497,9 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
     typedef cub::BlockReduce<CUDAREAL, 128> BlockReduce;
     __shared__ typename BlockReduce::TempStorage temp_storage;
     MAT3 R;
+    CUDAREAL eps=1e-6;
 
+    CUDAREAL Bkg_t; // value of background at pixel
     for (i_rot =0; i_rot < numRot; i_rot++){
         R_dr_thread = 0;
         r = rot_inds[i_rot];
@@ -490,6 +509,7 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                 continue;
             }
             K_t = __ldg(&data[t]);
+            Bkg_t = __ldg(&background[t]);
             Q = R*vectors[t];
             qx = Q[0];
             qy = Q[1];
@@ -547,18 +567,35 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                    fma(I5,a5,
                    fma(I6,a6,
                    fma(I7,a7,0))))))));
+
+            if (compute_density_derivative)
+                W_rt_prime =
+                   fma(1,a0,
+                   fma(1,a1,
+                   fma(1,a2,
+                   fma(1,a3,
+                   fma(1,a4,
+                   fma(1,a5,
+                   fma(1,a6,
+                   fma(1,a7,0))))))));
+
             if (poisson){
-                model = W_rt*scale_factor;
-                if (compute_derivative) {
-                    if (model > -1e-6)
-                        R_dr_thread += K_t/scale_factor - W_rt;
+                model = Bkg_t + scale_factor*W_rt;
+                if (compute_scale_derivative) {
+                    if (model > -eps)
+                        R_dr_thread += K_t*W_rt/(model+eps) - W_rt;
                 }
-                else{
-                    if (model > -1e-6)
-                        R_dr_thread += K_t * log(model+1e-6) - model;
+                else if (compute_density_derivative){
+                    if (model > -eps)
+                        R_dr_thread += K_t*scale_factor*W_rt_prime / (model+eps) - scale_factor*W_rt_prime;
+                }
+                else{ // compute logLikelihood
+                    if (model > -eps)
+                        R_dr_thread += K_t * log(model+eps) - model;
                 }
             }
             else{
+                // THIS MODEL IS NOT READY!
                 u = K_t-W_rt;
                 v = W_rt + sigma_r_sq;
                 if (v >0)
