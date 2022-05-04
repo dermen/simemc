@@ -144,6 +144,19 @@ class lerpyExt{
         return output.copy();
     }
 
+    inline  np::ndarray get_densities_gradient(){
+        if (gpu.densities_gradient==NULL){
+            PyErr_SetString(PyExc_TypeError,
+                            "densities_gradient has not been allocated\n");
+            bp::throw_error_already_set();
+        }
+        bp::tuple shape = bp::make_tuple(gpu.numDens);
+        bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
+        np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
+        np::ndarray output = np::from_data(&gpu.densities_gradient[0], dt, shape, stride, bp::object());
+        return output.copy();
+    }
+
     inline np::ndarray get_wts(){
         if (gpu.wts==NULL){
             PyErr_SetString(PyExc_TypeError,
@@ -301,6 +314,10 @@ BOOST_PYTHON_MODULE(emc){
         .def("densities",
               &lerpyExt::get_densities,
               "get the densities")
+
+        .def("densities_gradient",
+              &lerpyExt::get_densities_gradient,
+              "get the gradient of the logLikelikhood w.r.t. the densities (this just points to the data , one should run equation_two with deriv=2 prior to calling this method, otherwise densities will be meaningless")
         .def("wts",
               &lerpyExt::get_wts,
               "get the density weights")

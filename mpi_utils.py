@@ -12,6 +12,7 @@ from scipy.optimize import minimize
 import glob
 import numpy as np
 from simtbx.diffBragg import mpi_logger
+from simemc import emc_updaters
 
 from dxtbx.model import ExperimentList
 from simtbx.diffBragg.utils import image_data_from_expt
@@ -209,9 +210,10 @@ def print_profile(stats, timed_methods=None):
 
 class EMC:
 
-    def __init__(self, L, shots, prob_rots, shot_mask=None, min_p=0, outdir=None, beta=1,
+    def __init__(self, L, shots, prob_rots, shot_background=None, shot_mask=None, min_p=0, outdir=None, beta=1,
                  symmetrize=True, whole_punch=True, img_sh=None, shot_scales=None,
-                 refine_scale_factors=False, ave_signal_level=1, scale_update_method="analytical"):
+                 refine_scale_factors=False, ave_signal_level=1, scale_update_method="analytical",
+                 density_update_method="analytical"):
         """
         run emc, the resulting density is stored in the L (emc.lerpy) object
         see call to this method in ests/test_emc_iteration
@@ -227,11 +229,13 @@ class EMC:
         :param refine_scale_factors: bool, update scale factors with 3d density
         :param scale_update_method: str, can be either 'analytical' or  'bfgs'. The latter uses L-BFGS, the former
             seeks the minimum directly
-        :return: optimized density. Also L instance should be modified in-place
+        :param density_update_method: str, can be either 'analytical' or  'line_search'. The latter uses numerical optimization
+            (see emc_updaters.DensityUpdater class)
         """
         assert len(shots) > 0
         assert isinstance(shots[0], np.ndarray)
         assert scale_update_method in ["analytical", "bfgs"]
+        assert density_update_method in ["analytical", "line_search"]
         assert len(prob_rots) == len(shots)
         if shot_mask is not None:
             assert isinstance(shot_mask, np.ndarray)
@@ -240,8 +244,15 @@ class EMC:
             self.shot_mask = shot_mask
         else:
             self.shot_mask = np.ones(shots[0].shape, dtype=bool)
+        if shot_background is not None:
+            assert len(shot_background) == len(shots)
+            assert isinstance(shot_background[0], np.ndarray)
+            self.shot_background = shot_background
+        else:
+            self.shot_background = [np.zeros_like(shots[0]) for _ in range(len(shots))]
 
         self.scale_update_method = scale_update_method
+        self.density_update_method = density_update_method
 
         self.ave_signal_level=ave_signal_level
         self.L = L
@@ -406,9 +417,17 @@ class EMC:
         self.print("wts reduce")
         wts = COMM.bcast(COMM.reduce(wts))
         den = utils.errdiv(den, wts)
+        self.set_new_density(den)
+
+    def set_new_density(self, den):
         self.print("MEAN DENSITY:", den.mean())
         self.L.update_density(den)
         self.apply_density_rules()
+
+        residuals = den-self.Wprev
+        rms_diff = np.sqrt(np.mean(np.sum(residuals**2)))
+        self.all_Wresid.append(rms_diff)
+        self.print("delta_W rms:", self.all_Wresid)
 
     def apply_density_rules(self):
         den = self.L.densities()
@@ -468,7 +487,7 @@ class EMC:
 
             if self.update_scale_factors:
                 self.print("**Updating scale factors**")
-                updater = ScaleUpdater(self)
+                updater = emc_updaters.ScaleUpdater(self)
                 if self.scale_update_method == 'analytical':
                     self.scale_changed = updater.update(analytical=True)
                 else:
@@ -476,24 +495,25 @@ class EMC:
                 norm_factor = self.ave_signal_level / np.mean(self.shot_scales)
                 self.print("Normalizing scale factors... Multiplying all scale factors by %f" % norm_factor)
                 self.shot_scales *= norm_factor
-                #if self.scale_changed is not None:
-                #    ave_scale = COMM.gather(self.shot_scales)
-                #    if COMM.rank==0:
-                #        ave_scale = np.mean(np.hstack(ave_scale))
-                #    ave_scale = COMM.bcast(ave_scale)
-                            
+
                 self.i_emc += 1
                 t = time.time()-t
                 iter_times.append(t)
                 self.ave_time_per_iter = np.mean(iter_times)
                 continue
 
-            self.distribute_rot_ind_records()
-            self.L.toggle_insert()
-            self.insert_one_rankers()
-            self.insert_multi_rankers()
-            self.reduce_density()
-            #self.plot_models(init=False)
+            if self.density_update_method == "analytical":
+                self.distribute_rot_ind_records()
+                self.L.toggle_insert()
+                self.insert_one_rankers()
+                self.insert_multi_rankers()
+                self.reduce_density()
+            elif self.density_update_method == "line_search":
+                density_updater = emc_updaters.DensityUpdater(self)
+                den = density_updater.update()
+                self.set_new_density(den)
+            else:
+                raise NotImplementedError("Unknown method %s" % self.density_update_method)
 
             self.count_scale_factors_at_limit()
             self.count_finite_inds_per_shot()
@@ -511,7 +531,8 @@ class EMC:
         shot_deriv_logR = []
         for i_shot, (img, rot_inds, scale_factor) in enumerate(zip(self.shots, self.prob_rots, self.shot_scales)):
             self.print("Getting Rdr %d / %d (scale=%f)" % ( i_shot+1, self.nshots, scale_factor))
-            self.L.copy_image_data(img.ravel(), self.shot_mask)
+            bg_img = self.shot_background[i_shot]
+            self.L.copy_image_data(img.ravel(), self.shot_mask, bg_img)
             self.L.equation_two(rot_inds, False, scale_factor)
             log_R_dr_vals = np.array(self.L.get_out())
             shot_log_R_dr.append(log_R_dr_vals)
@@ -616,7 +637,7 @@ class EMC:
                 models.append(model)
             wresid += np.sum((model.ravel()-data.ravel())[self.qs_inbounds]**2)
         wresid = COMM.bcast(COMM.reduce(wresid))
-        self.all_Wresid.append(wresid)
+        #self.all_Wresid.append(wresid)
         nsuccess = COMM.reduce(nsuccess)
         if COMM.rank==0:
             success_rate = float(nsuccess) / self.nshot_tot * 100.
@@ -667,205 +688,7 @@ class EMC:
         plt.savefig(figname)
 
 
-class ScaleUpdater:
-    """
-    used to update per-shot scale factors during EMC
-    """
-    def __init__(self, emc):
-        """
 
-        :param emc: instance of EMC class
-        """
-        self.emc = emc
-        self.iter_num = 0
-        self.xprev = None
-        self.params = None
-        self.reparam = True
-        self.shot_names = ["rank%d-shot%d" % (COMM.rank, i_shot) for i_shot in range(self.emc.nshots)]
-        all_shot_names = COMM.reduce(self.shot_names)
-        shot_name_xpos = None
-        if COMM.rank==0:
-            shot_name_xpos = {name: i for i, name in enumerate(all_shot_names)}
-        self.shot_name_xpos = COMM.bcast(shot_name_xpos)
-
-    def update(self, bfgs=True, maxiter=None, reparam=True, max_scale=1e6, analytical=False):
-        """
-
-        :param bfgs: use L-BFGS
-        :param maxiter: max number iterations, (only applies to Nelder-mead, if bfgs=False, and analytical=False
-        :param reparam: apply reparmeterization restraints (only applies if analytical=False)
-        :param max_scale: maximum allowed scale factor (only applies if analytical=False)
-        :param analytical: use the analytical update rule (all other parameters are ignore if this one is True)
-        :return: it analytical is True, then return boolean flags specifying whether a scale factor was updated, list, same length as emc.shot_scales
-        """
-        if analytical:
-            rank_with_most_inserts, total_inserts = determine_rank_with_most_inserts(self.emc)
-            i_insert = 0
-            new_scales = []
-            mean_scale = 0
-            median_scale = 0
-            stdev_scale = 0
-            mask_in_bounds = self.emc.shot_mask[self.emc.qs_inbounds]
-            scale_changed = []
-            for i_shot, shot_sum in enumerate(self.emc.shot_sums):
-                P_dr = self.emc.shot_P_dr[i_shot]
-                new_scale = np.sum(P_dr) * shot_sum
-                new_scale_norm = 0
-                for i_rot, rot_ind in enumerate(self.emc.prob_rots[i_shot]):
-                    if COMM.rank==rank_with_most_inserts:
-                        perc = i_insert / total_inserts * 100.
-                        print("Updating scale factors %1.2f %% -- New scales mean=%f, median=%f, stdev=%f" % (perc, mean_scale, median_scale, stdev_scale), end="\r", flush=True)
-                    W_ir = self.emc.L.trilinear_interpolation(rot_ind)
-                    W_ir_inbounds = W_ir[self.emc.qs_inbounds]
-                    Wsum = W_ir_inbounds[mask_in_bounds].sum()
-                    new_scale_norm += Wsum*P_dr[i_rot]
-                    i_insert += 1
-                if new_scale_norm > 0:
-                    new_scale /= new_scale_norm
-                    self.emc.shot_scales[i_shot] = new_scale
-                    new_scales.append(new_scale)
-                    scale_changed.append(True)
-                else:
-                    new_scales.append(self.emc.shot_scales[i_shot])
-                    scale_changed.append(False)
-                    #print("WARNING: rank=%d, New scale (shot %d) had norm=0 so not updating" % (COMM.rank, i_shot))
-                mean_scale = np.mean(new_scales)
-                median_scale = np.median(new_scales)
-                stdev_scale = np.std(new_scales)
-            if COMM.rank == rank_with_most_inserts:
-                print("\n")
-            return scale_changed
-
-        init_shot_scales = np.zeros(len(self.shot_name_xpos))
-        self.params = Parameters()
-        self.reparam = reparam
-        for scale, name in zip(self.emc.shot_scales, self.shot_names):
-            p = RangedParameter(init=scale, minval=0, maxval=max_scale, name=name)
-            self.params.add(p)
-            xpos = self.shot_name_xpos[name]
-            init_shot_scales[xpos] = scale
-
-        x0 = np.ones(len(self.shot_name_xpos))
-        bounds = None
-        if not self.reparam:
-            x0 = init_shot_scales
-            bounds = [(1e-7, max_scale)] * len(init_shot_scales)
-        if bfgs:
-            try:
-                out = minimize(self, x0=x0, jac=self.jac, method="L-BFGS-B", bounds=bounds,
-                               callback=self.check_convergence)
-                xopt = out.x
-            except StopIteration:
-                xopt = self.xprev
-        else:
-            out = minimize(self, x0=x0, method="Nelder-Mead", options={'maxiter': maxiter}, callback=self.check_convergence)
-            xopt = out.x
-
-        new_scales = []
-        for i, name in enumerate(self.shot_names):
-            p = self.params[name]
-            xpos = self.shot_name_xpos[name]
-            xval = xopt[xpos]
-            if self.reparam:
-                new_scale = p.get_val(xval)
-            else:
-                new_scale = xval
-            self.emc.shot_scales[i] = new_scale
-            new_scales.append(new_scale)
-
-    def jac(self, x, *args):
-        return self.gra
-
-    def __call__(self, x, *args):
-        f, self.gra = self.target(x)
-        return f
-
-    def get_new_scales(self, x, reparam=True):
-        new_scales = []
-        for i, name in enumerate(self.shot_names):
-            p = self.params[name]
-            xpos = self.shot_name_xpos[name]
-            xval = x[xpos]
-            if reparam:
-                new_scale = p.get_val(xval)
-            else:
-                new_scale = xval
-            new_scales.append(new_scale)
-        return np.array(new_scales)
-
-    def check_convergence(self, x):
-        if self.iter_num == 0:
-            self.xprev = x
-            self.iter_num += 1
-            return False
-
-        current_scales = self.get_new_scales(x, self.reparam)
-        prev_scales = self.get_new_scales(self.xprev, self.reparam)
-        perc_diff = np.abs(current_scales - prev_scales ) / prev_scales
-        all_perc_diff = COMM.gather(perc_diff)
-        is_converged = None
-        if COMM.rank==0:
-            all_perc_diff = np.hstack(all_perc_diff)
-            ave_perc_diff = np.mean(all_perc_diff) * 100
-            n_above_1perc = sum(all_perc_diff > 0.01)
-            is_converged = n_above_1perc == 0
-
-            self.emc.print("it=%d,Ave%%-diff=%1.2f%%. Num.shots with %%-diff>1%% = %d/%d. Converged=%s"
-                           % (self.iter_num+1, ave_perc_diff, n_above_1perc, self.emc.nshot_tot, is_converged))
-        is_converged = COMM.bcast(is_converged)
-
-        self.xprev = x
-        self.iter_num += 1
-        if is_converged:
-            raise StopIteration()
-
-    def target(self, x):
-        """
-        returns the functional and its gradient , w.r.t. x
-        :param x: refiner parameters (all shot scale factors across all MPI ranks)
-        :return: 2-tuple of (float, np.ndarray) (same length as x )
-        """
-        emc = self.emc
-        functional = 0
-        grad = np.zeros(len(x))
-
-        scale_on_rank = []
-        for name in self.shot_names:
-            p = self.params[name]
-            xpos = self.shot_name_xpos[name]
-            xval = x[xpos]
-            if self.reparam:
-                scale = p.get_val(xval)
-            else:
-                scale = xval
-            scale_on_rank.append(scale)
-        scale_on_rank = np.array(scale_on_rank)
-        Q_per_shot, dQ_per_shot = utils.compute_log_R_dr(
-            emc.L, emc.shots, emc.prob_rots, scale_on_rank, emc.shot_mask, deriv=True)
-
-        for i_shot, (Q, dQ) in enumerate(zip(Q_per_shot, dQ_per_shot)):
-
-            Q = np.array(Q)
-            dQ = np.array(dQ)
-
-            P_dr = emc.shot_P_dr[i_shot]
-            grad_term = P_dr*dQ
-
-            functional += (P_dr*Q).sum()
-            gsum = grad_term.sum()
-            name = self.shot_names[i_shot]
-            p = self.params[name]
-            xpos = self.shot_name_xpos[name]
-            if self.reparam:
-                g = p.get_deriv(x[xpos], gsum)
-            else:
-                g = gsum
-            grad[xpos] = g
-
-        grad = COMM.bcast(COMM.reduce(grad))
-        functional = COMM.bcast(COMM.reduce(functional))
-        # running a minimizer so return the negative loglike and its gradient
-        return -functional, -grad
 
 
 def determine_rank_with_most_inserts(emc):

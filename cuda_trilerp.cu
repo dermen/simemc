@@ -26,6 +26,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
 
 
 __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
+                                 CUDAREAL* densities_gradient,
                                  const CUDAREAL* __restrict__ data,
                                  const CUDAREAL* __restrict__ background,
                                  const bool* is_trusted,
@@ -53,6 +54,7 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
     gpuErr(cudaSetDevice(gpu.device));
     gpuErr(cudaMallocManaged((void **)&gpu.rotMats, gpu.numRot*sizeof(MAT3)));
     gpuErr(cudaMallocManaged((void **)&gpu.densities, gpu.numDens*sizeof(CUDAREAL)));
+    gpuErr(cudaMallocManaged((void **)&gpu.densities_gradient, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.out, gpu.maxNumQ*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.out_equation_two, gpu.maxNumRotInds*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.qVecs, gpu.maxNumQ*sizeof(VEC3)));
@@ -158,6 +160,10 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
             gpu.out_equation_two[i] = 0;
         }
     }
+    if(task==4){
+        for (int i=0; i < gpu.numDens; i++)
+            gpu.densities_gradient[i] = 0;
+    }
     if (verbose) {
         gettimeofday(&t2, 0);
         time = (1000000.0 * (t2.tv_sec - t1.tv_sec) + t2.tv_usec - t1.tv_usec) / 1000.0;
@@ -187,7 +193,8 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         // task 3: compute deriv of image logLikelihood w.r.t scale factor
         // task 4: ""  "" w.r.t. density
         EMC_equation_two<<<gpu.numBlocks, gpu.blockSize>>>
-                (gpu.densities,  gpu.data, gpu.background, gpu.mask,
+                (gpu.densities, gpu.densities_gradient,
+                 gpu.data, gpu.background, gpu.mask,
                  gpu.shot_scale, gpu.qVecs, gpu.out_equation_two,
                  gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
                  256, 256, 256,
@@ -253,6 +260,8 @@ void free_lerpy(lerpy& gpu){
         gpuErr(cudaFree(gpu.out_equation_two));
     if (gpu.densities!= NULL)
         gpuErr(cudaFree(gpu.densities));
+    if (gpu.densities_gradient!= NULL)
+        gpuErr(cudaFree(gpu.densities_gradient));
     if (gpu.wts!= NULL)
         gpuErr(cudaFree(gpu.wts));
 }
@@ -461,6 +470,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
  *
  */
 __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
+                                 CUDAREAL * densities_gradient,
                                  const CUDAREAL * __restrict__ data,
                                  const CUDAREAL * __restrict__ background,
                                  const bool * is_trusted,
@@ -488,7 +498,7 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
 
     VEC3 Q;
     CUDAREAL K_t;
-    CUDAREAL W_rt, W_rt_prime;
+    CUDAREAL W_rt;
     int t,r;
 
     CUDAREAL u,v;  // for gaussian model, these are the model residual and the variance of the pixel;
@@ -500,6 +510,10 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
     CUDAREAL eps=1e-6;
 
     CUDAREAL Bkg_t; // value of background at pixel
+    int idx0, idx1, idx2, idx3, idx4, idx5, idx6, idx7;
+    CUDAREAL W_rt_prime0, W_rt_prime1, W_rt_prime2, W_rt_prime3, W_rt_prime4, W_rt_prime5, W_rt_prime6, W_rt_prime7;
+    CUDAREAL dens_grad_factor;
+
     for (i_rot =0; i_rot < numRot; i_rot++){
         R_dr_thread = 0;
         r = rot_inds[i_rot];
@@ -536,14 +550,23 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
             y1 = 1.0 - y0;
             z1 = 1.0 - z0;
 
-            I0 = __ldg(&densities[get_densities_index(i0, j0, k0, nx, ny, nz)]);
-            I1 = __ldg(&densities[get_densities_index(i1, j0, k0, nx, ny, nz)]); 
-            I2 = __ldg(&densities[get_densities_index(i0, j1, k0, nx, ny, nz)]); 
-            I3 = __ldg(&densities[get_densities_index(i0, j0, k1, nx, ny, nz)]); 
-            I4 = __ldg(&densities[get_densities_index(i1, j0, k1, nx, ny, nz)]); 
-            I5 = __ldg(&densities[get_densities_index(i0, j1, k1, nx, ny, nz)]); 
-            I6 = __ldg(&densities[get_densities_index(i1, j1, k0, nx, ny, nz)]); 
-            I7 = __ldg(&densities[get_densities_index(i1, j1, k1, nx, ny, nz)]); 
+            idx0 = get_densities_index(i0, j0, k0, nx, ny, nz);
+            idx1 = get_densities_index(i1, j0, k0, nx, ny, nz);
+            idx2 = get_densities_index(i0, j1, k0, nx, ny, nz);
+            idx3 = get_densities_index(i0, j0, k1, nx, ny, nz);
+            idx4 = get_densities_index(i1, j0, k1, nx, ny, nz);
+            idx5 = get_densities_index(i0, j1, k1, nx, ny, nz);
+            idx6 = get_densities_index(i1, j1, k0, nx, ny, nz);
+            idx7 = get_densities_index(i1, j1, k1, nx, ny, nz);
+
+            I0 = __ldg(&densities[idx0]);
+            I1 = __ldg(&densities[idx1]);
+            I2 = __ldg(&densities[idx2]);
+            I3 = __ldg(&densities[idx3]);
+            I4 = __ldg(&densities[idx4]);
+            I5 = __ldg(&densities[idx5]);
+            I6 = __ldg(&densities[idx6]);
+            I7 = __ldg(&densities[idx7]);
 
             x0y0 = x0*y0;
             x1y1 = x1*y1;
@@ -568,17 +591,6 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                    fma(I6,a6,
                    fma(I7,a7,0))))))));
 
-            if (compute_density_derivative)
-                W_rt_prime =
-                   fma(1,a0,
-                   fma(1,a1,
-                   fma(1,a2,
-                   fma(1,a3,
-                   fma(1,a4,
-                   fma(1,a5,
-                   fma(1,a6,
-                   fma(1,a7,0))))))));
-
             if (poisson){
                 model = Bkg_t + scale_factor*W_rt;
                 if (compute_scale_derivative) {
@@ -586,8 +598,27 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                         R_dr_thread += K_t*W_rt/(model+eps) - W_rt;
                 }
                 else if (compute_density_derivative){
-                    if (model > -eps)
-                        R_dr_thread += K_t*scale_factor*W_rt_prime / (model+eps) - scale_factor*W_rt_prime;
+                    if (model > -eps) {
+                        dens_grad_factor = K_t*scale_factor / (model+eps)-scale_factor;
+
+                        W_rt_prime0 = dens_grad_factor*a0;
+                        W_rt_prime1 = dens_grad_factor*a1;
+                        W_rt_prime2 = dens_grad_factor*a2;
+                        W_rt_prime3 = dens_grad_factor*a3;
+                        W_rt_prime4 = dens_grad_factor*a4;
+                        W_rt_prime5 = dens_grad_factor*a5;
+                        W_rt_prime6 = dens_grad_factor*a6;
+                        W_rt_prime7 = dens_grad_factor*a7;
+
+                        atomicAdd(&densities_gradient[idx0], W_rt_prime0);
+                        atomicAdd(&densities_gradient[idx1], W_rt_prime1);
+                        atomicAdd(&densities_gradient[idx2], W_rt_prime2);
+                        atomicAdd(&densities_gradient[idx3], W_rt_prime3);
+                        atomicAdd(&densities_gradient[idx4], W_rt_prime4);
+                        atomicAdd(&densities_gradient[idx5], W_rt_prime5);
+                        atomicAdd(&densities_gradient[idx6], W_rt_prime6);
+                        atomicAdd(&densities_gradient[idx7], W_rt_prime7);
+                    }
                 }
                 else{ // compute logLikelihood
                     if (model > -eps)

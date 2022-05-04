@@ -16,6 +16,7 @@ namespace np = boost::python::numpy;
 struct lerpy {
   MAT3* rotMats=NULL;
   CUDAREAL* densities=NULL;
+  CUDAREAL* densities_gradient=NULL;
   CUDAREAL* wts=NULL;
   CUDAREAL* data=NULL;
   bool* mask=NULL;

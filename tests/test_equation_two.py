@@ -117,31 +117,35 @@ def main(maxRotInds=10, finite_diff=0):
             assert l.slope > 0, l.slope
             assert l.rvalue > 0.999, l.rvalue
             print("ok")
-
-            print("FINITE DIFF SCALING: ", perc, error)
             return
 
         if finite_diff == 2:
-            L.equation_two(inds, verbose=False, shot_scale_factor=1, deriv=2)
-            deriv_Rgpu = np.array(L.get_out())
-            percs = [2**i * 0.00005 for i in range(8)]
-            errors = []
-            for perc in percs:
-                density_shifted = I + perc #np.random.random(I.shape)*perc
-                L.update_density(density_shifted)
-                L.equation_two(inds, verbose=False, shot_scale_factor=1)
-                Rgpu_shifted = np.array(L.get_out())
-                delta_Rgpu = Rgpu_shifted - Rgpu
-                fdiff = delta_Rgpu / perc
-                error = np.mean(np.abs(fdiff - deriv_Rgpu)/deriv_Rgpu)
-                print("FINITE DIFF SCALING: ", perc, error)
-                errors.append(error)
-            l = linregress(percs, errors)
-            assert l.slope > 0, l.slope
-            assert l.rvalue > 0.999, l.rvalue
+            ind0 = inds[:1]
+            L.equation_two(ind0, verbose=False, shot_scale_factor=1, deriv=2)
+            deriv_Rgpu = L.densities_gradient().copy()
+            random_voxels = np.random.choice(np.where(deriv_Rgpu != 0)[0], size=10)
+            percs = [2**i * 0.005 for i in range(8)]
+            for random_voxel in random_voxels:
+                errors = []
+                print("RANDOM VOXEL: %d" % random_voxel)
+                delta_h_vals = np.array(percs)* (I.ravel()[random_voxel])
+                for delta_h in delta_h_vals:
+                    density_shifted = I.ravel().copy()
+                    density_shifted[random_voxel] += delta_h
+                    L.update_density(density_shifted.ravel())
+                    L.equation_two(ind0, verbose=False, shot_scale_factor=1)
+                    Rgpu_shifted = np.array(L.get_out())
+                    delta_Rgpu = Rgpu_shifted - Rgpu[:1]
+                    fdiff = delta_Rgpu / delta_h
+                    dd = deriv_Rgpu[random_voxel:random_voxel+1]  # whats the value of deriv of R for rotation ind0
+                    error = np.mean(np.abs(fdiff - dd)/dd)
+                    print("FINITE DIFF SCALING: ", delta_h, error)
+                    errors.append(error)
+                l = linregress(delta_h_vals, errors)
+                assert l.slope > 0, l.slope
+                assert l.rvalue > 0.999, l.rvalue
             print("ok")
 
-            print("FINITE DIFF SCALING: ", perc, error)
             return
     t2 = time.time() - t2
     print("First 3 R_dr values:")

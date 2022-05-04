@@ -745,7 +745,7 @@ def deriv_P_dr_from_Q_and_dQ(Q, dQ_dphi):
     return dP
 
 
-def compute_log_R_dr(L, shots, prob_rots, shot_scales, mask=None, deriv=False):
+def compute_log_R_dr(L, shots, prob_rots, shot_scales, mask=None,bg=None, deriv=0):
     """
     helper function called by ScaleUpdater (TODO: update methods in EMC class to use this method)
     :param L: lerpy instance
@@ -753,30 +753,47 @@ def compute_log_R_dr(L, shots, prob_rots, shot_scales, mask=None, deriv=False):
     :param prob_rots: list of probable orientation index lists
     :param shot_scales: list of per-shot scales
     :param mask: mask, same shape as one of the shots (boolean array, True is masked)
-    :param deriv: whether to also compute and return the gradients in which case return val is a tuple
-    :return:
+    :param bg: same shape as one of the shots (float array of background pixels)
+    :param deriv: 0,1 or 2 (flag to specify if computing R_dr or its derivatives
+        0- assume R_dr correponds to the logLikelihood if the image
+        1- compute derivative of log_R_dr w.r.t. the shot scale factors
+        2- ''  '' w.r.t. the density
+    :return: log_R_dr per shot . If deriv is 1 or 2, then return the respective gradient as well
     """
     assert len(shots) > 0
+    if isinstance(deriv, bool):
+        print("WARNING!!! make deriv an int (allowed vals: 0,1 or 2)")
+    deriv = int(deriv)
 
     shot_log_R_dr = []
     shot_deriv_logR = []
     nshots = len(shots)
-    assert len(prob_rots)== nshots
+    assert len(prob_rots) == nshots
     if mask is not None:
         assert mask.shape == shots[0].shape
     else:
         mask = np.ones(shots[0].shape, bool)
+
+    if bg is None:
+        print("CODE FAIL")
+        exit()
+        dummie_bg = np.zeros_like(shots[0])
+
     for i_shot, (img, rot_inds, scale_factor) in enumerate(zip(shots, prob_rots, shot_scales)):
-        L.copy_image_data(img.ravel(), mask)
+        if bg is not None:
+            bg_img = bg[i_shot]
+        else:
+            bg_img = dummie_bg
+        L.copy_image_data(img.ravel(), mask, bg_img)
         L.equation_two(rot_inds, False, scale_factor)
         log_R_dr_vals = np.array(L.get_out())
         shot_log_R_dr.append(log_R_dr_vals)
 
-        if deriv:
-            L.equation_two(rot_inds, False, scale_factor, deriv=True)
+        if deriv in [1, 2]:
+            L.equation_two(rot_inds, False, scale_factor, deriv=deriv)
             deriv_log_R_dr = np.array(L.get_out())
             shot_deriv_logR.append(deriv_log_R_dr)
-    if not deriv:
+    if deriv == 0:
         return shot_log_R_dr
     else:
         return shot_log_R_dr, shot_deriv_logR
