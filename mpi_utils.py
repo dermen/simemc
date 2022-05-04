@@ -7,8 +7,6 @@ from simemc import const
 from scipy.stats import pearsonr
 import os
 import h5py
-from simtbx.diffBragg.refiners.parameters import Parameters, RangedParameter
-from scipy.optimize import minimize
 import glob
 import numpy as np
 from simtbx.diffBragg import mpi_logger

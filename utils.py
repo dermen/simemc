@@ -757,7 +757,6 @@ def compute_log_R_dr(L, shots, prob_rots, shot_scales, mask=None,bg=None, deriv=
     :param deriv: 0,1 or 2 (flag to specify if computing R_dr or its derivatives
         0- assume R_dr correponds to the logLikelihood if the image
         1- compute derivative of log_R_dr w.r.t. the shot scale factors
-        2- ''  '' w.r.t. the density
     :return: log_R_dr per shot . If deriv is 1 or 2, then return the respective gradient as well
     """
     assert len(shots) > 0
@@ -789,7 +788,7 @@ def compute_log_R_dr(L, shots, prob_rots, shot_scales, mask=None,bg=None, deriv=
         log_R_dr_vals = np.array(L.get_out())
         shot_log_R_dr.append(log_R_dr_vals)
 
-        if deriv in [1, 2]:
+        if deriv ==1:
             L.equation_two(rot_inds, False, scale_factor, deriv=deriv)
             deriv_log_R_dr = np.array(L.get_out())
             shot_deriv_logR.append(deriv_log_R_dr)

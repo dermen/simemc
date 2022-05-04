@@ -41,6 +41,20 @@ __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
                                  const bool compute_density_derivative,
                                  const bool poisson, CUDAREAL sigma_r_sq);
 
+__global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
+                           CUDAREAL * densities_gradient,
+                           const CUDAREAL * __restrict__ data,
+                           const CUDAREAL * __restrict__ background,
+                           const CUDAREAL * P_dr_vals,
+                           const bool * is_trusted,
+                           CUDAREAL scale_factor,
+                           VEC3 *vectors,
+                           MAT3* rotMats, int* rot_inds, int numRot, int num_qvec,
+                           int nx, int ny, int nz,
+                           CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
+                           CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
+
+
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities, 
                         np::ndarray qvectors){
@@ -59,6 +73,7 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
     gpuErr(cudaMallocManaged((void **)&gpu.out_equation_two, gpu.maxNumRotInds*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.qVecs, gpu.maxNumQ*sizeof(VEC3)));
     gpuErr(cudaMallocManaged((void **)&gpu.rotInds, gpu.maxNumRotInds*sizeof(int)));
+    gpuErr(cudaMallocManaged((void **)&gpu.Pdr, gpu.maxNumRotInds*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.data, gpu.numDataPixels*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.mask, gpu.numDataPixels*sizeof(bool)));
     gpuErr(cudaMallocManaged((void **)&gpu.background, gpu.numDataPixels*sizeof(CUDAREAL)));
@@ -160,7 +175,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
             gpu.out_equation_two[i] = 0;
         }
     }
-    if(task==4){
+    if(task==4 || task==5){
         for (int i=0; i < gpu.numDens; i++)
             gpu.densities_gradient[i] = 0;
     }
@@ -205,6 +220,20 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                 );
 
     }
+    else if (task==5){
+        for (int i=0; i< numRotInds; i++)
+            gpu.Pdr[i] = gpu.Pdr_host[i];
+
+        dens_deriv<<<gpu.numBlocks, gpu.blockSize>>>
+                (gpu.densities, gpu.densities_gradient,
+                 gpu.data, gpu.background, gpu.Pdr, gpu.mask,
+                 gpu.shot_scale, gpu.qVecs,
+                 gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
+                 256, 256, 256,
+                 gpu.corner[0], gpu.corner[1], gpu.corner[2],
+                 gpu.delta[0], gpu.delta[1], gpu.delta[2]
+                );
+    }
     else if (task==2)  {
         if (verbose)printf("Trilinear insertion!\n");
         MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
@@ -246,6 +275,8 @@ void free_lerpy(lerpy& gpu){
         gpuErr(cudaFree(gpu.qVecs));
     if (gpu.rotInds!= NULL)
         gpuErr(cudaFree(gpu.rotInds));
+    if (gpu.Pdr!= NULL)
+        gpuErr(cudaFree(gpu.Pdr));
     if (gpu.rotMats!= NULL)
         gpuErr(cudaFree(gpu.rotMats));
     if (gpu.data!= NULL)
@@ -641,5 +672,157 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
         // accumulate across all thread 0 using atomics
         if (threadIdx.x==0)
             atomicAdd(&out_rot[i_rot], R_dr_block);
+    }
+}
+
+
+/*
+ * Computes derivative of logLikelihood w.r.t densities
+ * Likelihood component = Sum_rot P_dr * Sum_pix [Data_pix * log(Model_pix) - Model_pix]
+ * This method computes derivative of above w.r.t. the density component of the Model_pix
+ * Model_pix = background_pix + scale_d * W_rot_pix  where W_rot_pix is a tomogram slice of the density
+ * for given orientation (rot) and pixel (pix)
+ */
+__global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
+                           CUDAREAL * densities_gradient,
+                           const CUDAREAL * __restrict__ data,
+                           const CUDAREAL * __restrict__ background,
+                           const CUDAREAL * P_dr_vals,
+                           const bool * is_trusted,
+                           CUDAREAL scale_factor,
+                           VEC3 *vectors,
+                           MAT3* rotMats, int* rot_inds, int numRot, int num_qvec,
+                           int nx, int ny, int nz,
+                           CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
+                           CUDAREAL dx, CUDAREAL dy, CUDAREAL dz){
+
+    unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int thread_stride = blockDim.x * gridDim.x;
+    CUDAREAL i_f, j_f, k_f;
+    CUDAREAL x0,x1,y0,y1,z0,z1;
+    CUDAREAL qx,qy,qz;
+    int i0, i1, j0, j1, k0, k1;
+    CUDAREAL I0,I1,I2,I3,I4,I5,I6,I7;
+    CUDAREAL a0,a1,a2,a3,a4,a5,a6,a7;
+    CUDAREAL x0y0, x1y1, x0y1, x1y0;
+    int i_rot;
+
+    VEC3 Q;
+    CUDAREAL K_t;
+    CUDAREAL W_rt;
+    int t,r;
+
+    CUDAREAL model; // for the poisson model, this is scale_factor * tomogram
+    typedef cub::BlockReduce<CUDAREAL, 128> BlockReduce;
+    __shared__ typename BlockReduce::TempStorage temp_storage;
+    MAT3 R;
+    CUDAREAL eps=1e-6;
+
+    CUDAREAL Bkg_t; // value of background at pixel
+    int idx0, idx1, idx2, idx3, idx4, idx5, idx6, idx7;
+    CUDAREAL W_rt_prime0, W_rt_prime1, W_rt_prime2, W_rt_prime3, W_rt_prime4, W_rt_prime5, W_rt_prime6, W_rt_prime7;
+    CUDAREAL dens_grad_factor;
+    CUDAREAL P_dr;
+
+    for (i_rot =0; i_rot < numRot; i_rot++){
+        P_dr = P_dr_vals[i_rot];
+        r = rot_inds[i_rot];
+        R = rotMats[r];
+        for (t=tid; t < num_qvec; t += thread_stride){
+            if (! is_trusted[t]){
+                continue;
+            }
+            K_t = __ldg(&data[t]);
+            Bkg_t = __ldg(&background[t]);
+            Q = R*vectors[t];
+            qx = Q[0];
+            qy = Q[1];
+            qz = Q[2];
+
+            k_f = (qx - cx) / dx;
+            j_f = (qy - cy) / dy;
+            i_f = (qz - cz) / dz;
+            i0 = int(floor(i_f));
+            j0 = int(floor(j_f));
+            k0 = int(floor(k_f));
+            if (i0 > nz-2 || j0 > ny-2 || k0 > nx-2 )
+                continue;
+            if(i0 < 0 || j0  < 0 || k0 < 0)
+                continue;
+            i1 = i0 + 1;
+            j1 = j0 + 1;
+            k1 = k0 + 1;
+
+            x0 = i_f - i0;
+            y0 = j_f - j0;
+            z0 = k_f - k0;
+            x1 = 1.0 - x0;
+            y1 = 1.0 - y0;
+            z1 = 1.0 - z0;
+
+            idx0 = get_densities_index(i0, j0, k0, nx, ny, nz);
+            idx1 = get_densities_index(i1, j0, k0, nx, ny, nz);
+            idx2 = get_densities_index(i0, j1, k0, nx, ny, nz);
+            idx3 = get_densities_index(i0, j0, k1, nx, ny, nz);
+            idx4 = get_densities_index(i1, j0, k1, nx, ny, nz);
+            idx5 = get_densities_index(i0, j1, k1, nx, ny, nz);
+            idx6 = get_densities_index(i1, j1, k0, nx, ny, nz);
+            idx7 = get_densities_index(i1, j1, k1, nx, ny, nz);
+
+            I0 = __ldg(&densities[idx0]);
+            I1 = __ldg(&densities[idx1]);
+            I2 = __ldg(&densities[idx2]);
+            I3 = __ldg(&densities[idx3]);
+            I4 = __ldg(&densities[idx4]);
+            I5 = __ldg(&densities[idx5]);
+            I6 = __ldg(&densities[idx6]);
+            I7 = __ldg(&densities[idx7]);
+
+            x0y0 = x0*y0;
+            x1y1 = x1*y1;
+            x1y0 = x1*y0;
+            x0y1 = x0*y1;
+
+            a0 = x1y1 * z1;
+            a1 = x0y1 * z1;
+            a2 = x1y0 * z1;
+            a3 = x1y1 * z0;
+            a4 = x0y1 * z0;
+            a5 = x1y0 * z0;
+            a6 = x0y0 * z1;
+            a7 = x0y0 * z0;
+
+            W_rt = fma(I0,a0,
+                       fma(I1,a1,
+                           fma(I2,a2,
+                               fma(I3,a3,
+                                   fma(I4,a4,
+                                       fma(I5,a5,
+                                           fma(I6,a6,
+                                               fma(I7,a7,0))))))));
+
+            model = Bkg_t + scale_factor*W_rt;
+            if (model > -eps) {
+                dens_grad_factor = P_dr* ( K_t*scale_factor / (model+eps)-scale_factor);
+
+                W_rt_prime0 = dens_grad_factor*a0;
+                W_rt_prime1 = dens_grad_factor*a1;
+                W_rt_prime2 = dens_grad_factor*a2;
+                W_rt_prime3 = dens_grad_factor*a3;
+                W_rt_prime4 = dens_grad_factor*a4;
+                W_rt_prime5 = dens_grad_factor*a5;
+                W_rt_prime6 = dens_grad_factor*a6;
+                W_rt_prime7 = dens_grad_factor*a7;
+
+                atomicAdd(&densities_gradient[idx0], W_rt_prime0);
+                atomicAdd(&densities_gradient[idx1], W_rt_prime1);
+                atomicAdd(&densities_gradient[idx2], W_rt_prime2);
+                atomicAdd(&densities_gradient[idx3], W_rt_prime3);
+                atomicAdd(&densities_gradient[idx4], W_rt_prime4);
+                atomicAdd(&densities_gradient[idx5], W_rt_prime5);
+                atomicAdd(&densities_gradient[idx6], W_rt_prime6);
+                atomicAdd(&densities_gradient[idx7], W_rt_prime7);
+            }
+        }
     }
 }

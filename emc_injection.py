@@ -184,3 +184,19 @@ class _():
             shot_scale_factor = float(shot_scale_factor)
         rot_inds = self.check_arrays(rot_inds, np.int32)
         self._equation_two(rot_inds, verbose, shot_scale_factor, deriv)
+
+    def dens_deriv(self, rot_inds, P_dr_vals, verbose=True, shot_scale_factor=1):
+        """
+
+        :param rot_inds:
+        :param P_dr_vals:
+        :param verbose:
+        :param shot_scale_factor:
+        :return:
+        """
+        assert len(rot_inds) == len(P_dr_vals)
+        shot_scale_factor = float(shot_scale_factor)
+        rot_inds = self.check_arrays(rot_inds, np.int32)
+        P_dr_vals = self.check_arrays(P_dr_vals)
+        self._dens_deriv(rot_inds, P_dr_vals, verbose, shot_scale_factor)
+        return self.densities_gradient()

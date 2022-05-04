@@ -19,6 +19,8 @@ struct lerpy {
   CUDAREAL* densities_gradient=NULL;
   CUDAREAL* wts=NULL;
   CUDAREAL* data=NULL;
+  CUDAREAL* Pdr=NULL;
+  std::vector<CUDAREAL> Pdr_host;
   bool* mask=NULL;
   CUDAREAL* background=NULL;
   int numDataPixels;
@@ -61,6 +63,7 @@ void free_lerpy(lerpy& gpu);
 
 
 struct gpuOrient {
+
     MAT3* rotMats=NULL;
     VEC3* qVecs=NULL;
     //double* qVecs=NULL;

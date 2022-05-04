@@ -1,0 +1,300 @@
+
+from argparse import ArgumentParser
+parser = ArgumentParser()
+parser.add_argument("ndev", type=int, help="number of GPU devices per node")
+parser.add_argument("nshot", type=int, help="number of shots per rank")
+parser.add_argument("outdir", type=str, help="output folder" )
+parser.add_argument("--optscale", action="store_true", help="refine scale factors for each shot")
+parser.add_argument("--niter", type=int, default=100, help="number of emc iterations")
+parser.add_argument("--phil", type=str, default=None, help="path to a stills process phil file (for spot finding). Required if --water flag is used")
+parser.add_argument("--minpred", type=int, default=7, help="minimum number of strong spots that need to be predicted well by an orientation for it to be flagged as probable for the shots crystal")
+parser.add_argument("--hcut", type=float, default=0.03, help="maximum distance (in hkl units) to Bragg peaks from prediction for prediction Bragg peak to be considered part of the lattice ")
+parser.add_argument("--xtalsize", type=float, default=0.002, help="size of the crystallite in mm")
+parser.add_argument("--nowater", action="store_true", help="dont add water background")
+parser.add_argument("--useprecomputed", action="store_true", help="load simulated images and refl tables from the outdir")
+#parser.add_argument("--water", action="store_true", help="add water to sim")
+#parser.add_argument("--nogrid", action="store_true", help="ground truth rotations do not lie on rotation grid")
+#parser.add_argument("--relp", action="store_true", help="init density starts from gaussians on relp points (see utils.get_W_init)")
+#parser.add_argument("--perturbScale", action="store_true", help="perturb the scale factors before merging")
+#parser.add_argument("--cbfdir", type=str, default=None, help="if not None , store CBFs here")
+ARGS = parser.parse_args()
+
+import pytest
+import pylab as plt
+import numpy as np
+import os
+from line_profiler import LineProfiler
+import inspect
+from simtbx.diffBragg import utils as db_utils
+import time
+import h5py
+from simemc import utils
+from simemc import sim_const, sim_utils
+from simemc import mpi_utils
+from dials.array_family import flex
+from simemc.compute_radials import RadPros
+from simemc.emc import lerpy, probable_orients
+
+from mpi4py import MPI
+COMM = MPI.COMM_WORLD
+from simemc import const
+
+print0 = mpi_utils.print0f
+printR = mpi_utils.printRf
+MIN_REF_PER_SHOT=4
+
+
+def load_n_images(nshot, file_prefix):
+    this_ranks_imgs = []
+    this_ranks_refls = []
+
+    # first make sure all refls exist:
+    for i_shot in range(nshot):
+        h5name = "%s_%d.h5" % (file_prefix, i_shot)
+        refname = "%s_%d.refl" % (file_prefix, i_shot)
+        if os.path.exists(h5name) and os.path.exists(refname):
+            img = h5py.File(h5name, "r")["image"][()]
+            this_ranks_imgs.append(img)
+            R = flex.reflection_table.from_file(refname)
+            this_ranks_refls.append(R)
+            print("Loaded shot %s (%d/%d)" % (h5name, i_shot, nshot))
+        else:
+            print("Shot did not exist: %s" % h5name)
+    return this_ranks_imgs, this_ranks_refls
+
+
+def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
+    Famp = sim_utils.get_famp()
+    SIM = sim_utils.get_noise_sim(0)
+    SIM.seed=seed
+
+    this_ranks_imgs = []
+    this_ranks_refls = []
+
+    print("Simulating water scattering...")
+    water = sim_utils.get_water_scattering()
+    if ARGS.nowater:
+        water *= 0
+
+    for i_shot in range(nshot):
+        num_ref = 0
+        while num_ref < MIN_REF_PER_SHOT:
+            C = sim_utils.random_crystal()
+            img = sim_utils.synthesize_cbf(
+                SIM, C, Famp,
+                dev_id=dev_id,
+                xtal_size=xtal_size,
+                outfile=file_prefix + "_%d.cbf" % i_shot,
+                background=water)
+            img = np.array([img])
+
+            R = utils.refls_from_sims(img, sim_const.DETECTOR, sim_const.BEAM, phil_file=phil_file)
+            num_ref = len(R)
+            print0("Shot %d / %d on device %d simulated with %d refls (%d required to proceed)"
+                   % (i_shot+1, nshot, dev_id, num_ref, MIN_REF_PER_SHOT))
+
+        R.as_file(file_prefix+ "_%d.refl" % i_shot)
+        # store an h5 for optional quick reloading with method load_n_images (h5s load faster than cbfs)
+        with h5py.File(file_prefix + "_%d.h5"% i_shot, "w") as h:
+            h.create_dataset("image", data=img)
+        this_ranks_imgs.append(img)
+        this_ranks_refls.append(R)
+    return this_ranks_imgs, this_ranks_refls
+
+
+def get_prob_rots_per_shot(O, R, hcut, min_pred):
+    qvecs = db_utils.refls_to_q(R, sim_const.DETECTOR, sim_const.BEAM)
+    qvecs = qvecs.astype(O.array_type)
+    prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
+    return prob_rot
+
+
+def get_rad_pro_maker(num_radial_bins=500):
+    print0("Creating radial profile maker!", flush=True)
+    refGeom = {"D": sim_const.DETECTOR, "B": sim_const.BEAM}
+    radProMaker = RadPros(refGeom, numBins=num_radial_bins)
+    radProMaker.polarization_correction()
+    radProMaker.solidAngle_correction()
+    return radProMaker
+
+
+def load_rotation_samples():
+    quat_file = os.path.join(os.path.dirname(__file__), "../quatgrid/c-quaternion70.bin")
+    if not os.path.exists(quat_file):
+        raise OSError("Please generate the quaternion file %s  with `./quat -bin 70`" % quat_file)
+    rots, wts = utils.load_quat_file(quat_file)
+    rots = rots.astype(np.float32)
+    return rots, wts
+
+
+def get_this_ranks_prob_rot(dev_id, this_ranks_refls, rotation_samples):
+    O = probable_orients()
+    max_num_strong_spots = 1000
+    O.allocate_orientations(dev_id, rotation_samples.ravel(), max_num_strong_spots)
+    O.Bmatrix = sim_const.CRYSTAL.get_B()
+    this_ranks_prob_rot =[]
+    for i_img, R in enumerate(this_ranks_refls):
+        t = time.time()
+        prob_rot = get_prob_rots_per_shot(O, R, ARGS.hcut, ARGS.minpred)
+        this_ranks_prob_rot.append(prob_rot)
+        print0("%d probable rots on shot %d / %d with %d strongs (%f sec)"
+               % ( len(prob_rot),i_img+1, len(this_ranks_refls) , len(R), time.time()-t) )
+    O.free_device()
+    return this_ranks_prob_rot
+
+
+def get_lerpy(dev_id, rotation_samples, qcoords):
+    Winit = np.zeros(const.DENSITY_SHAPE, np.float32)
+    corner, deltas = utils.corners_and_deltas(const.DENSITY_SHAPE, const.X_MIN, const.X_MAX)
+    maxRotInds = 20000
+
+    L = lerpy()
+    rots = rotation_samples.astype(L.array_type)
+    Winit = Winit.astype(L.array_type)
+    qcoords = qcoords.astype(L.array_type)
+
+    L.allocate_lerpy(dev_id, rots.ravel(), Winit.ravel(), 2463*2527,
+                     corner, deltas, qcoords.ravel(),
+                     maxRotInds, 2463*2527)
+    return L
+
+
+#@pytest.mark.skip(reason="in development")
+#@pytest.mark.mpi(min_size=1)
+def emc_iteration():
+    """
+    """
+    cbfdir = os.path.join(ARGS.outdir, "cbfs")
+    for dir in [ARGS.outdir, cbfdir]:
+        if not os.path.exists(dir):
+            mpi_utils.make_dir(dir)
+
+    np.random.seed(COMM.rank)
+    DEV_ID = COMM.rank % ARGS.ndev
+
+    file_prefix=os.path.join(cbfdir, "rank%d_shot"% COMM.rank)
+    if not ARGS.useprecomputed:
+        this_ranks_imgs, this_ranks_refls = generate_n_images(ARGS.nshot, COMM.rank, DEV_ID, ARGS.xtalsize, ARGS.phil,
+                                                              file_prefix=file_prefix)
+    else:
+        this_ranks_imgs, this_ranks_refls = load_n_images(ARGS.nshot, file_prefix)
+
+
+    radProMaker = get_rad_pro_maker()
+
+    correction = radProMaker.POLAR * radProMaker.OMEGA
+    correction /= correction.mean()
+    for i_img in range(len(this_ranks_imgs)):
+        this_ranks_imgs[i_img] *= correction
+
+    # probable orientations list per image
+    rots, wts = load_rotation_samples()
+    this_ranks_prob_rot = get_this_ranks_prob_rot(DEV_ID, this_ranks_refls, rots)
+
+    # fit background to each image; estimate signal level per image
+    this_ranks_bgs = []
+    this_ranks_signal_levels = []
+    for i_img, (img, R) in enumerate(zip(this_ranks_imgs, this_ranks_refls)):
+        radial_pro = radProMaker.makeRadPro(
+            data_pixels=img,
+            strong_refl=R,
+            apply_corrections=False, use_median=False)
+
+        img_background = radProMaker.expand_radPro(radial_pro)
+        this_ranks_bgs.append(img_background)
+
+        signal_level = utils.signal_level_of_image(R, img)
+        if signal_level ==0:
+            print("WARNING, shot has 0 signal level")
+        this_ranks_signal_levels.append(signal_level)
+        print0("Done with background image %d / %d" % (i_img+1, ARGS.nshot))
+
+    all_ranks_signal_levels = COMM.reduce(this_ranks_signal_levels)
+    ave_signal_level = None
+    if COMM.rank==0:
+        ave_signal_level = np.mean(all_ranks_signal_levels)
+    ave_signal_level = COMM.bcast(ave_signal_level)
+    # let the initial density estimate be constant gaussians (add noise?)
+    Wstart = utils.get_W_init()
+    Wstart /= Wstart.max()
+    Wstart *= ave_signal_level
+
+    # get the emc trilerp instance
+    qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
+    qx,qy,qz = map(lambda x: x.ravel(), qmap)
+    qcoords = np.vstack([qx,qy,qz]).T
+    L = get_lerpy(DEV_ID, rots, qcoords)
+
+    # convert the type of images to match the lerpy instance array_type (prevents annoying warnings)
+    for i, img in enumerate(this_ranks_imgs):
+        this_ranks_imgs[i] = img.astype(L.array_type).ravel()
+        this_ranks_bgs[i] = this_ranks_bgs[i].astype(L.array_type).ravel()
+
+    # set the starting density
+    L.toggle_insert()
+    L.update_density(Wstart)
+    if COMM.rank==0:
+        np.save(os.path.join(ARGS.outdir, "Starting_density_relp"), Wstart)
+
+    init_shot_scales = np.ones(len(this_ranks_imgs))
+    #if perturb_scale:
+    #    init_shot_scales = np.random.uniform(1e-1, 1e3, len(this_ranks_imgs))
+
+    # mask pixels that are outside the shell
+    inbounds = utils.qs_inbounds(qcoords, const.DENSITY_SHAPE, const.X_MIN, const.X_MAX)
+    inbounds = inbounds.reshape(this_ranks_imgs[0].shape)
+    print0("INIT SHOT SCALES:", init_shot_scales)
+
+    # make the mpi emc object
+    emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
+                        shot_mask=inbounds,
+                        shot_background=this_ranks_bgs,
+                        min_p=0,
+                        outdir=ARGS.outdir,
+                        beta=1,
+                        shot_scales=init_shot_scales,
+                        refine_scale_factors=ARGS.optscale,
+                        ave_signal_level=ave_signal_level,
+                        density_update_method="line_search")
+
+    # run EMC wrapped in the line profiler
+    lprof = LineProfiler()
+    func_names, funcs = zip(*inspect.getmembers(mpi_utils.EMC, predicate=inspect.isfunction))
+    for f in funcs:
+        lprof.add_function(f)
+    # wrap the method to profile it
+    do_emc = lprof(emc.do_emc)
+
+    # run emc for specified number of iterations
+    do_emc(ARGS.niter)
+
+    # print the line profiler stats
+    stats = lprof.get_stats()
+    mpi_utils.print_profile(stats)
+
+    # make some assertions...
+    print0("OK")
+
+
+def plot_models(emc, init=False):
+    models = emc.success_rate(init=init, return_models=True)
+    fig, axs = plt.subplots(nrows=2, ncols=4)
+    fig.set_size_inches((9.81,4.8))
+    for i in range(4):
+        ax = axs[0,i]
+        imgs = models[i].reshape((2527, 2463)), emc.shots[i][0]
+        img_ax = axs[0,i], axs[1,i]
+        for ax,img in zip(img_ax, imgs):
+            ax.imshow(img, vmin=0, vmax=.01)
+
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
+            ax.tick_params(length=0)
+            ax.grid(ls='--', lw=0.75)
+            ax.set_aspect('auto')
+    plt.draw()
+    plt.pause(0.1)
+
+
+if __name__=="__main__":
+    emc_iteration()

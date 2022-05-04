@@ -187,6 +187,19 @@ class lerpyExt{
 
     }
 
+    inline void do_dens_deriv(np::ndarray rot_idx, np::ndarray Pdr_vals, bool verbose, CUDAREAL shot_scale){
+        int nrot = rot_idx.shape(0);
+        std::vector<int> rot_inds;
+
+        gpu.Pdr_host.clear();
+        for (int i_rot=0; i_rot < nrot; i_rot++) {
+            rot_inds.push_back(bp::extract<int>(rot_idx[i_rot]));
+            gpu.Pdr_host.push_back( bp::extract<CUDAREAL>(Pdr_vals[i_rot]) );
+        }
+        gpu.shot_scale = shot_scale;
+        do_a_lerp(gpu, rot_inds, verbose, 5);
+    }
+
     inline void print_rotMat(int i_rot){
         MAT3 M = gpu.rotMats[i_rot];
         printf("Rotation matrix %d=\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n",
@@ -304,6 +317,11 @@ BOOST_PYTHON_MODULE(emc){
              (bp::arg("rot_idx"), bp::arg("verbose")=true, bp::arg("shot_scale")=1,
                      bp::arg("deriv")=false),
              "compute equation to for the supplied rotation indices")
+        .def("_dens_deriv",
+            &lerpyExt::do_dens_deriv,
+            (bp::arg("rot_idx"), bp::arg("Pdr"),
+                 bp::arg("verbose")=true, bp::arg("shot_scale")=1),
+            "derivative of log likeihood w.r.t. densities")
         .add_property("auto_convert_arrays",
                        make_getter(&lerpyExt::auto_convert_arrays,rbv()),
                        make_setter(&lerpyExt::auto_convert_arrays,dcp()),
