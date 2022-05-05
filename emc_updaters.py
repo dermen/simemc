@@ -12,6 +12,7 @@ class Updater:
 
     def __init__(self, emc):
         self.emc = emc
+        self.f = None
         self.g = None  # gradient of refinement parameters
         self.iter_num = 0
         self.xprev = None
@@ -25,8 +26,8 @@ class Updater:
         self.shot_name_xpos = COMM.bcast(shot_name_xpos)
 
     def __call__(self, x, *args):
-        f, self.g = self.target(x)
-        return f
+        self.f, self.g = self.target(x)
+        return self.f
 
     def jac(self, x, *args):
         assert self.g is not None
@@ -55,7 +56,7 @@ class DensityUpdater(Updater):
 
         is_zero = dens_start == 0
         if np.any(is_zero):
-            print("WARNING!!!!!!! Density is 0 in some places")
+            self.emc.print("WARNING!!!!!!! Density is 0 in some places", flush=True)
             min_pos_val = min(1e-7, dens_start[~is_zero].min())
             dens_start[is_zero] = min_pos_val
 
@@ -96,7 +97,7 @@ class DensityUpdater(Updater):
             emc.L, emc.shots, emc.prob_rots, emc.shot_scales, emc.shot_mask, emc.shot_background)
 
         for i_shot, log_Rdr in enumerate(log_Rdr_per_shot):
-            self.emc.print("Maximization iter %d ( %d/ %d)" % (self.iter_num, i_shot+1, emc.nshots), end="\r")
+            self.emc.print("Maximization iter %d ( %d/ %d)" % (self.iter_num, i_shot+1, emc.nshots), end="\r", flush=True)
             P_dr = emc.shot_P_dr[i_shot]
             emc.L.copy_image_data(emc.shots[i_shot], emc.shot_mask, emc.shot_background[i_shot])
             shot_grad = emc.L.dens_deriv(emc.prob_rots[i_shot], P_dr, verbose=False, shot_scale_factor=emc.shot_scales[i_shot])
@@ -115,14 +116,16 @@ class DensityUpdater(Updater):
 
 
     def check_convergence(self, x):
-        if self.iter_num==0:
-            self.xprev = x
-            xresid_s = ""
-        else:
-            xresid = np.abs(x-self.xprev).mean()
-            self.xprev = x
-            xresid_s = str(xresid)
-        mpi_utils.print0f("Done with emc iter num: %d (residual=%s)" % (self.iter_num, xresid_s))
+        #if self.iter_num==0:
+        #    self.xprev = x
+        #    xresid_s = ""
+        #else:
+        #    xresid = np.abs(x-self.xprev).mean()
+        #    self.xprev = x
+        #    xresid_s = str(xresid)
+        if self.f is not None:
+            self.emc.print("")
+            self.emc.print("Done with emc iter num: %d (target=%f)" % (self.iter_num, self.f), flush=True)
 
 
 class ScaleUpdater(Updater):

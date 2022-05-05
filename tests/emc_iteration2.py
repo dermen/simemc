@@ -11,7 +11,8 @@ parser.add_argument("--minpred", type=int, default=7, help="minimum number of st
 parser.add_argument("--hcut", type=float, default=0.03, help="maximum distance (in hkl units) to Bragg peaks from prediction for prediction Bragg peak to be considered part of the lattice ")
 parser.add_argument("--xtalsize", type=float, default=0.002, help="size of the crystallite in mm")
 parser.add_argument("--nowater", action="store_true", help="dont add water background")
-parser.add_argument("--useprecomputed", action="store_true", help="load simulated images and refl tables from the outdir")
+parser.add_argument("--precomputedDir", default=None, type=str, help="load simulated images and refl tables from the outdir")
+parser.add_argument("--startingDen", default=None, type=str, help="Path to a Witer%d.h5 file (output from previous run)")
 #parser.add_argument("--water", action="store_true", help="add water to sim")
 #parser.add_argument("--nogrid", action="store_true", help="ground truth rotations do not lie on rotation grid")
 #parser.add_argument("--relp", action="store_true", help="init density starts from gaussians on relp points (see utils.get_W_init)")
@@ -27,6 +28,7 @@ from line_profiler import LineProfiler
 import inspect
 from simtbx.diffBragg import utils as db_utils
 import time
+import glob
 import h5py
 from simemc import utils
 from simemc import sim_const, sim_utils
@@ -44,22 +46,22 @@ printR = mpi_utils.printRf
 MIN_REF_PER_SHOT=4
 
 
-def load_n_images(nshot, file_prefix):
+def load_images(filedir):
     this_ranks_imgs = []
     this_ranks_refls = []
+    filenames = glob.glob(filedir + "/*.h5")
 
     # first make sure all refls exist:
-    for i_shot in range(nshot):
-        h5name = "%s_%d.h5" % (file_prefix, i_shot)
-        refname = "%s_%d.refl" % (file_prefix, i_shot)
-        if os.path.exists(h5name) and os.path.exists(refname):
-            img = h5py.File(h5name, "r")["image"][()]
-            this_ranks_imgs.append(img)
-            R = flex.reflection_table.from_file(refname)
-            this_ranks_refls.append(R)
-            print("Loaded shot %s (%d/%d)" % (h5name, i_shot, nshot))
-        else:
-            print("Shot did not exist: %s" % h5name)
+    for i_f, f in enumerate(filenames):
+        if i_f % COMM.size != COMM.rank:
+            continue
+        h5name = f
+        refname = f.replace(".h5", ".refl")
+        img = h5py.File(h5name, "r")["image"][()]
+        this_ranks_imgs.append(img)
+        R = flex.reflection_table.from_file(refname)
+        this_ranks_refls.append(R)
+        printR("Loaded shot %s (%d/%d)" % (h5name, i_f, len(filenames)))
     return this_ranks_imgs, this_ranks_refls
 
 
@@ -94,7 +96,7 @@ def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
                    % (i_shot+1, nshot, dev_id, num_ref, MIN_REF_PER_SHOT))
 
         R.as_file(file_prefix+ "_%d.refl" % i_shot)
-        # store an h5 for optional quick reloading with method load_n_images (h5s load faster than cbfs)
+        # store an h5 for optional quick reloading with method load_images (h5s load faster than cbfs)
         with h5py.File(file_prefix + "_%d.h5"% i_shot, "w") as h:
             h.create_dataset("image", data=img)
         this_ranks_imgs.append(img)
@@ -173,12 +175,11 @@ def emc_iteration():
     DEV_ID = COMM.rank % ARGS.ndev
 
     file_prefix=os.path.join(cbfdir, "rank%d_shot"% COMM.rank)
-    if not ARGS.useprecomputed:
+    if ARGS.precomputedDir is None:
         this_ranks_imgs, this_ranks_refls = generate_n_images(ARGS.nshot, COMM.rank, DEV_ID, ARGS.xtalsize, ARGS.phil,
                                                               file_prefix=file_prefix)
     else:
-        this_ranks_imgs, this_ranks_refls = load_n_images(ARGS.nshot, file_prefix)
-
+        this_ranks_imgs, this_ranks_refls = load_images(ARGS.precomputedDir)
 
     radProMaker = get_rad_pro_maker()
 
@@ -207,17 +208,20 @@ def emc_iteration():
         if signal_level ==0:
             print("WARNING, shot has 0 signal level")
         this_ranks_signal_levels.append(signal_level)
-        print0("Done with background image %d / %d" % (i_img+1, ARGS.nshot))
+        print0("Done with background image %d / %d" % (i_img+1, len(this_ranks_imgs)))
 
     all_ranks_signal_levels = COMM.reduce(this_ranks_signal_levels)
     ave_signal_level = None
     if COMM.rank==0:
         ave_signal_level = np.mean(all_ranks_signal_levels)
     ave_signal_level = COMM.bcast(ave_signal_level)
-    # let the initial density estimate be constant gaussians (add noise?)
-    Wstart = utils.get_W_init()
-    Wstart /= Wstart.max()
-    Wstart *= ave_signal_level
+    if ARGS.startingDen is not None:
+        Wstart = h5py.File(ARGS.startingDen, "r")["Wprime"][()]
+    else:
+        # let the initial density estimate be constant gaussians (add noise?)
+        Wstart = utils.get_W_init()
+        Wstart /= Wstart.max()
+        Wstart *= ave_signal_level
 
     # get the emc trilerp instance
     qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
