@@ -44,7 +44,7 @@ class DensityUpdater(Updater):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    def update(self):
+    def update(self, how="line_search"):
         """
 
         :return: optimized density
@@ -61,15 +61,23 @@ class DensityUpdater(Updater):
 
         xstart = np.log(dens_start)
 
-        f, g = self.target(xstart)
-        pk = -g
-        out = line_search(self, myfprime=self.jac, xk=xstart, pk=pk, gfk=g, maxiter=50)
-        self.emc.print("")
-        self.emc.print("Line search finished", out)
+        if how=="line_search":
+            f, g = self.target(xstart)
+            pk = -g
+            out = line_search(self, myfprime=self.jac, xk=xstart, pk=pk, gfk=g, maxiter=50)
+            self.emc.print("")
+            self.emc.print("Line search finished", out)
 
-        alpha = out[0]
-        xopt = xstart + alpha*pk
-        new_density = np.exp(xopt)
+            alpha = out[0]
+            xopt = xstart + alpha*pk
+            new_density = np.exp(xopt)
+
+        elif how == "lbfgs":
+            out = minimize(self, xstart, method="L-BFGS-B", jac=self.jac, callback=self.check_convergence)
+            xopt = out.x
+            new_density = np.exp(xopt)
+        else:
+            raise NotImplementedError("method %s not supported" % how)
         return new_density
 
     def target(self, x):
@@ -88,9 +96,8 @@ class DensityUpdater(Updater):
             emc.L, emc.shots, emc.prob_rots, emc.shot_scales, emc.shot_mask, emc.shot_background)
 
         for i_shot, log_Rdr in enumerate(log_Rdr_per_shot):
-            self.emc.print("line search iter %d ( %d/ %d)" % (self.iter_num,i_shot+1, emc.nshots), end="\r")
+            self.emc.print("Maximization iter %d ( %d/ %d)" % (self.iter_num, i_shot+1, emc.nshots), end="\r")
             P_dr = emc.shot_P_dr[i_shot]
-            img = emc.shots[i_shot]
             emc.L.copy_image_data(emc.shots[i_shot], emc.shot_mask, emc.shot_background[i_shot])
             shot_grad = emc.L.dens_deriv(emc.prob_rots[i_shot], P_dr, verbose=False, shot_scale_factor=emc.shot_scales[i_shot])
             grad += shot_grad
@@ -99,8 +106,7 @@ class DensityUpdater(Updater):
         grad = COMM.bcast(COMM.reduce(grad))
         functional = COMM.bcast(COMM.reduce(functional))
 
-        # Because we reparameterized, such that W = exp(x), then grad = dW/dx *grad or, exp(x)*grad
-        # dens = exp(x)
+        # Because we reparameterized, such that W = exp(x), then grad = dW/dx *grad = exp(x)*grad = density*grad
         grad *= dens
 
         # running a minimizer so return the negative loglike and its gradient

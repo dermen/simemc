@@ -508,7 +508,7 @@ class EMC:
                 self.reduce_density()
             elif self.density_update_method == "line_search":
                 density_updater = emc_updaters.DensityUpdater(self)
-                den = density_updater.update()
+                den = density_updater.update(how="lbfgs")
                 self.set_new_density(den)
             else:
                 raise NotImplementedError("Unknown method %s" % self.density_update_method)
