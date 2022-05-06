@@ -92,7 +92,7 @@ cd ../
 The script then runs them through EMC for a set number of iterations 
 
 ```
-DIFFBRAGG_USE_CUDA=1 mpirun -n 4 libtbx.python tests/emc_iteration.py  1 250 water_sims --niter 100 --phil proc.phil  --minpred 3 --hcut 0.1  --xtalsize 0.0025 --densityUpdater lbfgs
+DIFFBRAGG_USE_CUDA=1 mpirun -n 3 libtbx.python tests/emc_iteration.py  1 333 water_sims --niter 100 --phil proc.phil  --minpred 3 --hcut 0.1  --xtalsize 0.0025 --densityUpdater lbfgs
 ```
 
 Process the images using the standard stills process framework as a comparison:
