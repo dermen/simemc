@@ -92,28 +92,26 @@ cd ../
 The script then runs them through EMC for a set number of iterations 
 
 ```
-DIFFBRAGG_USE_CUDA=1 mpirun -n 3 libtbx.python tests/test_emc_iteration.py  \
-  1 333  water_sims/1um --water --phil proc.phil  --minpred 4 \
-  --hcut=0.04 --cbfdir water_sims/1um-cbfs --xtalsize 0.00125 --niter 15
+DIFFBRAGG_USE_CUDA=1 mpirun -n 4 libtbx.python tests/emc_iteration.py  1 250 water_sims --niter 100 --phil proc.phil  --minpred 3 --hcut 0.1  --xtalsize 0.0025 --densityUpdater lbfgs
 ```
 
 Process the images using the standard stills process framework as a comparison:
 
 ```
 mpirun  -n 24 dials.stills_process \
-  proc.phil  water_sims/1um-cbfs/*.cbf \
-  output.output_dir=water_sims/1um-proc mp.method=mpi
+  proc.phil  water_sims/cbfs/*.cbf filter.min_spot_size=2 \
+  output.output_dir=water_sims/proc mp.method=mpi
 ```
 
 ```
 mpirun -n 24 cctbx.xfel.merge merge.phil \
-  input.path=water_sims/1um-proc output.output_dir=water_sims/1um-xfelmerge
+  input.path=water_sims/proc output.output_dir=water_sims/merge
 ```
 
 Because we ran a simulation, we know the ground truth structure factors. We can plot the correlation between the EMC-determined structure factors with the ground truth. We can do the same for `stills_process` / `xfel.merge` determined structure factors. See the script `make_corr_plot.py`:
 
 ```
-libtbx.python make_corr_plot.py water_sims/1um/Witer11.h5  --mtz water_sims/1um-test8/xfel_merge/iobs_all.mtz
+libtbx.python make_corr_plot.py water_sims/Witer10.h5  --mtz water_sims/merge/iobs_all.mtz
 ```
 
 Note the EMC-determined structure factors correlate much better for these simulated data with low spot counts. 
