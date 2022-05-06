@@ -233,7 +233,7 @@ class EMC:
         assert len(shots) > 0
         assert isinstance(shots[0], np.ndarray)
         assert scale_update_method in ["analytical", "bfgs"]
-        assert density_update_method in ["analytical", "line_search"]
+        assert density_update_method in ["analytical", "line_search", "lbfgs"]
         assert len(prob_rots) == len(shots)
         if shot_mask is not None:
             assert isinstance(shot_mask, np.ndarray)

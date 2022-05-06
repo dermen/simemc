@@ -46,7 +46,7 @@ from simemc import const
 
 print0 = mpi_utils.print0f
 printR = mpi_utils.printRf
-MIN_REF_PER_SHOT=4
+MIN_REF_PER_SHOT=3
 
 
 def load_images(filedir, n=-1):
@@ -83,7 +83,7 @@ def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
     this_ranks_imgs = []
     this_ranks_refls = []
 
-    print("Simulating water scattering...")
+    print0("Simulating water scattering...")
     water = sim_utils.get_water_scattering()
     if ARGS.nowater:
         water *= 0
@@ -103,7 +103,7 @@ def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
             R = utils.refls_from_sims(img, sim_const.DETECTOR, sim_const.BEAM, phil_file=phil_file)
             num_ref = len(R)
             print0("Shot %d / %d on device %d simulated with %d refls (%d required to proceed)"
-                   % (i_shot+1, nshot, dev_id, num_ref, MIN_REF_PER_SHOT))
+                   % (i_shot+1, nshot, dev_id, num_ref, MIN_REF_PER_SHOT), flush=True)
 
         R.as_file(file_prefix+ "_%d.refl" % i_shot)
         # store an h5 for optional quick reloading with method load_images (h5s load faster than cbfs)
@@ -111,6 +111,7 @@ def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
             h.create_dataset("image", data=img)
         this_ranks_imgs.append(img)
         this_ranks_refls.append(R)
+    sim_utils.delete_noise_sim(SIM)
     return this_ranks_imgs, this_ranks_refls
 
 

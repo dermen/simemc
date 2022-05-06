@@ -51,6 +51,7 @@ class DensityUpdater(Updater):
         _, self.relp_mask = utils.whole_punch_W(temp, 1)
         self.relp_mask = self.relp_mask.ravel()
         self.emc.L.copy_relp_mask_to_device(self.relp_mask)
+        self.min_prob = 1e-5
 
     def update(self, how="line_search"):
         """
@@ -81,7 +82,7 @@ class DensityUpdater(Updater):
 
         elif how == "lbfgs":
             out = minimize(self, xstart, method="L-BFGS-B", jac=self.jac, callback=self.check_convergence,
-                           options={"maxiter": 25})
+                           options={"maxiter": 100})
             xopt = out.x
         else:
             raise NotImplementedError("method %s not supported" % how)
@@ -106,12 +107,17 @@ class DensityUpdater(Updater):
         for i_shot in range(emc.nshots):
             self.emc.print("Maximization iter %d ( %d/ %d)" % (self.iter_num+1, i_shot+1, emc.nshots), end="\r", flush=True)
             P_dr = emc.shot_P_dr[i_shot]
+            is_finite_prob = np.array(P_dr) >= self.min_prob
+            
             emc.L.copy_image_data(emc.shots[i_shot], emc.shot_mask, emc.shot_background[i_shot])
-            shot_grad = emc.L.dens_deriv(emc.prob_rots[i_shot], P_dr, verbose=False, shot_scale_factor=emc.shot_scales[i_shot])
+            
+            finite_rot_inds = emc.prob_rots[i_shot][is_finite_prob]  # TODO : verify type is np.ndarray and avoid the extra call to np.array
+            finite_P_dr = P_dr[is_finite_prob] 
+            shot_grad = emc.L.dens_deriv(finite_rot_inds, finite_P_dr, verbose=False, shot_scale_factor=emc.shot_scales[i_shot])
             log_Rdr = np.array(emc.L.get_out())
 
             grad += shot_grad[self.relp_mask]
-            functional += (P_dr*log_Rdr).sum()
+            functional += (finite_P_dr*log_Rdr).sum()
 
         grad = COMM.bcast(COMM.reduce(grad))
         functional = COMM.bcast(COMM.reduce(functional))
