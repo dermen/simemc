@@ -22,6 +22,7 @@ struct lerpy {
   CUDAREAL* Pdr=NULL;
   std::vector<CUDAREAL> Pdr_host;
   bool* mask=NULL;
+  bool* is_peak_in_density=NULL;
   CUDAREAL* background=NULL;
   int numDataPixels;
   VEC3* qVecs=NULL;
@@ -44,6 +45,8 @@ struct lerpy {
   bool use_poisson_stats=true; // if False, a Gaussian random variable is used to describe the pixel measurements
   CUDAREAL sigma_r_sq=0.25;  // variance model for each pixel (e.g. dark noise variance)
 };
+
+void relp_mask_to_device(lerpy& gpu, np::ndarray& relp_mask);
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray Umats, np::ndarray densities,
                          np::ndarray qvectors);

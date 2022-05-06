@@ -1,4 +1,7 @@
 from mpi4py import MPI
+
+from simemc import const
+
 COMM = MPI.COMM_WORLD
 
 import numpy as np
@@ -44,6 +47,10 @@ class DensityUpdater(Updater):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        temp = np.random.random(const.DENSITY_SHAPE)
+        _, self.relp_mask = utils.whole_punch_W(temp, 1)
+        self.relp_mask = self.relp_mask.ravel()
+        self.emc.L.copy_relp_mask_to_device(self.relp_mask)
 
     def update(self, how="line_search"):
         """
@@ -60,7 +67,7 @@ class DensityUpdater(Updater):
             min_pos_val = min(1e-7, dens_start[~is_zero].min())
             dens_start[is_zero] = min_pos_val
 
-        xstart = np.log(dens_start)
+        xstart = np.log(dens_start[self.relp_mask])
 
         if how=="line_search":
             f, g = self.target(xstart)
@@ -71,44 +78,46 @@ class DensityUpdater(Updater):
 
             alpha = out[0]
             xopt = xstart + alpha*pk
-            new_density = np.exp(xopt)
 
         elif how == "lbfgs":
-            out = minimize(self, xstart, method="L-BFGS-B", jac=self.jac, callback=self.check_convergence)
+            out = minimize(self, xstart, method="L-BFGS-B", jac=self.jac, callback=self.check_convergence,
+                           options={"maxiter": 25})
             xopt = out.x
-            new_density = np.exp(xopt)
         else:
             raise NotImplementedError("method %s not supported" % how)
-        return new_density
+        dens_opt = np.zeros_like(dens_start)
+        dens_opt[self.relp_mask] = np.exp(xopt)
+        return dens_opt
 
     def target(self, x):
         emc = self.emc
 
+        dens = np.zeros(const.DENSITY_SHAPE[0]**3)
+
         # x is the log of the density
         # Apply reparameterization to keep density positive
-        dens = np.exp(x)
+        dens[self.relp_mask] = np.exp(x)
 
         emc.L.update_density(dens)
 
         functional = 0
         grad = np.zeros(len(x))
 
-        log_Rdr_per_shot = utils.compute_log_R_dr(
-            emc.L, emc.shots, emc.prob_rots, emc.shot_scales, emc.shot_mask, emc.shot_background)
-
-        for i_shot, log_Rdr in enumerate(log_Rdr_per_shot):
-            self.emc.print("Maximization iter %d ( %d/ %d)" % (self.iter_num, i_shot+1, emc.nshots), end="\r", flush=True)
+        for i_shot in range(emc.nshots):
+            self.emc.print("Maximization iter %d ( %d/ %d)" % (self.iter_num+1, i_shot+1, emc.nshots), end="\r", flush=True)
             P_dr = emc.shot_P_dr[i_shot]
             emc.L.copy_image_data(emc.shots[i_shot], emc.shot_mask, emc.shot_background[i_shot])
             shot_grad = emc.L.dens_deriv(emc.prob_rots[i_shot], P_dr, verbose=False, shot_scale_factor=emc.shot_scales[i_shot])
-            grad += shot_grad
+            log_Rdr = np.array(emc.L.get_out())
+
+            grad += shot_grad[self.relp_mask]
             functional += (P_dr*log_Rdr).sum()
 
         grad = COMM.bcast(COMM.reduce(grad))
         functional = COMM.bcast(COMM.reduce(functional))
 
         # Because we reparameterized, such that W = exp(x), then grad = dW/dx *grad = exp(x)*grad = density*grad
-        grad *= dens
+        grad *= dens[self.relp_mask]
 
         # running a minimizer so return the negative loglike and its gradient
         self.iter_num += 1

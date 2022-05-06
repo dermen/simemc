@@ -71,7 +71,7 @@ def whole_punch_W(W, width=1):
     Imap[A,B,C] = True
     Imap = ni.binary_dilation(Imap.astype(bool), iterations=width)
     Imap = Imap.reshape(W.shape)
-    return W*Imap
+    return W*Imap, Imap
 
 
 def integrate_W(W):
@@ -774,8 +774,6 @@ def compute_log_R_dr(L, shots, prob_rots, shot_scales, mask=None,bg=None, deriv=
         mask = np.ones(shots[0].shape, bool)
 
     if bg is None:
-        print("CODE FAIL")
-        exit()
         dummie_bg = np.zeros_like(shots[0])
 
     for i_shot, (img, rot_inds, scale_factor) in enumerate(zip(shots, prob_rots, shot_scales)):

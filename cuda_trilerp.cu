@@ -47,8 +47,10 @@ __global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
                            const CUDAREAL * __restrict__ background,
                            const CUDAREAL * P_dr_vals,
                            const bool * is_trusted,
+                           const bool * is_peak_in_density,
                            CUDAREAL scale_factor,
                            VEC3 *vectors,
+                           CUDAREAL * out_rot,
                            MAT3* rotMats, int* rot_inds, int numRot, int num_qvec,
                            int nx, int ny, int nz,
                            CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
@@ -141,6 +143,18 @@ void densities_to_device(lerpy& gpu, np::ndarray& new_densities){
     }
 }
 
+void relp_mask_to_device(lerpy& gpu, np::ndarray& relp_mask){
+    unsigned int numDens = relp_mask.shape(0);
+    // TODO put the assert numDens==gpu.numDens
+    if (gpu.is_peak_in_density==NULL){
+        gpuErr(cudaMallocManaged((void **)&gpu.is_peak_in_density, gpu.numDens*sizeof(bool)));
+    }
+    bool* relp_mask_ptr = reinterpret_cast<bool*>(relp_mask.get_data());
+    for (int i=0; i < gpu.numDens; i++){
+        gpu.is_peak_in_density[i] = *(relp_mask_ptr+i);
+    }
+}
+
 void toggle_insert_mode(lerpy& gpu){
     if (gpu.wts==NULL){
         gpuErr(cudaMallocManaged((void **)&gpu.wts, gpu.numDens*sizeof(CUDAREAL)));
@@ -171,7 +185,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     int numRotInds = rot_inds.size();
     for (int i=0; i< numRotInds; i++){
         gpu.rotInds[i] = rot_inds[i];
-        if(task==1 || task==3 || task==4){
+        if(task==1 || task==3 || task==4 || task==5){
             gpu.out_equation_two[i] = 0;
         }
     }
@@ -223,11 +237,18 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     else if (task==5){
         for (int i=0; i< numRotInds; i++)
             gpu.Pdr[i] = gpu.Pdr_host[i];
+        if (gpu.is_peak_in_density==NULL){
+            printf("WARNING! NO RELP MASK ALLOCATED: use copy_relp_mask method\n");
+            gpuErr(cudaMallocManaged((void **)&gpu.is_peak_in_density, gpu.numDens*sizeof(bool)));
+            for(int i=0; i < gpu.numDens;i++) {
+                gpu.is_peak_in_density[i] = true;
+            }
+        }
 
         dens_deriv<<<gpu.numBlocks, gpu.blockSize>>>
                 (gpu.densities, gpu.densities_gradient,
-                 gpu.data, gpu.background, gpu.Pdr, gpu.mask,
-                 gpu.shot_scale, gpu.qVecs,
+                 gpu.data, gpu.background, gpu.Pdr, gpu.mask, gpu.is_peak_in_density,
+                 gpu.shot_scale, gpu.qVecs, gpu.out_equation_two,
                  gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
                  256, 256, 256,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
@@ -256,7 +277,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     }
 
     gettimeofday(&t1, 0);
-    if (task==1 || task==3 || task==4){
+    if (task==1 || task==3 || task==4 || task==5){
         bp::list outList;
         for (int i = 0; i < numRotInds; i++)
             outList.append(gpu.out_equation_two[i]);
@@ -283,6 +304,8 @@ void free_lerpy(lerpy& gpu){
         gpuErr(cudaFree(gpu.data));
     if (gpu.mask!= NULL)
         gpuErr(cudaFree(gpu.mask));
+    if (gpu.is_peak_in_density!= NULL)
+        gpuErr(cudaFree(gpu.is_peak_in_density));
     if (gpu.background!= NULL)
         gpuErr(cudaFree(gpu.background));
     if (gpu.out!= NULL)
@@ -689,8 +712,10 @@ __global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
                            const CUDAREAL * __restrict__ background,
                            const CUDAREAL * P_dr_vals,
                            const bool * is_trusted,
+                           const bool * is_peak_in_density,
                            CUDAREAL scale_factor,
                            VEC3 *vectors,
+                           CUDAREAL * out_rot,
                            MAT3* rotMats, int* rot_inds, int numRot, int num_qvec,
                            int nx, int ny, int nz,
                            CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
@@ -723,8 +748,10 @@ __global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
     CUDAREAL W_rt_prime0, W_rt_prime1, W_rt_prime2, W_rt_prime3, W_rt_prime4, W_rt_prime5, W_rt_prime6, W_rt_prime7;
     CUDAREAL dens_grad_factor;
     CUDAREAL P_dr;
+    CUDAREAL R_dr_thread, R_dr_block;
 
     for (i_rot =0; i_rot < numRot; i_rot++){
+        R_dr_thread = 0;
         P_dr = P_dr_vals[i_rot];
         r = rot_inds[i_rot];
         R = rotMats[r];
@@ -814,15 +841,32 @@ __global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
                 W_rt_prime6 = dens_grad_factor*a6;
                 W_rt_prime7 = dens_grad_factor*a7;
 
-                atomicAdd(&densities_gradient[idx0], W_rt_prime0);
-                atomicAdd(&densities_gradient[idx1], W_rt_prime1);
-                atomicAdd(&densities_gradient[idx2], W_rt_prime2);
-                atomicAdd(&densities_gradient[idx3], W_rt_prime3);
-                atomicAdd(&densities_gradient[idx4], W_rt_prime4);
-                atomicAdd(&densities_gradient[idx5], W_rt_prime5);
-                atomicAdd(&densities_gradient[idx6], W_rt_prime6);
-                atomicAdd(&densities_gradient[idx7], W_rt_prime7);
+                if (is_peak_in_density[idx0])
+                    atomicAdd(&densities_gradient[idx0], W_rt_prime0);
+                if (is_peak_in_density[idx1])
+                    atomicAdd(&densities_gradient[idx1], W_rt_prime1);
+                if (is_peak_in_density[idx2])
+                    atomicAdd(&densities_gradient[idx2], W_rt_prime2);
+                if (is_peak_in_density[idx3])
+                    atomicAdd(&densities_gradient[idx3], W_rt_prime3);
+                if (is_peak_in_density[idx4])
+                    atomicAdd(&densities_gradient[idx4], W_rt_prime4);
+                if (is_peak_in_density[idx5])
+                    atomicAdd(&densities_gradient[idx5], W_rt_prime5);
+                if (is_peak_in_density[idx6])
+                    atomicAdd(&densities_gradient[idx6], W_rt_prime6);
+                if (is_peak_in_density[idx7])
+                    atomicAdd(&densities_gradient[idx7], W_rt_prime7);
+
+                R_dr_thread += K_t * log(model+eps) - model;
             }
         }
+        __syncthreads();
+        // reduce R_dr across blocks, store result on thread 0
+        R_dr_block = BlockReduce(temp_storage).Sum(R_dr_thread);
+
+        // accumulate across all thread 0 using atomics
+        if (threadIdx.x==0)
+            atomicAdd(&out_rot[i_rot], R_dr_block);
     }
 }

@@ -125,6 +125,11 @@ def main(maxRotInds=10, finite_diff=0):
             Qdr = (Pdr_vals*Rgpu).sum()
             deriv_Qdr = L.dens_deriv(inds, Pdr_vals, verbose=True, shot_scale_factor=1)
 
+            # calling the dens_deriv method also results in computing the log_Rdr values
+            # here we test that they are the same as computed by the equation_two method
+            Rgpu_test = np.array(L.get_out())
+            assert np.allclose(Rgpu, Rgpu_test)
+
             # check the gradient at 10 random voxels
             random_voxels = np.random.choice(np.where(deriv_Qdr != 0)[0], size=10)
             percs = [2**i * 0.005 for i in range(8)]

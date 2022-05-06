@@ -13,6 +13,8 @@ parser.add_argument("--xtalsize", type=float, default=0.002, help="size of the c
 parser.add_argument("--nowater", action="store_true", help="dont add water background")
 parser.add_argument("--precomputedDir", default=None, type=str, help="load simulated images and refl tables from the outdir")
 parser.add_argument("--startingDen", default=None, type=str, help="Path to a Witer%d.h5 file (output from previous run)")
+parser.add_argument("--densityUpdater", type=str, default="lbfgs", choices=["lbfgs", "line_search", "analytical"],
+                    help="the method for updating the density between iterations")
 #parser.add_argument("--water", action="store_true", help="add water to sim")
 #parser.add_argument("--nogrid", action="store_true", help="ground truth rotations do not lie on rotation grid")
 #parser.add_argument("--relp", action="store_true", help="init density starts from gaussians on relp points (see utils.get_W_init)")
@@ -30,6 +32,7 @@ from simtbx.diffBragg import utils as db_utils
 import time
 import glob
 import h5py
+from simemc import emc_updaters
 from simemc import utils
 from simemc import sim_const, sim_utils
 from simemc import mpi_utils
@@ -46,7 +49,12 @@ printR = mpi_utils.printRf
 MIN_REF_PER_SHOT=4
 
 
-def load_images(filedir):
+def load_images(filedir, n=-1):
+    """
+    :param filedir: dir to load images from
+    :param n: optional, stop loading once number of loaded images reaches this amount
+    :return:
+    """
     this_ranks_imgs = []
     this_ranks_refls = []
     filenames = glob.glob(filedir + "/*.h5")
@@ -62,6 +70,8 @@ def load_images(filedir):
         R = flex.reflection_table.from_file(refname)
         this_ranks_refls.append(R)
         printR("Loaded shot %s (%d/%d)" % (h5name, i_f, len(filenames)))
+        if len(this_ranks_imgs) == n:
+            break
     return this_ranks_imgs, this_ranks_refls
 
 
@@ -179,7 +189,7 @@ def emc_iteration():
         this_ranks_imgs, this_ranks_refls = generate_n_images(ARGS.nshot, COMM.rank, DEV_ID, ARGS.xtalsize, ARGS.phil,
                                                               file_prefix=file_prefix)
     else:
-        this_ranks_imgs, this_ranks_refls = load_images(ARGS.precomputedDir)
+        this_ranks_imgs, this_ranks_refls = load_images(ARGS.precomputedDir, ARGS.nshot)
 
     radProMaker = get_rad_pro_maker()
 
@@ -196,12 +206,16 @@ def emc_iteration():
     this_ranks_bgs = []
     this_ranks_signal_levels = []
     for i_img, (img, R) in enumerate(zip(this_ranks_imgs, this_ranks_refls)):
-        radial_pro = radProMaker.makeRadPro(
-            data_pixels=img,
-            strong_refl=R,
-            apply_corrections=False, use_median=False)
+        if ARGS.nowater:
+            img_background = np.zeros_like(img)
+        else:
+            radial_pro = radProMaker.makeRadPro(
+                data_pixels=img,
+                strong_refl=R,
+                apply_corrections=False, use_median=False)
 
-        img_background = radProMaker.expand_radPro(radial_pro)
+            img_background = radProMaker.expand_radPro(radial_pro)
+
         this_ranks_bgs.append(img_background)
 
         signal_level = utils.signal_level_of_image(R, img)
@@ -259,13 +273,14 @@ def emc_iteration():
                         shot_scales=init_shot_scales,
                         refine_scale_factors=ARGS.optscale,
                         ave_signal_level=ave_signal_level,
-                        density_update_method="line_search")
+                        density_update_method=ARGS.densityUpdater)
 
     # run EMC wrapped in the line profiler
     lprof = LineProfiler()
-    func_names, funcs = zip(*inspect.getmembers(mpi_utils.EMC, predicate=inspect.isfunction))
-    for f in funcs:
-        lprof.add_function(f)
+    for cls in [mpi_utils.EMC, emc_updaters.DensityUpdater]:
+        func_names, funcs = zip(*inspect.getmembers(cls, predicate=inspect.isfunction))
+        for f in funcs:
+            lprof.add_function(f)
     # wrap the method to profile it
     do_emc = lprof(emc.do_emc)
 

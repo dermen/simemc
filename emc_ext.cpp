@@ -86,6 +86,10 @@ class lerpyExt{
         }
     }
 
+    inline void copy_relp_mask( np::ndarray& relp_mask){
+        relp_mask_to_device(gpu, relp_mask);
+    }
+
     inline void copy_densities( np::ndarray& new_dens){
         // assert len pixels matches up
         if (new_dens.shape(0) != gpu.numDens){
@@ -295,6 +299,7 @@ BOOST_PYTHON_MODULE(emc){
         .def(bp::init<>("returns a class instance"))
         .def ("_allocate_lerpy", &lerpyExt::alloc, "allocate the device")
         .def ("_copy_image_data", &lerpyExt::copy_pixels, "copy pixels to the GPU device")
+        .def ("_copy_relp_mask", &lerpyExt::copy_relp_mask, "copy relp mask to the GPU device")
         .def ("_update_density", &lerpyExt::copy_densities, "copies new density to the GPU device")
         //.def("free_device", &lerpyExt::free, "free any allocated GPU memory")
         .def ("print_rotMat", &lerpyExt::print_rotMat, "show elements of allocated rotMat i_rot")

@@ -129,6 +129,11 @@ class _():
         self.copy_image_data(vals, mask, bg)
         self._trilinear_insertion(int(rot_idx), verbose, tomo_wt)
 
+    def copy_relp_mask_to_device(self, relp_mask):
+        relp_mask = self.check_arrays(relp_mask, bool)
+        # assert len dens is len(relp)
+        self._copy_relp_mask(relp_mask)
+
     def update_density(self, new_dens):
         """
         :param new_dens:
@@ -158,7 +163,7 @@ class _():
         if bg is None:
             bg = np.zeros(pixels.shape, dtype=pixels.dtype)
         else:
-            assert bg.dtype == pixels.dtype
+            bg = self.check_arrays(bg)
             assert bg.shape == pixels.shape
         self._copy_image_data(pixels, mask, bg)
 

@@ -435,7 +435,7 @@ class EMC:
             den = COMM.bcast(den)
 
         if self.whole_punch:
-            den = utils.whole_punch_W(den, 2)
+            den,_ = utils.whole_punch_W(den, 1)
         self.L.update_density(den)
 
     def prep_for_insertion(self):
@@ -506,9 +506,9 @@ class EMC:
                 self.insert_one_rankers()
                 self.insert_multi_rankers()
                 self.reduce_density()
-            elif self.density_update_method == "line_search":
+            elif self.density_update_method in ["line_search", "lbfgs"]:
                 density_updater = emc_updaters.DensityUpdater(self)
-                den = density_updater.update(how="lbfgs")
+                den = density_updater.update(how=self.density_update_method)
                 self.set_new_density(den)
             else:
                 raise NotImplementedError("Unknown method %s" % self.density_update_method)
