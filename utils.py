@@ -4,6 +4,7 @@ import sympy
 from scipy.spatial.transform import Rotation
 from scipy import ndimage as nd
 from simemc.compute_radials import RadPros
+import time
 from dials.command_line.stills_process import phil_scope
 from dxtbx.model import ExperimentList
 from simtbx.diffBragg import utils as db_utils
@@ -14,8 +15,10 @@ from libtbx.phil import parse
 from simemc import sim_const
 try:
     from simemc.emc import lerpy
+    from simemc.emc import probable_orients
 except ImportError:
     lerpy = None
+    probable_orients = None
 from simemc import const
 from reborn.misc.interpolate import trilinear_insertion, trilinear_interpolation
 from cctbx import sgtbx
@@ -25,7 +28,7 @@ from dials.model.data import PixelListLabeller, PixelList
 from dials.algorithms.spot_finding.finder import pixel_list_to_reflection_table
 
 
-def whole_punch_W(W, width=1):
+def whole_punch_W(W, width=1, ucell_p=None):
     """
     set all values far from the Bragg peaks to 0
     :param W: input density
@@ -34,7 +37,12 @@ def whole_punch_W(W, width=1):
         1 keeps 17(?) pixels at every Bragg peak
     :return: W with 0s in between the Bragg reflections
     """
-    a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
+    if ucell_p is not None:
+        ucell_man = db_utils.manager_from_params(ucell_p)
+        Bmat = np.reshape(ucell_man.B_realspace, (3,3))
+        a1,a2,a3 = Bmat[:,0], Bmat[:,1], Bmat[:,2]
+    else:
+        a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
     V = np.dot(a1, np.cross(a2,a3))
     b1 = np.cross(a2,a3)/V
     b2 = np.cross(a3,a1)/V
@@ -74,8 +82,13 @@ def whole_punch_W(W, width=1):
     return W*Imap, Imap
 
 
-def integrate_W(W):
-    a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
+def integrate_W(W, ucell_p=None):
+    if ucell_p is not None:
+        ucell_man = db_utils.manager_from_params(ucell_p)
+        Bmat = np.reshape(ucell_man.B_realspace, (3,3))
+        a1,a2,a3 = Bmat[:,0], Bmat[:,1], Bmat[:,2]
+    else:
+        a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
     V = np.dot(a1, np.cross(a2,a3))
     b1 = np.cross(a2,a3)/V
     b2 = np.cross(a3,a1)/V
@@ -124,7 +137,7 @@ def integrate_W(W):
     return hkl_idx, Ivals
 
 
-def get_W_init(ndom=20):
+def get_W_init(ndom=20, ucell_p=None):
     """
     Get an initial guess of the density
     :param ndom: number of unit cells along crystal a-axis
@@ -133,7 +146,12 @@ def get_W_init(ndom=20):
          shape is spherical.
     :return: Density estimate
     """
-    a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
+    if ucell_p is not None:
+        ucell_man = db_utils.manager_from_params(ucell_p)
+        Bmat = np.reshape(ucell_man.B_realspace, (3,3))
+        a1,a2,a3 = Bmat[:,0], Bmat[:,1], Bmat[:,2]
+    else:
+        a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
     V = np.dot(a1, np.cross(a2,a3))
     b1 = np.cross(a2,a3)/V
     b2 = np.cross(a3,a1)/V
@@ -363,7 +381,7 @@ def save_expt_refl_file(filename, expts, refls, check_exists=False):
             refl = os.path.abspath(refl)
             if check_exists:
                 assert os.path.exists(expt)
-                assert os.path.refls(refl)
+                assert os.path.exists(refl)
             o.write("%s %s\n" % (expt, refl))
 
 
@@ -810,3 +828,34 @@ def signal_level_of_image(R, img):
         signal_level += img[pid, y1:y2, x1:x2].mean()
     signal_level /= len(R)
     return signal_level
+
+
+def get_prob_rots_per_shot(O, R, hcut, min_pred):
+    qvecs = db_utils.refls_to_q(R, sim_const.DETECTOR, sim_const.BEAM)
+    qvecs = qvecs.astype(O.array_type)
+    prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
+    return prob_rot
+
+
+def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=None,
+                 max_num_strong_spots=1000, hcut=0.1, min_pred=3, verbose=True):
+    if probable_orients is None:
+        print("probable_orients failed to import")
+        return
+    O = probable_orients()
+    O.allocate_orientations(dev_id, rotation_samples.ravel(), max_num_strong_spots)
+    if Bmat_reference is None:
+        O.Bmatrix = sim_const.CRYSTAL.get_B()
+    else:
+        O.Bmatrix = Bmat_reference.elems
+    prob_rots_per_shot =[]
+    for i_img, R in enumerate(list_of_refl_tables):
+        t = time.time()
+        prob_rot = get_prob_rots_per_shot(O, R, hcut, min_pred)
+        prob_rots_per_shot.append(prob_rot)
+        if verbose:
+            print("%d probable rots on shot %d / %d with %d strongs (%f sec)"
+                   % ( len(prob_rot),i_img+1, len(list_of_refl_tables) , len(R), time.time()-t), flush=True )
+    O.free_device()
+    return prob_rots_per_shot
+

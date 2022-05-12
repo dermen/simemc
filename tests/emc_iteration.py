@@ -11,18 +11,13 @@ parser.add_argument("--minpred", type=int, default=7, help="minimum number of st
 parser.add_argument("--hcut", type=float, default=0.03, help="maximum distance (in hkl units) to Bragg peaks from prediction for prediction Bragg peak to be considered part of the lattice ")
 parser.add_argument("--xtalsize", type=float, default=0.002, help="size of the crystallite in mm")
 parser.add_argument("--nowater", action="store_true", help="dont add water background")
+parser.add_argument("--onlyGenImages", action="store_true", help="exit after simulating images")
 parser.add_argument("--precomputedDir", default=None, type=str, help="load simulated images and refl tables from the outdir")
 parser.add_argument("--startingDen", default=None, type=str, help="Path to a Witer%d.h5 file (output from previous run)")
 parser.add_argument("--densityUpdater", type=str, default="lbfgs", choices=["lbfgs", "line_search", "analytical"],
                     help="the method for updating the density between iterations")
-#parser.add_argument("--water", action="store_true", help="add water to sim")
-#parser.add_argument("--nogrid", action="store_true", help="ground truth rotations do not lie on rotation grid")
-#parser.add_argument("--relp", action="store_true", help="init density starts from gaussians on relp points (see utils.get_W_init)")
-#parser.add_argument("--perturbScale", action="store_true", help="perturb the scale factors before merging")
-#parser.add_argument("--cbfdir", type=str, default=None, help="if not None , store CBFs here")
 ARGS = parser.parse_args()
 
-import pytest
 import pylab as plt
 import numpy as np
 import os
@@ -38,7 +33,7 @@ from simemc import sim_const, sim_utils
 from simemc import mpi_utils
 from dials.array_family import flex
 from simemc.compute_radials import RadPros
-from simemc.emc import lerpy, probable_orients
+from simemc.emc import lerpy
 
 from mpi4py import MPI
 COMM = MPI.COMM_WORLD
@@ -115,11 +110,7 @@ def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
     return this_ranks_imgs, this_ranks_refls
 
 
-def get_prob_rots_per_shot(O, R, hcut, min_pred):
-    qvecs = db_utils.refls_to_q(R, sim_const.DETECTOR, sim_const.BEAM)
-    qvecs = qvecs.astype(O.array_type)
-    prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
-    return prob_rot
+
 
 
 def get_rad_pro_maker(num_radial_bins=500):
@@ -140,20 +131,7 @@ def load_rotation_samples():
     return rots, wts
 
 
-def get_this_ranks_prob_rot(dev_id, this_ranks_refls, rotation_samples):
-    O = probable_orients()
-    max_num_strong_spots = 1000
-    O.allocate_orientations(dev_id, rotation_samples.ravel(), max_num_strong_spots)
-    O.Bmatrix = sim_const.CRYSTAL.get_B()
-    this_ranks_prob_rot =[]
-    for i_img, R in enumerate(this_ranks_refls):
-        t = time.time()
-        prob_rot = get_prob_rots_per_shot(O, R, ARGS.hcut, ARGS.minpred)
-        this_ranks_prob_rot.append(prob_rot)
-        print0("%d probable rots on shot %d / %d with %d strongs (%f sec)"
-               % ( len(prob_rot),i_img+1, len(this_ranks_refls) , len(R), time.time()-t) )
-    O.free_device()
-    return this_ranks_prob_rot
+
 
 
 def get_lerpy(dev_id, rotation_samples, qcoords):
@@ -192,6 +170,9 @@ def emc_iteration():
     else:
         this_ranks_imgs, this_ranks_refls = load_images(ARGS.precomputedDir, ARGS.nshot)
 
+    if ARGS.onlyGenImages:
+        exit()
+
     radProMaker = get_rad_pro_maker()
 
     correction = radProMaker.POLAR * radProMaker.OMEGA
@@ -201,7 +182,7 @@ def emc_iteration():
 
     # probable orientations list per image
     rots, wts = load_rotation_samples()
-    this_ranks_prob_rot = get_this_ranks_prob_rot(DEV_ID, this_ranks_refls, rots)
+    this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots)
 
     # fit background to each image; estimate signal level per image
     this_ranks_bgs = []

@@ -8,6 +8,7 @@ from scipy.stats import pearsonr
 import os
 import h5py
 import glob
+from dials.array_family import flex
 import numpy as np
 from simtbx.diffBragg import mpi_logger
 from simemc import emc_updaters
@@ -15,7 +16,6 @@ from simemc import emc_updaters
 from dxtbx.model import ExperimentList
 from simtbx.diffBragg.utils import image_data_from_expt
 import pylab as plt
-
 
 from simemc.compute_radials import RadPros
 import logging
@@ -48,6 +48,26 @@ def make_dir(dirname):
         if not os.path.exists(dirname):
             os.makedirs(dirname)
     COMM.barrier()
+
+
+def mpi_load_exp_ref(input_file, maxN=None):
+    exp_names, ref_names = utils.load_expt_refl_file(input_file)
+    if maxN is not None:
+        exp_names = exp_names[:maxN]
+        ref_names = ref_names[:maxN]
+    imgs, refls = [],[]
+    for i,(exp_name, ref_name) in enumerate(zip(exp_names, ref_names)):
+
+        if i % COMM.size != COMM.rank:
+            continue
+        explst = ExperimentList.from_file(exp_name)
+        assert len(explst)==1
+        img = image_data_from_expt(explst[0])
+        refl = flex.reflection_table.from_file(ref_name)
+        imgs.append(img)
+        refls.append(refl)
+        print0f("Done loading image %d / %d" % (i+1, len(exp_names)))
+    return imgs, refls
 
 
 def load_emc_input(input_dirs, dt=None, max_num=None, min_prob_ori=0, max_prob_ori=None):
@@ -211,7 +231,7 @@ class EMC:
     def __init__(self, L, shots, prob_rots, shot_background=None, shot_mask=None, min_p=0, outdir=None, beta=1,
                  symmetrize=True, whole_punch=True, img_sh=None, shot_scales=None,
                  refine_scale_factors=False, ave_signal_level=1, scale_update_method="analytical",
-                 density_update_method="analytical"):
+                 density_update_method="analytical", ucell_p=None):
         """
         run emc, the resulting density is stored in the L (emc.lerpy) object
         see call to this method in ests/test_emc_iteration
@@ -230,6 +250,12 @@ class EMC:
         :param density_update_method: str, can be either 'analytical' or  'line_search'. The latter uses numerical optimization
             (see emc_updaters.DensityUpdater class)
         """
+        if ucell_p is None:
+            self.ucell_p = 79.1, 79.1, 38.4,90,90,90
+        else:
+            assert len(ucell_p) == 6
+            self.ucell_p = ucell_p
+
         assert len(shots) > 0
         assert isinstance(shots[0], np.ndarray)
         assert scale_update_method in ["analytical", "bfgs"]
@@ -430,12 +456,13 @@ class EMC:
     def apply_density_rules(self):
         den = self.L.densities()
         if self.symmetrize:
+            # TODO generalize for different space groups (currently only supporting P43212)
             if COMM.rank==0:
                 den = utils.symmetrize(den).ravel()
             den = COMM.bcast(den)
 
         if self.whole_punch:
-            den,_ = utils.whole_punch_W(den, 1)
+            den,_ = utils.whole_punch_W(den, 1, self.ucell_p)
         self.L.update_density(den)
 
     def prep_for_insertion(self):
@@ -697,4 +724,7 @@ def determine_rank_with_most_inserts(emc):
         rank_with_most = np.argmax(total_inserts_each_rank)
     rank_with_most = COMM.bcast(rank_with_most)
     return rank_with_most, total_inserts_this_rank
+
+
+
 

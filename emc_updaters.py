@@ -48,7 +48,8 @@ class DensityUpdater(Updater):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         temp = np.random.random(const.DENSITY_SHAPE)
-        _, self.relp_mask = utils.whole_punch_W(temp, 1)
+        # TODO update for arbitrary UCELL
+        _, self.relp_mask = utils.whole_punch_W(temp, 1, ucell_p=self.emc.ucell_p)
         self.relp_mask = self.relp_mask.ravel()
         self.emc.L.copy_relp_mask_to_device(self.relp_mask)
         self.min_prob = 1e-5
@@ -82,7 +83,7 @@ class DensityUpdater(Updater):
 
         elif how == "lbfgs":
             out = minimize(self, xstart, method="L-BFGS-B", jac=self.jac, callback=self.check_convergence,
-                           options={"maxiter": 100})
+                           options={"maxiter": 60})
             xopt = out.x
         else:
             raise NotImplementedError("method %s not supported" % how)
@@ -302,7 +303,7 @@ class ScaleUpdater(Updater):
             scale_on_rank.append(scale)
         scale_on_rank = np.array(scale_on_rank)
         Q_per_shot, dQ_per_shot = utils.compute_log_R_dr(
-            emc.L, emc.shots, emc.prob_rots, scale_on_rank, emc.shot_mask, deriv=True)
+            emc.L, emc.shots, emc.prob_rots, scale_on_rank, emc.shot_mask, bg=emc.shot_background, deriv=1)
 
         for i_shot, (Q, dQ) in enumerate(zip(Q_per_shot, dQ_per_shot)):
 
