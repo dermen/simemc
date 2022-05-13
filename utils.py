@@ -830,15 +830,20 @@ def signal_level_of_image(R, img):
     return signal_level
 
 
-def get_prob_rots_per_shot(O, R, hcut, min_pred):
-    qvecs = db_utils.refls_to_q(R, sim_const.DETECTOR, sim_const.BEAM)
+def get_prob_rots_per_shot(O, R, hcut, min_pred, detector=None, beam=None):
+    if detector is None:
+        detector = sim_const.DETECTOR
+    if beam is None:
+        beam = sim_const.BEAM
+    qvecs = db_utils.refls_to_q(R, detector, beam)
     qvecs = qvecs.astype(O.array_type)
     prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
     return prob_rot
 
 
 def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=None,
-                 max_num_strong_spots=1000, hcut=0.1, min_pred=3, verbose=True):
+                 max_num_strong_spots=1000, hcut=0.1, min_pred=3, verbose=True,
+                detector=None,beam=None):
     if probable_orients is None:
         print("probable_orients failed to import")
         return
@@ -851,7 +856,7 @@ def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=N
     prob_rots_per_shot =[]
     for i_img, R in enumerate(list_of_refl_tables):
         t = time.time()
-        prob_rot = get_prob_rots_per_shot(O, R, hcut, min_pred)
+        prob_rot = get_prob_rots_per_shot(O, R, hcut, min_pred, detector, beam)
         prob_rots_per_shot.append(prob_rot)
         if verbose:
             print("%d probable rots on shot %d / %d with %d strongs (%f sec)"

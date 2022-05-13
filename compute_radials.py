@@ -64,7 +64,11 @@ class RadPros:
         self.panel_sh = slowDim, fastDim
         self.img_sh = len(self.detector), slowDim, fastDim
 
-        if maskFile is not None:
+        if maskFile is not None and isinstance(maskFile, np.ndarray):
+            mask = maskFile
+            assert len(mask.shape)==3
+            assert mask.dtype==bool
+        elif maskFile is not None and isinstance(maskFile, str):
             mask = np.load(maskFile)
             if len(mask.shape) == 2:
                 mask = np.array([mask])
@@ -137,7 +141,7 @@ class RadPros:
             self.all_Qbins[pid] = np.digitize(Qmags[pid], self.bins)
 
     def makeRadPro(self, data_pixels=None, data_expt=None, strong_refl=None, strong_params=None,
-                apply_corrections=True, use_median=True):
+                apply_corrections=True, use_median=True, return_mask=False):
         """
         Create a 1d radial profile of the background pixels in the image
         :param data_pixels: image pixels same shape as detector model 
@@ -146,6 +150,7 @@ class RadPros:
         :param strong_params:  phil params for dials.spotfinder 
         :param apply_corrections: if True, correct for polarization and solid angle
         :param use_median: compute radial median profile, as opposed to radial mean profile
+        :param return_mask: flag to return the combined bad pixel and strong spot masks
         :return: radial profile as a numpy array
         """
         if data_expt is not None:
@@ -177,7 +182,10 @@ class RadPros:
                 radPro = ndimage.median(data, bin_labels,self._index)
             else:
                 radPro = ndimage.mean(data, bin_labels,self._index)
-        return radPro
+        if return_mask:
+            return radPro, combined_mask
+        else:
+            return radPro
 
     def expand_radPro(self, radPro):
         """

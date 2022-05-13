@@ -1,6 +1,7 @@
 
 import os
 import numpy as np
+import pytest
 from simemc import utils, sim_utils, sim_const
 from simemc.compute_radials import RadPros
 
@@ -14,6 +15,7 @@ spotfinder.filter.min_spot_size=4
 """
 
 
+@pytest.mark.mpi_skip()
 def test_radial_background():
     water_img = sim_utils.get_water_scattering()
 

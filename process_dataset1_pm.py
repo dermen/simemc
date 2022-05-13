@@ -5,7 +5,10 @@ from mpi4py import MPI
 COMM = MPI.COMM_WORLD
 
 import numpy as np
+#from skimage.filters import median as mf
+from scipy.ndimage import median_filter as mf
 from dials.array_family import flex
+import time
 
 from simemc import mpi_utils, utils
 from simemc import const
@@ -17,16 +20,18 @@ from simemc.emc import lerpy
 
 highRes = 4
 ndev = 4
+mf_filter_sh=8,8
 datadir = "/pscratch/sd/d/dermen/dataset_1"
-input_file =    datadir + "/small_caxis_exp_ref.txt"
+input_file =    datadir + "/exp_ref.txt"
 ref_geom_file = datadir + "/split_0000.expt"
 mask_file =     datadir + "/test_mask.pkl"
-quat_file ="quatgrid/c-quaternion70.bin"
+quat_file = "/global/cfs/cdirs/lcls/dermen/lyso/alcc-recipes/cctbx/modules/simemc/quatgrid/c-quaternion70.bin"
 outdir=sys.argv[1]
 ave_ucell = 68.48, 68.48, 104.38, 90,90,90
-hcut=0.06
+hcut=0.055
 min_pred=3
 niter=100
+num_radial_bins = 1000
 maxN = None
 
 mpi_utils.make_dir(outdir)
@@ -37,7 +42,6 @@ Brecip = ucell_man.B_recipspace
 GeoExpt = ExperimentList.from_file(ref_geom_file,False)
 BEAM = GeoExpt[0].beam
 DET = db_utils.strip_thickness_from_detector(GeoExpt[0].detector)
-num_radial_bins = 500
 assert BEAM is not None
 assert DET is not None
 MASK = db_utils.load_mask(mask_file)
@@ -47,7 +51,7 @@ this_ranks_imgs, this_ranks_refls = mpi_utils.mpi_load_exp_ref(input_file, maxN=
 print0 = mpi_utils.print0f
 print0("Creating radial profile maker!")
 refGeom = {"D": DET, "B": BEAM}
-radProMaker = RadPros(refGeom, numBins=num_radial_bins)
+radProMaker = RadPros(refGeom, numBins=num_radial_bins, maskFile=MASK)
 radProMaker.polarization_correction()
 radProMaker.solidAngle_correction()
 
@@ -68,26 +72,35 @@ for i,R in enumerate(this_ranks_refls):
     this_ranks_refls[i] = Rsel
 
 this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
-                                         Bmat_reference=Brecip, hcut=hcut, min_pred=min_pred)
+                                         Bmat_reference=Brecip, hcut=hcut, min_pred=min_pred,
+                                        verbose=COMM.rank==0, detector=DET,beam=BEAM)
 
 # fit background to each image; estimate signal level per image
 this_ranks_bgs = []
 this_ranks_signal_levels = []
 for i_img, (img, R) in enumerate(zip(this_ranks_imgs, this_ranks_refls)):
-    radial_pro = radProMaker.makeRadPro(
+    t = time.time()
+    radial_pro, bg_mask = radProMaker.makeRadPro(
         data_pixels=img,
         strong_refl=R,
-        apply_corrections=False, use_median=False)
+        apply_corrections=False, use_median=True, return_mask=True)
 
     img_background = radProMaker.expand_radPro(radial_pro)
+    img_filled = img.copy()
+    img_filled[~bg_mask] = img_background[~bg_mask]
+    bg = mf(img_filled[0], mf_filter_sh)
 
-    this_ranks_bgs.append(img_background)
+    this_ranks_bgs.append(np.array([bg]))
+    t = time.time()-t
 
     signal_level = utils.signal_level_of_image(R, img)
     if signal_level ==0:
         print("WARNING, shot has 0 signal level")
+    bg_signal_level = utils.signal_level_of_image(R, this_ranks_bgs[-1])
     this_ranks_signal_levels.append(signal_level)
-    print0("Done with background image %d / %d" % (i_img+1, len(this_ranks_imgs)))
+
+    # TODO subtract bg signal level ? 
+    print0("Done with background image %d / %d (Took %f sec to fit bg) (signal=%f, bg_sig=%f)" % (i_img+1, len(this_ranks_imgs), t, signal_level, bg_signal_level))
 
 
 all_ranks_signal_levels = COMM.reduce(this_ranks_signal_levels)
@@ -107,7 +120,7 @@ qcoords = np.vstack([qx,qy,qz]).T
 
 Winit = np.zeros(const.DENSITY_SHAPE, np.float32)
 corner, deltas = utils.corners_and_deltas(const.DENSITY_SHAPE, const.X_MIN, const.X_MAX)
-maxRotInds = 10000000  # TODO make this a property of lerpy, and catch if trying to pass more rot inds
+maxRotInds = 1000000  # TODO make this a property of lerpy, and catch if trying to pass more rot inds
 
 num_pix = MASK.size
 L = lerpy()
@@ -139,7 +152,6 @@ inbounds = utils.qs_inbounds(qcoords, const.DENSITY_SHAPE, const.X_MIN, const.X_
 inbounds = inbounds.reshape(this_ranks_imgs[0].shape)
 print0("INIT SHOT SCALES:", init_shot_scales)
 SHOT_MASK = inbounds*MASK.ravel()
-from IPython import embed;embed();exit()
 
 # make the mpi emc object
 emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
