@@ -252,6 +252,7 @@ class EMC:
         """
         if ucell_p is None:
             self.ucell_p = 79.1, 79.1, 38.4,90,90,90
+            exit()
         else:
             assert len(ucell_p) == 6
             self.ucell_p = ucell_p

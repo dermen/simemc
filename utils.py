@@ -2,6 +2,7 @@ import numpy as np
 import os
 import sympy
 from scipy.spatial.transform import Rotation
+from scipy.spatial import cKDTree, distance
 from scipy import ndimage as nd
 from simemc.compute_radials import RadPros
 import time
@@ -833,8 +834,10 @@ def signal_level_of_image(R, img):
 def get_prob_rots_per_shot(O, R, hcut, min_pred, detector=None, beam=None):
     if detector is None:
         detector = sim_const.DETECTOR
+        exit()
     if beam is None:
         beam = sim_const.BEAM
+        exit()
     qvecs = db_utils.refls_to_q(R, detector, beam)
     qvecs = qvecs.astype(O.array_type)
     prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
@@ -851,6 +854,7 @@ def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=N
     O.allocate_orientations(dev_id, rotation_samples.ravel(), max_num_strong_spots)
     if Bmat_reference is None:
         O.Bmatrix = sim_const.CRYSTAL.get_B()
+        exit()
     else:
         O.Bmatrix = Bmat_reference.elems
     prob_rots_per_shot =[]
@@ -863,4 +867,38 @@ def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=N
                    % ( len(prob_rot),i_img+1, len(list_of_refl_tables) , len(R), time.time()-t), flush=True )
     O.free_device()
     return prob_rots_per_shot
+
+
+def label_strong_reflections(predictions, strong, pix=1, col="xyzobs.px.value"):
+    strong_tree = cKDTree(strong[col])
+    predicted_tree = cKDTree(predictions[col])
+    xyz_obs = [(-1,-1,-1)]*len(predictions)
+    xyz_cal = [(-1,-1,-1)]*len(predictions)
+
+    # for each strong refl, find all predictions within q_cutoff of the strong rlp
+    pred_idx_candidates = strong_tree.query_ball_tree(predicted_tree,pix)
+
+    #predictions["xyzcal.px"] = predictions['xyzobs.px.value']
+
+    is_strong = flex.bool(len(predictions), False)
+    for i_idx, cands in enumerate(pred_idx_candidates):
+        if not cands:
+            continue
+        if len(cands) == 1:
+            # if 1 spot is within q_cutoff , then its the closest
+            pred_idx = cands[0]
+        else:
+            # in this case there are multiple predictions near the strong refl, we choose the closest one
+            dists = []
+            for c in cands:
+                d = distance.euclidean(strong_tree.data[i_idx], predicted_tree.data[c])
+                dists.append(d)
+            pred_idx = cands[np.argmin(dists)]
+        is_strong[pred_idx] = True
+        xyz_obs[pred_idx] = strong["xyzobs.px.value"][i_idx]
+        cal = predictions["xyzobs.px.value"][pred_idx]
+        xyz_cal[pred_idx] = cal
+    predictions["is_strong"] = is_strong
+    predictions["xyzobs.px"] = flex.vec3_double(xyz_obs)
+    predictions["xyzcal.px"] = flex.vec3_double(xyz_cal)
 

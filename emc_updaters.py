@@ -154,6 +154,7 @@ class ScaleUpdater(Updater):
         :param emc: instance of EMC class
         """
         super().__init__(*args, **kwargs)
+        self.min_prob = 1e-5
 
 
     def update(self, bfgs=True, maxiter=None, reparam=True, max_scale=1e6, analytical=False):
@@ -180,6 +181,7 @@ class ScaleUpdater(Updater):
                 new_scale = np.sum(P_dr) * shot_sum
                 new_scale_norm = 0
                 for i_rot, rot_ind in enumerate(self.emc.prob_rots[i_shot]):
+                    #TODO skip over  rots with very small probs
                     if COMM.rank==rank_with_most_inserts:
                         perc = i_insert / total_inserts * 100.
                         print("Updating scale factors %1.2f %% -- New scales mean=%f, median=%f, stdev=%f" % (perc, mean_scale, median_scale, stdev_scale), end="\r", flush=True)
@@ -222,7 +224,7 @@ class ScaleUpdater(Updater):
         if bfgs:
             try:
                 out = minimize(self, x0=x0, jac=self.jac, method="L-BFGS-B", bounds=bounds,
-                               callback=self.check_convergence)
+                               callback=self.check_convergence, options={'maxiter': 100})
                 xopt = out.x
             except StopIteration:
                 xopt = self.xprev
@@ -302,18 +304,27 @@ class ScaleUpdater(Updater):
                 scale = xval
             scale_on_rank.append(scale)
         scale_on_rank = np.array(scale_on_rank)
-        Q_per_shot, dQ_per_shot = utils.compute_log_R_dr(
-            emc.L, emc.shots, emc.prob_rots, scale_on_rank, emc.shot_mask, bg=emc.shot_background, deriv=1)
+        #Q_per_shot, dQ_per_shot = utils.compute_log_R_dr(
+        #    emc.L, emc.shots, emc.prob_rots, scale_on_rank, emc.shot_mask, bg=emc.shot_background, deriv=1)
 
-        for i_shot, (Q, dQ) in enumerate(zip(Q_per_shot, dQ_per_shot)):
-
-            Q = np.array(Q)
-            dQ = np.array(dQ)
-
+        for i_shot in range(emc.nshots):  # , (Q, dQ) in enumerate(zip(Q_per_shot, dQ_per_shot)):
             P_dr = emc.shot_P_dr[i_shot]
-            grad_term = P_dr*dQ
+            is_finite_prob = np.array(P_dr) >= self.min_prob
+            emc.L.copy_image_data(emc.shots[i_shot], emc.shot_mask, emc.shot_background[i_shot])
 
-            functional += (P_dr*Q).sum()
+            finite_rot_inds = emc.prob_rots[i_shot][is_finite_prob]  # TODO : verify type is np.ndarray and avoid the extra call to np.array
+            finite_P_dr = P_dr[is_finite_prob]
+
+            scale_factor = scale_on_rank[i_shot]
+            emc.L.equation_two(finite_rot_inds, False, scale_factor)
+            Q = np.array(emc.L.get_out())
+
+            emc.L.equation_two(finite_rot_inds, False, scale_factor, deriv=1)
+            dQ = np.array(emc.L.get_out())
+
+            grad_term = finite_P_dr*dQ
+
+            functional += (finite_P_dr*Q).sum()
             gsum = grad_term.sum()
             name = self.shot_names[i_shot]
             p = self.params[name]
