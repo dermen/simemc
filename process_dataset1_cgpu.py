@@ -34,7 +34,7 @@ hcut=0.025
 min_pred=3
 niter=100
 num_radial_bins = 1000
-maxN = 2
+maxN = None
 
 mpi_utils.make_dir(outdir)
 
@@ -76,6 +76,8 @@ for i,R in enumerate(this_ranks_refls):
 this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
                                          Bmat_reference=Brecip, hcut=hcut, min_pred=min_pred,
                                         verbose=COMM.rank==0, detector=DET,beam=BEAM)
+
+n_prob_rot = [len(prob_rots) for prob_rots in this_ranks_prob_rot]
 
 # fit background to each image; estimate signal level per image
 this_ranks_bgs = []
@@ -123,7 +125,11 @@ qcoords = np.vstack([qx,qy,qz]).T
 
 Winit = np.zeros(const.DENSITY_SHAPE, np.float32)
 corner, deltas = utils.corners_and_deltas(const.DENSITY_SHAPE, const.X_MIN, const.X_MAX)
-maxRotInds = 1000000  # TODO make this a property of lerpy, and catch if trying to pass more rot inds
+maxRotInds = 100000  # TODO make this a property of lerpy, and catch if trying to pass more rot inds
+max_n= max(n_prob_rot)
+print("Max rots on rank %d: %d" % (COMM.rank, max_n))
+if maxRotInds < max_n:
+    maxRotInds = max_n
 
 num_pix = MASK.size
 L = lerpy()
@@ -188,45 +194,45 @@ class Model:
             nopolar=False, diffuse_params=None)
         return model
 
-M = Model()
-
-for i,img in enumerate(this_ranks_imgs):
-    R = this_ranks_refls[i]
-    x, y, z = R['xyzobs.px.value'].parts()
-
-    x-=0.5
-    y-=0.5
-    models =[]
-    new_group = True
-    prev_model = None
-    for rot_id in this_ranks_prob_rot[i]:
-
-        umat = rots[rot_id]
-        model = M.sanity_check_model(umat)
-        if prev_model is None:
-            prev_model = model
-            new_group = True
-        else:
-            if np.allclose(prev_model, model):
-                new_group = False
-            else:
-                new_group = True
-                prev_model = model
-        if new_group:
-
-            Rpred = utils.refls_from_sims(model, DET, BEAM, thresh=1e-4)
-            utils.label_strong_reflections(Rpred, R, 1)
-            nclose = np.sum(Rpred['is_strong'])
-            Rclose = Rpred.select(Rpred["is_strong"])
-            xobs, yobs, _ = Rclose["xyzobs.px"] .parts()
-            xcal, ycal,_ = Rclose["xyzcal.px"].parts()
-
-            pred_dist = np.mean(np.sqrt((xobs-xcal)**2 + (yobs-ycal)**2))
-            print("model %d, nclose=%d, predoffset=%.4f pix" %(rot_id, nclose, pred_dist ))
-
-    from IPython import embed;embed()
-
-
+#M = Model()
+#
+#for i,img in enumerate(this_ranks_imgs):
+#    R = this_ranks_refls[i]
+#    x, y, z = R['xyzobs.px.value'].parts()
+#
+#    x-=0.5
+#    y-=0.5
+#    models =[]
+#    new_group = True
+#    prev_model = None
+#    for rot_id in this_ranks_prob_rot[i]:
+#
+#        umat = rots[rot_id]
+#        model = M.sanity_check_model(umat)
+#        if prev_model is None:
+#            prev_model = model
+#            new_group = True
+#        else:
+#            if np.allclose(prev_model, model):
+#                new_group = False
+#            else:
+#                new_group = True
+#                prev_model = model
+#        if new_group:
+#
+#            Rpred = utils.refls_from_sims(model, DET, BEAM, thresh=1e-4)
+#            utils.label_strong_reflections(Rpred, R, 1)
+#            nclose = np.sum(Rpred['is_strong'])
+#            Rclose = Rpred.select(Rpred["is_strong"])
+#            xobs, yobs, _ = Rclose["xyzobs.px"] .parts()
+#            xcal, ycal,_ = Rclose["xyzcal.px"].parts()
+#
+#            pred_dist = np.mean(np.sqrt((xobs-xcal)**2 + (yobs-ycal)**2))
+#            print("model %d, nclose=%d, predoffset=%.4f pix" %(rot_id, nclose, pred_dist ))
+#
+#    from IPython import embed;embed()
+#
+#
 
 # make the mpi emc object
 emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
