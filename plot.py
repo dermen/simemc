@@ -1,5 +1,6 @@
 # coding: utf-8
 from pylab import *
+from simemc import utils
 
 import sys
 import h5py
@@ -21,16 +22,33 @@ if len(data.shape)==1:
     data = np.reshape(data, (ndim,ndim,ndim))
 
 if sym:
-    from simemc import utils
     data = utils.symmetrize(data.ravel())
 
+ave_ucell = 68.48, 68.48, 104.38, 90,90,90
+        
+_, relp_mask = utils.whole_punch_W(data, 1, ucell_p=ave_ucell)
 
-m = data[data > 0].mean()
-s = data[data > 0].std()
+vox_res = utils.voxel_resolution()
+highRes_limit = 4.
+mask = vox_res >= highRes_limit
+mask = mask*relp_mask
+
+data*= mask
+
+#m = data[data > 0].mean()
+from simtbx.diffBragg.utils import is_outlier
+vals = data[mask].ravel()
+#m = vals[~is_outlier(vals, 30)].mean()
+#s = vals[~is_outlier(vals,30)].std()
+m = vals.mean()
+#print(m,s)
+#s = data[data > 0].std()
 for i in range(data.shape[0]):
     cla()
     gca().set_title("%s: slice %d / %d" % (infile, i, data.shape[0]))
-    imshow(data[:,:,i], vmin=m-s, vmax=m+s)
+    
+    imshow(data[:,:,i], vmin=0,vmax=m*0.5) #vmax=vals.max()*0.1)
+    #imshow(data[:,:,i], vmin=m-s,vmax=m+3*s) #vmax=vals.max()*0.1)
     draw()
     pause(0.1)
     

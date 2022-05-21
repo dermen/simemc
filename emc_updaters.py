@@ -50,6 +50,10 @@ class DensityUpdater(Updater):
         temp = np.random.random(const.DENSITY_SHAPE)
         # TODO update for arbitrary UCELL
         _, self.relp_mask = utils.whole_punch_W(temp, 1, ucell_p=self.emc.ucell_p)
+        vox_res = utils.voxel_resolution()
+        highRes_limit = 4
+        vox_inbounds = vox_res >= highRes_limit # TODO generalize
+        self.relp_mask = np.logical_and(self.relp_mask, vox_inbounds)
         self.relp_mask = self.relp_mask.ravel()
         self.emc.L.copy_relp_mask_to_device(self.relp_mask)
         self.min_prob = 1e-5

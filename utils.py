@@ -29,6 +29,14 @@ from dials.model.data import PixelListLabeller, PixelList
 from dials.algorithms.spot_finding.finder import pixel_list_to_reflection_table
 
 
+
+def voxel_resolution():
+    qX,qY,qZ = np.meshgrid(*([const.QCENT]*3), indexing='ij')
+    qmag =np.sqrt( qX**2 + qY**2 + qZ**2)
+    dspace = 1/qmag
+    return dspace 
+
+
 def whole_punch_W(W, width=1, ucell_p=None):
     """
     set all values far from the Bragg peaks to 0
