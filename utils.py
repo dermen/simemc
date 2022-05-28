@@ -855,10 +855,8 @@ def signal_level_of_image(R, img):
 def get_prob_rots_per_shot(O, R, hcut, min_pred, detector=None, beam=None):
     if detector is None:
         detector = sim_const.DETECTOR
-        exit()
     if beam is None:
         beam = sim_const.BEAM
-        exit()
     qvecs = db_utils.refls_to_q(R, detector, beam)
     qvecs = qvecs.astype(O.array_type)
     prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
@@ -875,7 +873,6 @@ def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=N
     O.allocate_orientations(dev_id, rotation_samples.ravel(), max_num_strong_spots)
     if Bmat_reference is None:
         O.Bmatrix = sim_const.CRYSTAL.get_B()
-        exit()
     else:
         O.Bmatrix = Bmat_reference.elems
     prob_rots_per_shot =[]
