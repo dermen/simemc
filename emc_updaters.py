@@ -57,7 +57,7 @@ class DensityUpdater(Updater):
         self.emc.L.copy_relp_mask_to_device(self.relp_mask)
         self.min_prob = 1e-5
 
-    def update(self, how="line_search"):
+    def update(self, how="line_search", lbfgs_maxiter=60):
         """
 
         :return: optimized density
@@ -86,7 +86,7 @@ class DensityUpdater(Updater):
 
         elif how == "lbfgs":
             out = minimize(self, xstart, method="L-BFGS-B", jac=self.jac, callback=self.check_convergence,
-                           options={"maxiter": 6})
+                           options={"maxiter": lbfgs_maxiter})
             xopt = out.x
         else:
             raise NotImplementedError("method %s not supported" % how)

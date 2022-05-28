@@ -25,8 +25,8 @@ highRes=True
 ndevice = 4 if perlmutt else 8
 
 if highRes:
-    dens_dim = 256 
-    max_q = 0.25
+    dens_dim = 512
+    max_q = 0.5
 else:
     dens_dim=256
     max_q=0.25

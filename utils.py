@@ -558,6 +558,8 @@ def symmetrize(density, dens_dim, max_q, symbol="P43212",
     qvecs = np.vstack(tuple(map(lambda x: x.ravel(), np.meshgrid(QCENT, QCENT, QCENT) ))).T
     if how==0:
         L = lerpy()
+        L.dens_dim=dens_dim
+        L.max_q=max_q
         qvecs = qvecs.astype(L.array_type)
         num_data_pix = maxNumQ = dens_dim**3
         maxRotInds = len(sym_rot_mats)

@@ -14,19 +14,17 @@ def test_highRes():
     _test(512,0.5)
 
 def _test(dens_dim, max_q):
-    #np.random.seed(0)
-    dens_dim=256
-    max_q=0.25
+    np.random.seed(0)
     W = np.random.random((dens_dim, dens_dim, dens_dim))
-    #W = np.zeros((256,256,256))
-    x,y,z = 128,128,128
+    cent = dens_dim/2.
+    x,y,z = cent,cent,cent
     Z,Y,X = np.indices(W.shape)
     R = np.sqrt((Z-z)**2 + (Y-y)**2 +(X-x)**2)
     PHI = np.arctan2(Y-y,X-x)* 180/np.pi
     THETA = np.nan_to_num(np.arccos(utils.errdiv(Z-z,R))) * 180 / np.pi
     sel1 = np.logical_and(THETA <= 90, THETA >= 0)
     sel2 = np.logical_and(PHI <= 90, PHI >=0 )
-    sel3 = R < 128
+    sel3 = R < cent
     W[~(sel3*sel2*sel1)] = 0
 
     t = time.time()
