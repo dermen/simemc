@@ -3,7 +3,6 @@ import time
 from copy import deepcopy
 from simemc import utils
 import sympy
-from simemc import const
 from scipy.stats import pearsonr
 import os
 import h5py
@@ -328,7 +327,8 @@ class EMC:
         self.success_corr = 0.2
         self.i_emc = 0
         self.save_model_freq = 10
-        self.qs_inbounds = utils.qs_inbounds(self.L.qvecs.reshape((-1,3)), const.DENSITY_SHAPE, const.X_MIN, const.X_MAX)
+        self.dens_sh = self.L.dens_dim, self.L.dens_dim, self.L.dens_dim
+        self.qs_inbounds = utils.qs_inbounds(self.L.qvecs.reshape((-1,3)), self.dens_sh, self.L.xmin, self.L.xmax)
         self.apply_density_rules()
         self.ave_time_per_iter = 0
         self.refine_scale_factors = refine_scale_factors
@@ -459,11 +459,11 @@ class EMC:
         if self.symmetrize:
             # TODO generalize for different space groups (currently only supporting P43212)
             if COMM.rank==0:
-                den = utils.symmetrize(den).ravel()
+                den = utils.symmetrize(den, self.L.dens_dim, self.L.max_q).ravel()
             den = COMM.bcast(den)
 
         if self.whole_punch:
-            den,_ = utils.whole_punch_W(den, 1, self.ucell_p)
+            den,_ = utils.whole_punch_W(den, self.L.dens_dim, self.L.max_q, 1, self.ucell_p)
         self.L.update_density(den)
 
     def prep_for_insertion(self):
@@ -623,7 +623,10 @@ class EMC:
     def save_h5(self, density_file):
         den = self.L.densities()
         with h5py.File(density_file, "w") as out_h5:
-            out_h5.create_dataset("Wprime",data=den.reshape((const.NBINS, const.NBINS, const.NBINS)), compression="lzf")
+            NBINS = self.L.dens_dim
+            out_h5.create_dataset("Wprime",data=den.reshape((NBINS, NBINS, NBINS)), compression="lzf")
+            out_h5.create_dataset("ucell", data=self.ucell_p)
+            out_h5.create_dataset("max_q", data=self.L.max_q)
 
     def success_rate(self, init=False, return_models=False):
         """

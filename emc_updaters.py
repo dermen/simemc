@@ -1,7 +1,4 @@
 from mpi4py import MPI
-
-from simemc import const
-
 COMM = MPI.COMM_WORLD
 
 import numpy as np
@@ -47,11 +44,13 @@ class DensityUpdater(Updater):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        temp = np.random.random(const.DENSITY_SHAPE)
+        temp = np.random.random(self.emc.L.dens_sh)
         # TODO update for arbitrary UCELL
-        _, self.relp_mask = utils.whole_punch_W(temp, 1, ucell_p=self.emc.ucell_p)
-        vox_res = utils.voxel_resolution()
-        highRes_limit = 4
+        _, self.relp_mask = utils.whole_punch_W(temp,
+            self.emc.L.dens_dim, self.emc.L.max_q, 1, ucell_p=self.emc.ucell_p)
+        vox_res = utils.voxel_resolution(self.emc.L.dens_dim,
+            self.emc.L.max_q)
+        highRes_limit = 1./self.emc.L.max_q
         vox_inbounds = vox_res >= highRes_limit # TODO generalize
         self.relp_mask = np.logical_and(self.relp_mask, vox_inbounds)
         self.relp_mask = self.relp_mask.ravel()
@@ -87,7 +86,7 @@ class DensityUpdater(Updater):
 
         elif how == "lbfgs":
             out = minimize(self, xstart, method="L-BFGS-B", jac=self.jac, callback=self.check_convergence,
-                           options={"maxiter": 60})
+                           options={"maxiter": 6})
             xopt = out.x
         else:
             raise NotImplementedError("method %s not supported" % how)
@@ -98,7 +97,7 @@ class DensityUpdater(Updater):
     def target(self, x):
         emc = self.emc
 
-        dens = np.zeros(const.DENSITY_SHAPE[0]**3)
+        dens = np.zeros(emc.L.dens_dim**3)
 
         # x is the log of the density
         # Apply reparameterization to keep density positive

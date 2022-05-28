@@ -1,25 +1,38 @@
 
 from simemc.emc import lerpy
 from simemc.dragon_geom import DET, BEAM
-from simemc import const
 from scipy.spatial.transform import Rotation
+from simemc import utils
+import numpy as np
 import pytest
 
 
 @pytest.mark.mpi_skip()
 def test():
+    _test()
+
+@pytest.mark.mpi_skip()
+def test_highRes():
+    _test(True)
+
+def _test(highRes=False):
+    if highRes:
+        dens_dim=512
+        max_q=0.5
+    else:
+        dens_dim=256
+        max_q=0.25
     L = lerpy()
+    L.dens_dim=dens_dim
+    L.max_q=max_q
     dev_id = 0
     rotMats = Rotation.random(100, random_state=0).as_matrix()
-    import numpy as np
-    # make identity
-    #rotMats[0] = np.eye(3)
 
-    n = const.NBINS
-    from simemc import utils
-    import numpy as np
+    n = dens_dim
     W = np.random.random((n,n,n))
-    c,d = utils.corners_and_deltas(W.shape, const.X_MIN_DRAGON, const.X_MAX_DRAGON)
+    X_MIN = L.xmin
+    X_MAX = L.xmax
+    c,d = utils.corners_and_deltas(W.shape, X_MIN, X_MAX)
 
     fdim,sdim = DET[0].get_image_size()
     img_sh = len(DET), sdim, fdim
@@ -64,21 +77,21 @@ def test():
 
     from reborn.misc.interpolate import trilinear_insertion, trilinear_interpolation
     qcoords_rot = np.dot( rotMats[0].T, qcoords.T).T
-    is_inbounds = utils.qs_inbounds(qcoords_rot, W.shape, const.X_MIN_DRAGON, const.X_MAX_DRAGON)
+    is_inbounds = utils.qs_inbounds(qcoords_rot, W.shape, X_MIN, X_MAX)
     A = np.zeros(W.shape)
     B = np.zeros(W.shape)
     trilinear_insertion(
         A,B,
         vectors=qcoords_rot[is_inbounds],
         insert_vals=vals.ravel()[is_inbounds],
-        x_min=const.X_MIN_DRAGON, x_max=const.X_MAX_DRAGON)
+        x_min=X_MIN, x_max=X_MAX)
     A1 = A.copy()
     B1 = B.copy()
     trilinear_insertion(
         A,B,
         vectors=qcoords_rot[is_inbounds],
         insert_vals=vals.ravel()[is_inbounds],
-        x_min=const.X_MIN_DRAGON, x_max=const.X_MAX_DRAGON)
+        x_min=X_MIN, x_max=X_MAX)
 
     assert np.allclose(A1*2, A)
     assert np.allclose(B1*2, B)
@@ -87,32 +100,18 @@ def test():
 
     W_rt = trilinear_interpolation(
         A, qcoords_rot[is_inbounds],
-        x_min=const.X_MIN_DRAGON, x_max=const.X_MAX_DRAGON)
+        x_min=X_MIN, x_max=X_MAX)
 
     assert np.allclose( W_rt, 1)
 
     W_rt_from_GPUdensity = trilinear_interpolation(
         W2.reshape((n,n,n)).astype(np.float64), qcoords_rot[is_inbounds],
-        x_min=const.X_MIN_DRAGON, x_max=const.X_MAX_DRAGON)
+        x_min=X_MIN, x_max=X_MAX)
     assert np.allclose( W_rt_from_GPUdensity, 1)
 
     L.toggle_insert()
     assert np.allclose(L.densities(), 0)
     assert np.allclose(L.wts(), 0)
-
-    #probs = 0, 0.50, 0.50
-    #for i, p in enumerate(probs):
-    #    if p > 0:
-    #        vals = np.ones(img_sh) * (i+1)*p
-    #        L.trilinear_insertion(i,vals)
-    #W = utils.errdiv(L.densities(), L.wts())
-
-    #L.toggle_insert()
-    #for i, p in enumerate(probs):
-    #    vals = np.ones(img_sh) * (i+1)*p
-    #    L.trilinear_insertion(i,vals)
-
-    #W2 = utils.errdiv(L.densities(), L.wts())
 
     vals1 = np.ones(img_sh)
     vals2 = np.ones(img_sh)*2
@@ -122,5 +121,8 @@ def test():
 
     print("OK")
 
+
 if __name__=="__main__":
-    test()
+    import sys
+    highRes = int(sys.argv[1])
+    _test(highRes)

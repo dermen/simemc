@@ -88,10 +88,25 @@ class _():
         probable_rot_inds = np.where(is_prob)[0]
         return probable_rot_inds
 
+
 @bp.inject_into(emc.lerpy)
 @add_type_methods
 class _():
 
+    @property
+    def xmin(self):
+        xmin, xmax = utils.get_xmin_xmax(self.max_q, self.dens_dim)
+        return xmin 
+
+    @property
+    def xmax(self):
+        xmin, xmax = utils.get_xmin_xmax(self.max_q, self.dens_dim)
+        return xmax
+
+    @property
+    def dens_sh(self):
+        return self.dens_dim , self.dens_dim, self.dens_dim
+    
     def allocate_lerpy(self, dev_id, rotMats, densities, maxNumQ, corners, deltas, qvecs, maxNumRotInds, numDataPix):
         """
         :param dev_id:

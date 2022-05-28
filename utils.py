@@ -30,14 +30,16 @@ from dials.algorithms.spot_finding.finder import pixel_list_to_reflection_table
 
 
 
-def voxel_resolution():
-    qX,qY,qZ = np.meshgrid(*([const.QCENT]*3), indexing='ij')
+def voxel_resolution(dens_dim, max_q):
+    QBINS = np.linspace(-max_q, max_q, dens_dim+1)
+    QCENT = (QBINS[:-1] +QBINS[1:])*.5
+    qX,qY,qZ = np.meshgrid(*([QCENT]*3), indexing='ij')
     qmag =np.sqrt( qX**2 + qY**2 + qZ**2)
     dspace = 1/qmag
     return dspace 
 
 
-def whole_punch_W(W, width=1, ucell_p=None):
+def whole_punch_W(W, dens_dim, max_q, width=1, ucell_p=None):
     """
     set all values far from the Bragg peaks to 0
     :param W: input density
@@ -46,6 +48,7 @@ def whole_punch_W(W, width=1, ucell_p=None):
         1 keeps 17(?) pixels at every Bragg peak
     :return: W with 0s in between the Bragg reflections
     """
+    #TODO add test for this method; also, it could be phased out... 
     if ucell_p is not None:
         ucell_man = db_utils.manager_from_params(ucell_p)
         Bmat = np.reshape(ucell_man.B_realspace, (3,3))
@@ -61,7 +64,9 @@ def whole_punch_W(W, width=1, ucell_p=None):
     bstar=np.linalg.norm(b2)
     cstar=np.linalg.norm(b3)
 
-    qX,qY,qZ = np.meshgrid(*([const.QCENT]*3), indexing='ij')
+    QBINS = np.linspace(-max_q, max_q, dens_dim+1)
+    QCENT = (QBINS[:-1] +QBINS[1:])*.5
+    qX,qY,qZ = np.meshgrid(*([QCENT]*3), indexing='ij')
 
     frac_h = qX / astar
     frac_k = qY/ bstar
@@ -79,11 +84,11 @@ def whole_punch_W(W, width=1, ucell_p=None):
     bvals = kvals*bstar
     cvals = lvals*cstar
 
-    aidx = [np.argmin(np.abs(const.QCENT-a)) for a in avals]
-    bidx = [np.argmin(np.abs(const.QCENT-b)) for b in bvals]
-    cidx = [np.argmin(np.abs(const.QCENT-c)) for c in cvals]
+    aidx = [np.argmin(np.abs(QCENT-a)) for a in avals]
+    bidx = [np.argmin(np.abs(QCENT-b)) for b in bvals]
+    cidx = [np.argmin(np.abs(QCENT-c)) for c in cvals]
 
-    Imap = np.zeros((256,256,256),bool)
+    Imap = np.zeros((dens_dim, dens_dim, dens_dim),bool)
     A,B,C = np.meshgrid(aidx, bidx, cidx, indexing='ij')
     Imap[A,B,C] = True
     Imap = ni.binary_dilation(Imap.astype(bool), iterations=width)
@@ -91,7 +96,7 @@ def whole_punch_W(W, width=1, ucell_p=None):
     return W*Imap, Imap
 
 
-def integrate_W(W, ucell_p=None):
+def integrate_W(W, dens_dim, max_q, ucell_p=None):
     if ucell_p is not None:
         ucell_man = db_utils.manager_from_params(ucell_p)
         Bmat = np.reshape(ucell_man.B_realspace, (3,3))
@@ -107,7 +112,9 @@ def integrate_W(W, ucell_p=None):
     bstar=np.linalg.norm(b2)
     cstar=np.linalg.norm(b3)
 
-    qX,qY,qZ = np.meshgrid(*([const.QCENT]*3), indexing='ij')
+    QBINS = np.linspace(-max_q, max_q, dens_dim+1)
+    QCENT = (QBINS[:-1] +QBINS[1:])*.5
+    qX,qY,qZ = np.meshgrid(*([QCENT]*3), indexing='ij')
 
     frac_h = qX / astar
     frac_k = qY/ bstar
@@ -125,9 +132,9 @@ def integrate_W(W, ucell_p=None):
     bvals = kvals*bstar
     cvals = lvals*cstar
 
-    aidx = [np.argmin(np.abs(const.QCENT-a)) for a in avals]
-    bidx = [np.argmin(np.abs(const.QCENT-b)) for b in bvals]
-    cidx = [np.argmin(np.abs(const.QCENT-c)) for c in cvals]
+    aidx = [np.argmin(np.abs(QCENT-a)) for a in avals]
+    bidx = [np.argmin(np.abs(QCENT-b)) for b in bvals]
+    cidx = [np.argmin(np.abs(QCENT-c)) for c in cvals]
 
     hvals = hvals.astype(np.int32)
     kvals = kvals.astype(np.int32)
@@ -146,7 +153,7 @@ def integrate_W(W, ucell_p=None):
     return hkl_idx, Ivals
 
 
-def get_W_init(ndom=20, ucell_p=None):
+def get_W_init(dens_dim, max_q, ndom=20, ucell_p=None):
     """
     Get an initial guess of the density
     :param ndom: number of unit cells along crystal a-axis
@@ -170,8 +177,9 @@ def get_W_init(ndom=20, ucell_p=None):
     bstar=np.linalg.norm(b2)
     cstar=np.linalg.norm(b3)
 
-    qbin_cent = (const.QBINS[1:] + const.QBINS[:-1])*.5
-    qX,qY,qZ = np.meshgrid(qbin_cent,qbin_cent,qbin_cent)
+    QBINS = np.linspace(-max_q, max_q, dens_dim+1)
+    qbin_cent = (QBINS[:-1] +QBINS[1:])*.5
+    qX,qY,qZ = np.meshgrid(qbin_cent,qbin_cent,qbin_cent, indexing='ij')
 
     frac_h = qX / astar
     frac_k = qY/ bstar
@@ -520,12 +528,13 @@ class RotInds(dict):
         return send_to, recv_from
 
 
-def symmetrize(density, symbol="P43212", dens_sh=(256,256,256),
+def symmetrize(density, dens_dim, max_q, symbol="P43212",
                reshape=True, how=0, friedel=True):
     """
+    :param dens_dim: density dimension along one edge (cubic)
+    :param max_q: maximum q at corner of voxel
     :param density: can be 1d or 3d (usually 1d)
     :param symbol: space group lookup symbol
-    :param dens_sh: 3d shape of density
     """
     if how==0:
         if lerpy is None:
@@ -542,13 +551,17 @@ def symmetrize(density, symbol="P43212", dens_sh=(256,256,256),
         sym_xyz.append(r.as_xyz())
     sym_rot_mats = np.array(sym_rot_mats)
 
-    qvecs = np.vstack(tuple(map(lambda x: x.ravel(), np.meshgrid(const.QCENT, const.QCENT, const.QCENT) ))).T
+    dens_sh = dens_dim, dens_dim, dens_dim
+    xmin, xmax = get_xmin_xmax(max_q, dens_dim)
+    QBINS = np.linspace(-max_q, max_q, dens_dim+1)
+    QCENT = (QBINS[:-1] +QBINS[1:])*.5
+    qvecs = np.vstack(tuple(map(lambda x: x.ravel(), np.meshgrid(QCENT, QCENT, QCENT) ))).T
     if how==0:
         L = lerpy()
         qvecs = qvecs.astype(L.array_type)
-        num_data_pix = maxNumQ = const.NBINS**3
+        num_data_pix = maxNumQ = dens_dim**3
         maxRotInds = len(sym_rot_mats)
-        corners, deltas = corners_and_deltas(dens_sh, const.X_MIN, const.X_MAX)
+        corners, deltas = corners_and_deltas(dens_sh, xmin, xmax)
         W = np.zeros(dens_sh, L.array_type)
         dev_id = 0
         L.allocate_lerpy(
@@ -572,12 +585,12 @@ def symmetrize(density, symbol="P43212", dens_sh=(256,256,256),
         B = np.zeros(dens_sh)
         for rot in sym_rot_mats:
             qcoords_rot = np.dot( rot.T, qvecs.T).T
-            is_inbounds = qs_inbounds(qcoords_rot, dens_sh, const.X_MIN, const.X_MAX)
+            is_inbounds = qs_inbounds(qcoords_rot, dens_sh, xmin, xmax)
             trilinear_insertion(
                 A,B,
                 vectors=np.ascontiguousarray(qcoords_rot[is_inbounds]),
                 insert_vals=density.ravel().astype(np.float64)[is_inbounds],
-                x_min=const.X_MIN, x_max=const.X_MAX)
+                x_min=xmin, x_max=xmax)
         d = errdiv(A,B)
     else:
         raise NotImplementedError("still working out the kinds of index-based symmetry")
@@ -910,3 +923,18 @@ def label_strong_reflections(predictions, strong, pix=1, col="xyzobs.px.value"):
     predictions["xyzobs.px"] = flex.vec3_double(xyz_obs)
     predictions["xyzcal.px"] = flex.vec3_double(xyz_cal)
 
+
+def get_xmin_xmax(maxQ,dens_dim):
+    """
+    return the minimum and maximum coordinate in the density; 
+    reborn convention; coord is at center of voxel
+
+    :param maxQ: maximum q at corner of voxel
+    :param dens_dim: number of voxels along density edge (cubic density)
+    :return two 3-tuples, one for xmin, another for xmax (voxel center coords)
+    """
+    QBINS = np.linspace(-maxQ, maxQ, dens_dim+1)
+    QCENT = (QBINS[:-1] +QBINS[1:])*.5
+    X_MIN = QCENT[0],QCENT[0], QCENT[0]
+    X_MAX = QCENT[-1], QCENT[-1], QCENT[-1]
+    return X_MIN, X_MAX

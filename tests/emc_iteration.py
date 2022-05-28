@@ -16,6 +16,8 @@ parser.add_argument("--precomputedDir", default=None, type=str, help="load simul
 parser.add_argument("--startingDen", default=None, type=str, help="Path to a Witer%d.h5 file (output from previous run)")
 parser.add_argument("--densityUpdater", type=str, default="lbfgs", choices=["lbfgs", "line_search", "analytical"],
                     help="the method for updating the density between iterations")
+parser.add_argument("--dens_dim", type=int, default=256,help="number of voxels along cubic density edge")
+parser.add_argument("--max_q", type=float, default=0.25,help="max q at voxel corner")
 ARGS = parser.parse_args()
 
 import pylab as plt
@@ -37,7 +39,6 @@ from simemc.emc import lerpy
 
 from mpi4py import MPI
 COMM = MPI.COMM_WORLD
-from simemc import const
 
 print0 = mpi_utils.print0f
 printR = mpi_utils.printRf
@@ -134,12 +135,15 @@ def load_rotation_samples():
 
 
 
-def get_lerpy(dev_id, rotation_samples, qcoords):
-    Winit = np.zeros(const.DENSITY_SHAPE, np.float32)
-    corner, deltas = utils.corners_and_deltas(const.DENSITY_SHAPE, const.X_MIN, const.X_MAX)
+def get_lerpy(dev_id, rotation_samples, qcoords, dens_dim=256, max_q=0.25):
+    sh = dens_dim, dens_dim, dens_dim
+    Winit = np.zeros(sh, np.float32)
     maxRotInds = 20000
 
     L = lerpy()
+    L.dens_dim=dens_dim
+    L.max_q=max_q
+    corner, deltas = utils.corners_and_deltas(sh, L.xmin,L.xmax) 
     rots = rotation_samples.astype(L.array_type)
     Winit = Winit.astype(L.array_type)
     qcoords = qcoords.astype(L.array_type)
@@ -215,7 +219,7 @@ def emc_iteration():
         Wstart = h5py.File(ARGS.startingDen, "r")["Wprime"][()]
     else:
         # let the initial density estimate be constant gaussians (add noise?)
-        Wstart = utils.get_W_init()
+        Wstart = utils.get_W_init(ARGS.dens_dim, ARGS.max_q)
         Wstart /= Wstart.max()
         Wstart *= ave_signal_level
 
@@ -223,7 +227,7 @@ def emc_iteration():
     qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
     qx,qy,qz = map(lambda x: x.ravel(), qmap)
     qcoords = np.vstack([qx,qy,qz]).T
-    L = get_lerpy(DEV_ID, rots, qcoords)
+    L = get_lerpy(DEV_ID, rots, qcoords, dens_dim=ARGS.dens_dim, max_q=ARGS.max_q)
 
     # convert the type of images to match the lerpy instance array_type (prevents annoying warnings)
     for i, img in enumerate(this_ranks_imgs):
@@ -241,7 +245,7 @@ def emc_iteration():
     #    init_shot_scales = np.random.uniform(1e-1, 1e3, len(this_ranks_imgs))
 
     # mask pixels that are outside the shell
-    inbounds = utils.qs_inbounds(qcoords, const.DENSITY_SHAPE, const.X_MIN, const.X_MAX)
+    inbounds = utils.qs_inbounds(qcoords, L.dens_sh, L.xmin, L.xmax)
     inbounds = inbounds.reshape(this_ranks_imgs[0].shape)
     print0("INIT SHOT SCALES:", init_shot_scales)
 

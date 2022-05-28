@@ -4,6 +4,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 import time
 from scipy.stats import pearsonr, linregress
+from scipy.stats import spearmanr
 import pytest
 
 from reborn.misc.interpolate import trilinear_interpolation
@@ -16,18 +17,30 @@ from simemc import sim_const
 def test_equation_two():
     main()
 
+@pytest.mark.mpi_skip()
+def test_equation_two_highRes():
+    main(highRes=1)
+
 
 @pytest.mark.mpi_skip()
 def test_equation_two_scale_deriv():
     main(finite_diff=1)
+
+@pytest.mark.mpi_skip()
+def test_equation_two_scale_deriv_highRes():
+    main(finite_diff=1, highRes=1)
 
 
 @pytest.mark.mpi_skip()
 def test_equation_two_density_deriv():
     main(finite_diff=2)
 
+@pytest.mark.mpi_skip()
+def test_equation_two_density_deriv_highRes():
+    main(finite_diff=2, highRes=1)
 
-def main(maxRotInds=10, finite_diff=0):
+
+def main(maxRotInds=10, finite_diff=0, highRes=False):
     """
 
     :param maxRotInds: how many random orientations to test
@@ -37,6 +50,12 @@ def main(maxRotInds=10, finite_diff=0):
         2- '' '' w.r.t. the density model
     :return:
     """
+    if highRes:
+        dens_dim=512
+        max_q=0.5
+    else:
+        dens_dim=256
+        max_q=0.25 
 
     if finite_diff is not None:
         assert finite_diff in [0,1,2]
@@ -44,7 +63,7 @@ def main(maxRotInds=10, finite_diff=0):
     N= fdim*sdim
     maxNumQ = fdim*sdim
     qmin = 1/40.
-    qmax = 1/4.
+    qmax = max_q
     Umat = np.array([[-0.46239704,  0.87328348,  0.15350879],
                      [-0.19088188, -0.26711064,  0.94457187],
                      [ 0.86588284,  0.40746519,  0.29020516]])
@@ -55,16 +74,16 @@ def main(maxRotInds=10, finite_diff=0):
 
     background = np.random.random(data1.shape)*10
 
-    # do interpolation
-    qx = np.random.uniform(-0.25, 0.25, N)
-    qy = np.random.uniform(-0.25, 0.25,N)
-    qz = np.random.uniform(0, 0.25, N)
+    qx = np.random.uniform(-max_q, max_q, N)
+    qy = np.random.uniform(-max_q, max_q,N)
+    qz = np.random.uniform(0, max_q, N)
     qcoords = np.vstack((qx,qy,qz)).T
     qmags = np.linalg.norm(qcoords, axis=1)
     inbounds = np.logical_and(qmags > qmin, qmags < qmax)
 
-    I = np.random.uniform(-0.01, 10, (256,256,256))
-    qbins = np.linspace(-0.25, 0.25, 257)
+    I = np.random.uniform(1e-1, 10, (dens_dim, dens_dim, dens_dim))
+    print("Density shape:", I.shape)
+    qbins = np.linspace(-max_q, max_q, dens_dim+1)
     rotMats = Rotation.random(400000, random_state=0).as_matrix()
     rotMats[0] = Umat
 
@@ -76,7 +95,10 @@ def main(maxRotInds=10, finite_diff=0):
 
     talloc = time.time()
     L = lerpy()
-    L.allocate_lerpy(0, rotMats, I, maxNumQ,
+    L.dens_dim=dens_dim
+    L.max_q=max_q
+    gpu_dev=0
+    L.allocate_lerpy(gpu_dev, rotMats, I, maxNumQ,
                      tuple(c), tuple(d), qcoords,
                      maxRotInds, N)
     talloc = time.time()-talloc
@@ -128,17 +150,22 @@ def main(maxRotInds=10, finite_diff=0):
             # calling the dens_deriv method also results in computing the log_Rdr values
             # here we test that they are the same as computed by the equation_two method
             Rgpu_test = np.array(L.get_out())
-            assert np.allclose(Rgpu, Rgpu_test)
 
             # check the gradient at 10 random voxels
             random_voxels = np.random.choice(np.where(deriv_Qdr != 0)[0], size=10)
-            percs = [2**i * 0.005 for i in range(8)]
+
+            fail_vox = []
+
+            nfail = 0
+            I1d = I.ravel()
             for random_voxel in random_voxels:
+                found_linear_region =False
                 errors = []
-                print("RANDOM VOXEL: %d" % random_voxel)
-                delta_h_vals = np.array(percs)* (I.ravel()[random_voxel])
-                for delta_h in delta_h_vals:
-                    density_shifted = I.ravel().copy()
+                dh = []
+                print("\nRANDOM VOXEL: %d, deriv_Qdr=%f, I=%f" % (random_voxel, deriv_Qdr[random_voxel], I1d[random_voxel]))
+                for i_h in range(30):
+                    delta_h = 2**i_h * 0.005 * I1d[random_voxel]
+                    density_shifted = I1d.copy()
                     density_shifted[random_voxel] += delta_h
                     L.update_density(density_shifted.ravel())
                     L.equation_two(inds, verbose=False, shot_scale_factor=1)
@@ -150,12 +177,39 @@ def main(maxRotInds=10, finite_diff=0):
                     delta_Qdr = Qdr_shifted - Qdr
                     fdiff = delta_Qdr / delta_h
                     dd = deriv_Qdr[random_voxel]
-                    error = np.abs(fdiff - dd)/dd
+                    error = np.abs((fdiff - dd)/dd)
                     print("FINITE DIFF SCALING: ", delta_h, error)
                     errors.append(error)
-                l = linregress(delta_h_vals, errors)
-                assert l.slope > 0, l.slope
-                assert l.rvalue > 0.999, l.rvalue
+                    dh .append(delta_h)
+
+                    if len(errors) >= 3:
+                        err = errors[-3:]
+                        hh = dh[-3:]
+                        l = linregress(err,hh)
+                        if l.slope > 0 and l.rvalue > 0.999 and not found_linear_region:
+                            found_linear_region=True
+                            # we will do 1 more iteration once inside the linear region to ensure it remains linear
+                        elif found_linear_region:  
+                            if l.slope > 0 and l.rvalue > 0.999 :
+                                break
+                            else:
+                                found_linear_region=False
+                            
+                        else:
+                            # if we arent in the linear region, assert all errors are small
+                            assert np.all(e < 0.01 * I1d[random_voxel] for e in err)
+                        
+                if not found_linear_region:
+                    print("FAILED!!!!!!")
+                    nfail += 1
+                    fail_vox.append(random_voxel)
+                else:
+                    increase_ratios = err[1] / err[0], err[2] / err[1]
+                    print("Found linear region:", increase_ratios)
+                    
+            if nfail > 0:
+                print("failed: %d" % nfail, fail_vox)
+            assert nfail==0
             print("ok")
             return
 
@@ -205,5 +259,5 @@ def main(maxRotInds=10, finite_diff=0):
 
 
 if __name__=="__main__":
-    max_rot_inds, finite_diff = int(sys.argv[1]), int(sys.argv[2])
-    main(max_rot_inds, finite_diff)
+    max_rot_inds, finite_diff, highRes = [int(arg) for arg in sys.argv[1:]]
+    main(max_rot_inds, finite_diff, highRes)

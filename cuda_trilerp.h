@@ -40,6 +40,8 @@ struct lerpy {
   int maxNumRotInds;
   VEC3 corner;
   VEC3 delta;
+  int densDim=258;
+  double maxQ=0.25;
   CUDAREAL shot_scale=1;
   CUDAREAL tomogram_wt=1;
   bool use_poisson_stats=true; // if False, a Gaussian random variable is used to describe the pixel measurements

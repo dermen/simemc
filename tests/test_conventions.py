@@ -9,21 +9,35 @@ from dxtbx.model import ExperimentList, Experiment
 from simtbx.diffBragg import utils as db_utils
 
 from reborn.misc.interpolate import trilinear_insertion
-from simemc import utils, const, sim_utils, sim_const
+from simemc import utils, sim_utils, sim_const
 from simemc.emc import probable_orients, lerpy
 
 
 @pytest.mark.mpi_skip()
-def test_conventions_reborn_insert():
-    _test_conventions(False)
-
+def test_conventions_reborn_insert_highRes():
+    _test_conventions(False, True)
 
 @pytest.mark.mpi_skip()
-def test_conventions_hist_insert():
-    _test_conventions(True)
+def test_conventions_reborn_insert_lowRes():
+    _test_conventions(False, False)
+
+@pytest.mark.mpi_skip()
+def test_conventions_hist_insert_lowRes():
+    _test_conventions(True, False)
+
+@pytest.mark.mpi_skip()
+def test_conventions_hist_insert_highRes():
+    _test_conventions(True, True)
 
 
-def _test_conventions(use_hist_method=True):
+def _test_conventions(use_hist_method=True, highRes=False):
+    if highRes:
+        dens_dim=512
+        max_q=0.5
+    else:
+        dens_dim=256
+        max_q=0.25
+
     gpu_device = 0
     num_rot_mats = 10000000
     #maxRotInds = 10000
@@ -48,12 +62,14 @@ def _test_conventions(use_hist_method=True):
 
     Umat = np.reshape(C.get_U(), (3,3))
     qcoords_rot = np.dot(Umat.T, qcoords.T).T
-    qbins = const.QBINS
+
     maxNumQ = qcoords_rot.shape[0]
-    dens_shape = const.DENSITY_SHAPE
-    corner,deltas = utils.corners_and_deltas(dens_shape, const.X_MIN, const.X_MAX )
-    inbounds = utils.qs_inbounds(qcoords_rot, dens_shape, const.X_MIN, const.X_MAX)
+    dens_shape = dens_dim, dens_dim, dens_dim
+    X_MIN, X_MAX = utils.get_xmin_xmax(max_q, dens_dim) 
+    corner,deltas = utils.corners_and_deltas(dens_shape, X_MIN, X_MAX )
+    inbounds = utils.qs_inbounds(qcoords_rot, dens_shape, X_MIN, X_MAX)
     if use_hist_method:
+        qbins = np.linspace(-max_q, max_q, dens_dim+1)
         W = utils.insert_slice(img.ravel(), qcoords_rot, qbins)
     else:
         densities = np.zeros(dens_shape)
@@ -62,7 +78,7 @@ def _test_conventions(use_hist_method=True):
         trilinear_insertion(
             densities, weights,
             vectors=np.ascontiguousarray(qcoords_rot[inbounds]),
-            insert_vals=img.ravel()[inbounds],  x_min=const.X_MIN, x_max=const.X_MAX)
+            insert_vals=img.ravel()[inbounds],  x_min=X_MIN, x_max=X_MAX)
 
         W = utils.errdiv(densities, weights)
 
@@ -72,24 +88,11 @@ def _test_conventions(use_hist_method=True):
     rotMats[rot_idx] = Umat
 
     L = lerpy()
+    L.dens_dim=dens_dim
+    L.max_q=max_q
     L.allocate_lerpy(gpu_device, rotMats, W, maxNumQ,
                      tuple(corner), tuple(deltas), qcoords,
                      maxRotInds, maxNumQ)
-
-    #L.toggle_insert()
-    #L.trilinear_insertion(rot_idx, img.ravel(), mask=inbounds.ravel())
-
-    #W2 = utils.errdiv(L.densities(), L.wts())
-    #W2 = W2.reshape(W.shape)
-    #if not use_hist_method:
-    #    # quantitative comparison should only be done if reborn insertion was used to get W
-    #    assert np.sum(W> 0) == np.sum(W2>0)
-
-    #    if L.size_of_cudareal==8:
-    #        assert np.allclose(W, W2.reshape(W.shape))
-    #    else:
-    #        assert pearsonr(W[W> 0], W2[W2 > 0])[0] > 0.99
-    #L.update_density(W)
 
     all_Wr_simemc = []
     all_log_Rdr = []
@@ -147,7 +150,5 @@ def _test_conventions(use_hist_method=True):
 
 if __name__=="__main__":
     use_hist = int(sys.argv[1])
-    if use_hist:
-        test_conventions_hist_insert()
-    else:
-        test_conventions_reborn_insert()
+    highRes = int(sys.argv[2])
+    _test_conventions(use_hist, highRes)

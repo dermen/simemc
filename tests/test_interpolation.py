@@ -4,58 +4,86 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.stats import pearsonr
 
 from reborn.misc.interpolate import trilinear_interpolation, trilinear_insertion
-from simemc import utils, sim_const, sim_utils, const
+from simemc import utils, sim_const, sim_utils
 from simemc.emc import lerpy
+import pytest
 
 # first simulate an image, and insert it into the 3D density
 
-# simulate
-np.random.seed(0)
-C = sim_utils.random_crystal()
-SIM = sim_utils.get_noise_sim(0)
-Famp = sim_utils.get_famp()
-img = sim_utils.synthesize_cbf(
-    SIM, C, Famp,
-    dev_id=0,
-    xtal_size=0.002, outfile=None, background=0)
+@pytest.mark.mpi_skip()
+def test():
+    _test()
 
-# nominal qmap
-qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
-qx, qy, qz = map(lambda x: x.ravel(), qmap)
-qcoords = np.vstack((qx, qy, qz)).T
+@pytest.mark.mpi_skip()
+def test_highRes():
+    _test(True)
 
-# rotated qmap
-Umat = np.reshape(C.get_U(), (3, 3))
-qcoords_rot = np.dot(Umat.T, qcoords.T).T
+def _test(highRes=False):
 
-# insert the image into the 3d density
-W = utils.insert_slice(img.ravel(), qcoords_rot, const.QBINS)
+    # simulate
+    np.random.seed(0)
+    C = sim_utils.random_crystal()
+    SIM = sim_utils.get_noise_sim(0)
+    Famp = sim_utils.get_famp()
+    img = sim_utils.synthesize_cbf(
+        SIM, C, Famp,
+        dev_id=0,
+        xtal_size=0.002, outfile=None, background=0)
 
-# lengthscale parameters of the density array
-dens_shape = const.DENSITY_SHAPE
-corner, deltas = utils.corners_and_deltas(dens_shape, const.X_MIN, const.X_MAX)
-qs = corner[0] + np.arange(const.DENSITY_SHAPE[0]) * deltas[0]
+    # nominal qmap
+    qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
+    qx, qy, qz = map(lambda x: x.ravel(), qmap)
+    qcoords = np.vstack((qx, qy, qz)).T
 
-# make a nearest neighbor and a linear interpolator using scipy methods
-rgi_line = RegularGridInterpolator((qs, qs, qs), W, method='linear', fill_value=0,bounds_error=False)
-#rgi_near = RegularGridInterpolator((qs, qs, qs), W, method='nearest', fill_value=0,bounds_error=False)
+    # rotated qmap
+    Umat = np.reshape(C.get_U(), (3, 3))
+    qcoords_rot = np.dot(Umat.T, qcoords.T).T
 
-Wr_line = rgi_line(qcoords_rot).reshape(img.shape)
-Wr_reborn = trilinear_interpolation(np.ascontiguousarray(W), np.ascontiguousarray(qcoords_rot),
-                                  x_min=const.X_MIN,
-                                  x_max=const.X_MAX).reshape(img.shape)
+    # insert the image into the 3d density
+    if highRes:
+        max_q =0.5
+        dens_dim=512
+    else:
+        max_q=0.25
+        dens_dim=256
+    qbins = np.linspace(-max_q, max_q, dens_dim+1)
+    W = utils.insert_slice(img.ravel(), qcoords_rot, qbins)
 
-# now try with the CUDA interpolator
-L = lerpy()
-L.allocate_lerpy(0,
-                 np.array([np.reshape(C.get_U(),(3,3))]),
-                 W, len(qcoords),
-                 tuple(corner), tuple(deltas), qcoords,
-                 1, len(qcoords))
-Wr_simemc = L.trilinear_interpolation(0).reshape(img.shape)
+    # lengthscale parameters of the density array
+    dens_shape = dens_dim, dens_dim, dens_dim
+    X_MIN, X_MAX = utils.get_xmin_xmax(max_q, dens_dim) 
+    corner, deltas = utils.corners_and_deltas(dens_shape, X_MIN, X_MAX)
+    qs = corner[0] + np.arange(dens_dim) * deltas[0]
 
-inbounds = utils.qs_inbounds(qcoords, const.DENSITY_SHAPE, const.X_MIN, const.X_MAX).reshape(img.shape)
-assert pearsonr(Wr_reborn[inbounds], Wr_simemc[inbounds])[0] >.999
-assert pearsonr(Wr_line[inbounds], Wr_simemc[inbounds])[0] >.999
+    # make a nearest neighbor and a linear interpolator using scipy methods
+    rgi_line = RegularGridInterpolator((qs, qs, qs), W, method='linear', fill_value=0,bounds_error=False)
+    #rgi_near = RegularGridInterpolator((qs, qs, qs), W, method='nearest', fill_value=0,bounds_error=False)
 
-print("OK!")
+    Wr_line = rgi_line(qcoords_rot).reshape(img.shape)
+    Wr_reborn = trilinear_interpolation(np.ascontiguousarray(W), np.ascontiguousarray(qcoords_rot),
+                                      x_min=X_MIN,
+                                      x_max=X_MAX).reshape(img.shape)
+
+    # now try with the CUDA interpolator
+    L = lerpy()
+    L.dens_dim=dens_dim
+    L.max_q=max_q
+    dev_id=0
+    L.allocate_lerpy(dev_id,
+                     np.array([np.reshape(C.get_U(),(3,3))]),
+                     W, len(qcoords),
+                     tuple(corner), tuple(deltas), qcoords,
+                     1, len(qcoords))
+    Wr_simemc = L.trilinear_interpolation(0).reshape(img.shape)
+
+    inbounds = utils.qs_inbounds(qcoords, dens_shape, X_MIN, X_MAX).reshape(img.shape)
+    assert pearsonr(Wr_reborn[inbounds], Wr_simemc[inbounds])[0] >.999
+    assert pearsonr(Wr_line[inbounds], Wr_simemc[inbounds])[0] >.999
+
+    print("OK!")
+
+
+if __name__=="__main__":
+    import sys
+    highRes = int(sys.argv[1])
+    _test(highRes)

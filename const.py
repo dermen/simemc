@@ -2,8 +2,9 @@ import numpy as np
 
 # the refinement uses 256 bins whose edges are defined as
 NBINS = 256
+MAX_Q = 0.25
 DENSITY_SHAPE=NBINS,NBINS,NBINS
-QBINS = np.linspace(-0.25, 0.25, NBINS+1)
+QBINS = np.linspace(-MAX_Q, MAX_Q, NBINS+1)
 QCENT = (QBINS[:-1] +QBINS[1:])*.5
 
 # these are the for the reborn reciprocal space convention

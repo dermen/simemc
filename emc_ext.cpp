@@ -14,6 +14,7 @@ namespace bp=boost::python;
 namespace np=boost::python::numpy;
 
 
+// TODO: lerpy should be initialized with dens_dim and max_q args
 class lerpyExt{
     public:
     virtual ~lerpyExt(){}
@@ -218,6 +219,22 @@ class lerpyExt{
         toggle_insert_mode(gpu);
     }
 
+    inline int get_densDim(){
+        return gpu.densDim;
+    }
+
+    inline void set_densDim(int densDim){
+        gpu.densDim = densDim;
+    }
+    
+    inline double get_maxQ(){
+        return gpu.maxQ;
+    }
+    
+    inline void set_maxQ(double maxQ){
+        gpu.maxQ = maxQ;
+    }
+
     inline void free(){
         free_lerpy(gpu);
     }
@@ -346,6 +363,16 @@ BOOST_PYTHON_MODULE(emc){
               "get the density weights")
 
         .def("free", &lerpyExt::free, "free the gpu")
+        
+        .add_property("dens_dim",
+                       make_function(&lerpyExt::get_densDim,rbv()),
+                       make_function(&lerpyExt::set_densDim,dcp()),
+                       "the number of bins along the density edge (its always a cube); default=256")
+        
+        .add_property("max_q",
+                       make_function(&lerpyExt::get_maxQ,rbv()),
+                       make_function(&lerpyExt::set_maxQ,dcp()),
+                       "the maximum q magnitude (defines density edge length from -maxQ to +maxQ)")
         ;
 
     /* Orientation matching class */

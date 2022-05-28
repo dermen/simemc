@@ -8,7 +8,18 @@ import numpy as np
 import pytest
 
 @pytest.mark.mpi_skip()
-def test():
+def test_lowRes():
+    main(256, 0.25)
+
+@pytest.mark.mpi_skip()
+def test_highRes():
+    main(512, 0.5)
+
+def main(dens_dim, max_q):
+    """
+    dens_dim: number of density bins along one edge (cubic density)
+    max_q: maximum q at outer corner of voxel
+    """
     gpu_device = 0
     maxRotInds = 10000
 
@@ -29,14 +40,17 @@ def test():
     qcoords = np.vstack((qx,qy,qz)).T
     Umat = np.reshape(C.get_U(), (3,3))
 
-    dens_shape = const.DENSITY_SHAPE
-    corner,deltas = utils.corners_and_deltas(dens_shape, const.X_MIN, const.X_MAX)
+    dens_shape = dens_dim, dens_dim, dens_dim
+    
 
     rotMats = np.array([Umat])
 
     maxNumQ = len(qcoords)
     Npix = img.size
     L = lerpy()
+    L.dens_dim=dens_dim
+    L.max_q=max_q
+    corner,deltas = utils.corners_and_deltas(dens_shape, L.xmin, L.xmax)
     Winit = np.zeros(dens_shape)
     L.allocate_lerpy(gpu_device, rotMats, Winit, maxNumQ,
                      tuple(corner), tuple(deltas), qcoords,
@@ -46,7 +60,7 @@ def test():
 
     W = utils.errdiv(L.densities(), L.wts()).reshape(dens_shape)
 
-    hkls,I = utils.integrate_W(W)
+    hkls,I = utils.integrate_W(W, dens_dim, max_q )
 
     # integrate the image directly and compare, the results should correlate!
     R = db_utils.refls_from_sims(np.array([img]), sim_const.DETECTOR, sim_const.BEAM)
@@ -64,4 +78,9 @@ def test():
     print("OK")
 
 if __name__=="__main__":
-    test()
+    import sys
+    switch = int(sys.argv[1])
+    if switch:
+        test_highRes()
+    else:
+        test_lowRes()

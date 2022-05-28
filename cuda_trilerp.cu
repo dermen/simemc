@@ -209,7 +209,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         trilinear_interpolation_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
                 (gpu.densities, gpu.qVecs, gpu.out,
                  rotMat, gpu.numQ,
-                 256, 256, 256,
+                 gpu.densDim, gpu.densDim, gpu.densDim,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
                  gpu.delta[0], gpu.delta[1], gpu.delta[2]
                 );
@@ -226,7 +226,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                  gpu.data, gpu.background, gpu.mask,
                  gpu.shot_scale, gpu.qVecs, gpu.out_equation_two,
                  gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
-                 256, 256, 256,
+                 gpu.densDim, gpu.densDim, gpu.densDim,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
                  gpu.delta[0], gpu.delta[1], gpu.delta[2],
                  task==3, task==4,
@@ -250,7 +250,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                  gpu.data, gpu.background, gpu.Pdr, gpu.mask, gpu.is_peak_in_density,
                  gpu.shot_scale, gpu.qVecs, gpu.out_equation_two,
                  gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
-                 256, 256, 256,
+                 gpu.densDim, gpu.densDim, gpu.densDim,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
                  gpu.delta[0], gpu.delta[1], gpu.delta[2]
                 );
@@ -262,7 +262,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         trilinear_insertion_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
                 (gpu.densities, gpu.wts, gpu.data, gpu.mask, gpu.tomogram_wt, gpu.qVecs,
                  rotMat, gpu.numQ,
-                 256, 256, 256,
+                 gpu.densDim, gpu.densDim, gpu.densDim,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
                  gpu.delta[0], gpu.delta[1], gpu.delta[2]
                 );
