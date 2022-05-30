@@ -11,6 +11,7 @@ from dials.array_family import flex
 import numpy as np
 from simtbx.diffBragg import mpi_logger
 from simemc import emc_updaters
+from simemc.sim_const import CRYSTAL
 
 from dxtbx.model import ExperimentList
 from simtbx.diffBragg.utils import image_data_from_expt
@@ -230,7 +231,7 @@ class EMC:
     def __init__(self, L, shots, prob_rots, shot_background=None, shot_mask=None, min_p=0, outdir=None, beta=1,
                  symmetrize=True, whole_punch=True, img_sh=None, shot_scales=None,
                  refine_scale_factors=False, ave_signal_level=1, scale_update_method="analytical",
-                 density_update_method="analytical", ucell_p=None):
+                 density_update_method="analytical", ucell_p=None, shot_names=None, symbol=None):
         """
         run emc, the resulting density is stored in the L (emc.lerpy) object
         see call to this method in ests/test_emc_iteration
@@ -250,11 +251,16 @@ class EMC:
             (see emc_updaters.DensityUpdater class)
         """
         if ucell_p is None:
-            self.ucell_p = 79.1, 79.1, 38.4,90,90,90
+            self.ucell_p = CRYSTAL.get_unit_cell().parameters()
         else:
             assert len(ucell_p) == 6
             self.ucell_p = ucell_p
+        
+        if symbol is None:
+            symbol = CRYSTAL.get_space_group().info().type().lookup_symbol()
+        self.symbol=symbol
 
+        self.shot_names = shot_names  # optional names identifying each shot (for book-keeping)
         assert len(shots) > 0
         assert isinstance(shots[0], np.ndarray)
         assert scale_update_method in ["analytical", "bfgs"]
@@ -456,9 +462,8 @@ class EMC:
     def apply_density_rules(self):
         den = self.L.densities()
         if self.symmetrize:
-            # TODO generalize for different space groups (currently only supporting P43212)
             if COMM.rank==0:
-                den = utils.symmetrize(den, self.L.dens_dim, self.L.max_q).ravel()
+                den = utils.symmetrize(den, self.L.dens_dim, self.L.max_q, symbol=self.symbol).ravel()
             den = COMM.bcast(den)
 
         if self.whole_punch:
@@ -617,7 +622,10 @@ class EMC:
             if all_scale_changed is not None:
                 all_scale_changed = np.hstack(all_scale_changed)
                 np.save(os.path.join(self.outdir, "ScalesChanged%d" % (self.i_emc+1)), all_scale_changed)
+
             self.save_h5(density_file)
+
+        self.save_prob_rots_npz()
 
     def save_h5(self, density_file):
         den = self.L.densities()
@@ -626,6 +634,13 @@ class EMC:
             out_h5.create_dataset("Wprime",data=den.reshape((NBINS, NBINS, NBINS)), compression="lzf")
             out_h5.create_dataset("ucell", data=self.ucell_p)
             out_h5.create_dataset("max_q", data=self.L.max_q)
+
+    def save_prob_rots_npz(self):
+        dirname = os.path.join( self.outdir , "prob_rots", "rank%d" % COMM.rank)
+        if not os.path.exists(dirname):
+            os.makedirs(dirname)
+        fname = os.path.join(dirname, "P_dr_iter%d.npz" % (self.i_emc+1))
+        np.savez(fname, rots=self.prob_rots, Pdr=self.shot_P_dr, names=self.shot_names)
 
     def success_rate(self, init=False, return_models=False):
         """

@@ -5,7 +5,8 @@ from dxtbx.model.crystal import CrystalFactory
 
 BEAMSIZE=0.01  # mm, size of beam
 NCELLS_ABC=30,30,40  # mosaic domain size in unit cell lengths
-OVERSAMPLE=1  # pixel sub-sampling factor
+NCELLS_ABC=90,21,24  # mosaic domain size in unit cell lengths
+OVERSAMPLE=3  # pixel sub-sampling factor
 MOS_DOMS=1  # makes sim slow if this is high, but used to generate spherical cap profiles (100-500 depending on mos_spread)
 MOS_SPREAD=0  # degrees, angular mosaicity if mos_doms > 1. Larger values require more domains (0.01-0.07 ish)
 PROFILE="gauss"  # square, round, tophat or gauss
@@ -82,14 +83,27 @@ _BEAM_DICT = {
     'flux': 0.0,
     'transmission': 1.0}
 
+UCELL_A=79.1
+UCELL_B=79.1
+UCELL_C=38.4
+HALL='-P 4 2'
+
+UCELL_A = 68
+UCELL_B = 68
+UCELL_C = 104
+HALL='-P 4 2'
+
+UCELL_A=40.3
+UCELL_B=180.3
+UCELL_C=142.6
+HALL=' C 2c 2'
+
 _CRYSTAL_DICT={
     '__id__': 'crystal',
-    'real_space_a': (79.00000000000003, -0.0, 0.0),
-    'real_space_b': (-0.0, 79.00000000000003, 0.0),
-    'real_space_c': (2.890820846525242e-31,
-                     1.1563283386100968e-30,
-                     38.00000000000001),
-    'space_group_hall_symbol': '-P 4 2'}
+    'real_space_a': (UCELL_A, 0.0, 0.0),
+    'real_space_b': (0.0, UCELL_B, 0.0),
+    'real_space_c': (0.0, 0.0, UCELL_C),
+    'space_group_hall_symbol': HALL}
 
 DETECTOR = Detector.from_dict(_DET_DICT)
 BEAM = Beam.from_dict(_BEAM_DICT)

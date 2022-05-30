@@ -103,6 +103,7 @@ def integrate_W(W, dens_dim, max_q, ucell_p=None):
         a1,a2,a3 = Bmat[:,0], Bmat[:,1], Bmat[:,2]
     else:
         a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
+        print(a1,a2,a3)
     V = np.dot(a1, np.cross(a2,a3))
     b1 = np.cross(a2,a3)/V
     b2 = np.cross(a3,a1)/V

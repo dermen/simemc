@@ -7,8 +7,8 @@ parser.add_argument("outdir", type=str, help="output folder" )
 parser.add_argument("--optscale", action="store_true", help="refine scale factors for each shot")
 parser.add_argument("--niter", type=int, default=100, help="number of emc iterations")
 parser.add_argument("--phil", type=str, default=None, help="path to a stills process phil file (for spot finding). Required if --water flag is used")
-parser.add_argument("--minpred", type=int, default=7, help="minimum number of strong spots that need to be predicted well by an orientation for it to be flagged as probable for the shots crystal")
-parser.add_argument("--hcut", type=float, default=0.03, help="maximum distance (in hkl units) to Bragg peaks from prediction for prediction Bragg peak to be considered part of the lattice ")
+parser.add_argument("--minpred", type=int, default=3, help="minimum number of strong spots that need to be predicted well by an orientation for it to be flagged as probable for the shots crystal")
+parser.add_argument("--hcut", type=float, default=0.1, help="maximum distance (in hkl units) to Bragg peaks from prediction for prediction Bragg peak to be considered part of the lattice ")
 parser.add_argument("--xtalsize", type=float, default=0.002, help="size of the crystallite in mm")
 parser.add_argument("--nowater", action="store_true", help="dont add water background")
 parser.add_argument("--onlyGenImages", action="store_true", help="exit after simulating images")
@@ -18,6 +18,8 @@ parser.add_argument("--densityUpdater", type=str, default="lbfgs", choices=["lbf
                     help="the method for updating the density between iterations")
 parser.add_argument("--dens_dim", type=int, default=256,help="number of voxels along cubic density edge")
 parser.add_argument("--max_q", type=float, default=0.25,help="max q at voxel corner")
+parser.add_argument("--poly", type=float, default=None, help="fwhm percentage for poly spectra")
+parser.add_argument("--quat", type=int, default=70, help="number used as input to quat program")
 ARGS = parser.parse_args()
 
 import pylab as plt
@@ -53,6 +55,7 @@ def load_images(filedir, n=-1):
     """
     this_ranks_imgs = []
     this_ranks_refls = []
+    this_ranks_names = []
     filenames = glob.glob(filedir + "/*.h5")
 
     # first make sure all refls exist:
@@ -65,10 +68,11 @@ def load_images(filedir, n=-1):
         this_ranks_imgs.append(img)
         R = flex.reflection_table.from_file(refname)
         this_ranks_refls.append(R)
+        this_ranks_names.append(f)
         printR("Loaded shot %s (%d/%d)" % (h5name, i_f, len(filenames)))
         if len(this_ranks_imgs) == n:
             break
-    return this_ranks_imgs, this_ranks_refls
+    return this_ranks_imgs, this_ranks_refls, this_ranks_names
 
 
 def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
@@ -78,6 +82,7 @@ def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
 
     this_ranks_imgs = []
     this_ranks_refls = []
+    this_ranks_names = []
 
     print0("Simulating water scattering...")
     water = sim_utils.get_water_scattering()
@@ -93,7 +98,7 @@ def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
                 dev_id=dev_id,
                 xtal_size=xtal_size,
                 outfile=file_prefix + "_%d.cbf" % i_shot,
-                background=water)
+                background=water, poly_perc=ARGS.poly)
             img = np.array([img])
 
             R = utils.refls_from_sims(img, sim_const.DETECTOR, sim_const.BEAM, phil_file=phil_file)
@@ -107,8 +112,9 @@ def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
             h.create_dataset("image", data=img)
         this_ranks_imgs.append(img)
         this_ranks_refls.append(R)
+        this_ranks_names.append(file_prefix)
     sim_utils.delete_noise_sim(SIM)
-    return this_ranks_imgs, this_ranks_refls
+    return this_ranks_imgs, this_ranks_refls, this_ranks_names
 
 
 
@@ -124,7 +130,7 @@ def get_rad_pro_maker(num_radial_bins=500):
 
 
 def load_rotation_samples():
-    quat_file = os.path.join(os.path.dirname(__file__), "../quatgrid/c-quaternion70.bin")
+    quat_file = os.path.join(os.path.dirname(__file__), "../quatgrid/c-quaternion%d.bin" % ARGS.quat)
     if not os.path.exists(quat_file):
         raise OSError("Please generate the quaternion file %s  with `./quat -bin 70`" % quat_file)
     rots, wts = utils.load_quat_file(quat_file)
@@ -135,10 +141,10 @@ def load_rotation_samples():
 
 
 
-def get_lerpy(dev_id, rotation_samples, qcoords, dens_dim=256, max_q=0.25):
+def get_lerpy(dev_id, rotation_samples, qcoords, dens_dim=256, max_q=0.25,
+    maxRotInds=20000):
     sh = dens_dim, dens_dim, dens_dim
     Winit = np.zeros(sh, np.float32)
-    maxRotInds = 20000
 
     L = lerpy()
     L.dens_dim=dens_dim
@@ -169,10 +175,10 @@ def emc_iteration():
 
     file_prefix=os.path.join(cbfdir, "rank%d_shot"% COMM.rank)
     if ARGS.precomputedDir is None:
-        this_ranks_imgs, this_ranks_refls = generate_n_images(ARGS.nshot, COMM.rank, DEV_ID, ARGS.xtalsize, ARGS.phil,
+        this_ranks_imgs, this_ranks_refls, this_ranks_names = generate_n_images(ARGS.nshot, COMM.rank, DEV_ID, ARGS.xtalsize, ARGS.phil,
                                                               file_prefix=file_prefix)
     else:
-        this_ranks_imgs, this_ranks_refls = load_images(ARGS.precomputedDir, ARGS.nshot)
+        this_ranks_imgs, this_ranks_refls, this_ranks_names = load_images(ARGS.precomputedDir, ARGS.nshot)
 
     if ARGS.onlyGenImages:
         exit()
@@ -186,7 +192,16 @@ def emc_iteration():
 
     # probable orientations list per image
     rots, wts = load_rotation_samples()
-    this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots)
+    this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
+        hcut=ARGS.hcut, min_pred=ARGS.minpred)
+
+    max_rot_this_rank= max([len(rots) for rots in this_ranks_prob_rot])
+    max_rot = COMM.gather(max_rot_this_rank)
+    if COMM.rank==0:
+        max_rot = max(max_rot)
+    max_rot = COMM.bcast(max_rot)
+    print0("Max rot inds=%d" % max_rot)
+     
 
     # fit background to each image; estimate signal level per image
     this_ranks_bgs = []
@@ -227,7 +242,7 @@ def emc_iteration():
     qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
     qx,qy,qz = map(lambda x: x.ravel(), qmap)
     qcoords = np.vstack([qx,qy,qz]).T
-    L = get_lerpy(DEV_ID, rots, qcoords, dens_dim=ARGS.dens_dim, max_q=ARGS.max_q)
+    L = get_lerpy(DEV_ID, rots, qcoords, dens_dim=ARGS.dens_dim, max_q=ARGS.max_q, maxRotInds=max_rot)
 
     # convert the type of images to match the lerpy instance array_type (prevents annoying warnings)
     for i, img in enumerate(this_ranks_imgs):
@@ -250,6 +265,8 @@ def emc_iteration():
     print0("INIT SHOT SCALES:", init_shot_scales)
 
     # make the mpi emc object
+    ucell_p = sim_const.CRYSTAL.get_unit_cell().parameters() 
+    sym = sim_const.CRYSTAL.get_space_group().info().type().lookup_symbol()
     emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
                         shot_mask=inbounds,
                         shot_background=this_ranks_bgs,
@@ -259,7 +276,11 @@ def emc_iteration():
                         shot_scales=init_shot_scales,
                         refine_scale_factors=ARGS.optscale,
                         ave_signal_level=ave_signal_level,
-                        density_update_method=ARGS.densityUpdater)
+                        density_update_method=ARGS.densityUpdater,
+                        ucell_p=ucell_p,
+                        shot_names=this_ranks_names,
+                        symmetrize=False,
+                        symbol=sym)
 
     # run EMC wrapped in the line profiler
     lprof = LineProfiler()

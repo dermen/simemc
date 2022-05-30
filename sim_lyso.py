@@ -10,6 +10,7 @@ if COMM.rank==0:
     parser.add_argument("--ndev", default=1, type=int, help="number of GPUs per compute node")
     parser.add_argument("--no-water", dest="no_water",action="store_true", help="Dont include background")
     parser.add_argument("--no-calib-noise", dest="no_calib", action="store_true", help="No per-pixel gain errors")
+    parser.add_argument("--poly", type=float, default=None, help="fwhm percentage for poly spectra")
     args = parser.parse_args()
 else:
     args = None
@@ -31,6 +32,7 @@ if __name__=="__main__":
     XTAL_SIZE = args.xtalsize
     calib_noise_percent = 0 if args.no_calib else 3
     add_background= not args.no_water
+    POLY_PERC = args.poly
     #######################################
 
     OUTDIR = os.path.join( args.outdir, "rank%d" % COMM.rank)
@@ -61,7 +63,7 @@ if __name__=="__main__":
 
         sim_utils.synthesize_cbf(
             SIM, ROT_CRYSTAL, Famp,
-            dev_id, XTAL_SIZE, outfile, water)
+            dev_id, XTAL_SIZE, outfile, water, poly_perc=POLY_PERC)
 
     sim_utils.delete_noise_sim(SIM)
     printR("DONE")
