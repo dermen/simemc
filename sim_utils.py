@@ -13,6 +13,7 @@ from simtbx.modeling.forward_models import diffBragg_forward
 from simtbx.nanoBragg import nanoBragg
 from simtbx.diffBragg import utils as db_utils
 from simtbx.nanoBragg import utils as nb_utils
+from simtbx.diffBragg import hopper_utils
 
 from simemc import sim_const as SC
 
@@ -27,6 +28,9 @@ def random_crystal(rand_state=None):
 
 def get_famp():
     PDB = "4bs7.pdb"
+    PDB = "5uvi.pdb"
+    PDB = "6wqa.pdb"
+    PDB = "5k2d.pdb"
     # to retrieve the PDB, run `iotbx.fetch_pdb 4bs7` from cmdline
     if not os.path.exists(PDB):
         raise OSError("Download 4bs7.pdb using `iotbx.fecth_pdb 4bs7`")
@@ -36,7 +40,8 @@ def get_famp():
 
 def synthesize_cbf(
         noise_sim, CRYSTAL, Famp,
-        dev_id, xtal_size, outfile=None, background=0):
+        dev_id, xtal_size, outfile=None, background=0,
+        poly_perc=None):
     """
 
     :param noise_sim: nanoBragg instance, output of get_noise_sim
@@ -49,8 +54,17 @@ def synthesize_cbf(
     :return: optionally returns a numpy array, or else None
     """
 
-    fluxes = [SC.TOTAL_FLUX]
-    energies = [nb_utils.ENERGY_CONV / SC.BEAM.get_wavelength()]
+    if poly_perc is not None:
+        en0 = db_utils.ENERGY_CONV /SC.BEAM.get_wavelength()
+        fwhm = en0*poly_perc*0.01
+        energies, fluxes = hopper_utils.generate_gauss_spec(
+            en0, fwhm, res=2,nchan=200, total_flux=SC.TOTAL_FLUX, 
+            as_spectrum=False)
+        K = SC.TOTAL_FLUX / fluxes.mean()
+        fluxes *= K
+    else:
+        fluxes = [SC.TOTAL_FLUX]
+        energies = [nb_utils.ENERGY_CONV / SC.BEAM.get_wavelength()]
     img = diffBragg_forward(
         CRYSTAL, SC.DETECTOR, SC.BEAM, Famp, energies, fluxes,
         oversample=SC.OVERSAMPLE, Ncells_abc=SC.NCELLS_ABC,
