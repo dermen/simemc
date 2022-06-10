@@ -5,13 +5,19 @@ from scipy.spatial.transform import Rotation
 from scipy.spatial import cKDTree, distance
 from scipy import ndimage as nd
 from simemc.compute_radials import RadPros
+import itertools
 import time
 from dials.command_line.stills_process import phil_scope
 from dxtbx.model import ExperimentList
 from simtbx.diffBragg import utils as db_utils
 from dials.array_family import flex
 from dials.algorithms.spot_finding.factory import SpotFinderFactory
+from cctbx import crystal
+from scitbx.matrix import sqr
 from libtbx.phil import parse
+from cctbx import miller
+from dials.array_family import flex
+from itertools import groupby
 
 from simemc import sim_const
 try:
@@ -29,6 +35,45 @@ from dials.model.data import PixelListLabeller, PixelList
 from dials.algorithms.spot_finding.finder import pixel_list_to_reflection_table
 
 
+def ucell_and_symbol(ucell_p, symbol):
+    if ucell_p is None:
+        ucell_p = sim_const.CRYSTAL.get_unit_cell().parameters()
+
+    if symbol is None:
+        symbol = sim_const.CRYSTAL.get_space_group().info().type().lookup_symbol()
+    return ucell_p, symbol
+
+def get_BO_matrix(ucell_p, symbol):
+    """
+    The BO matrix multiplies a q-vector and give the miller index in its primitive setting
+    :param ucell_p: unit cell 6-tuple (a,b,c,alpha,beta,gamma) in Angstroms/degrees
+    :param symbol: space group lookup symbol e.g. C2221
+    :return: 3,3 matrix as numpy array
+            To get the primitive setting miller index use: hkl = np.dot(BO, [qx,qy,qz])
+    """
+    crys_sym = crystal.symmetry(ucell_p, symbol)
+    cbo = crys_sym.change_of_basis_op_to_primitive_setting()
+    ucell = crys_sym.unit_cell()
+    Bmatrix = np.reshape(ucell.orthogonalization_matrix(), (3, 3))
+    Omatrix = np.reshape(cbo.c_inv().r().transpose().as_double(), (3,3))
+    BO = np.dot(Bmatrix, Omatrix.T).T
+    return BO
+
+def get_hkl_max(max_q, BO):
+    """
+
+    :param max_q:
+    :param BO:
+    :return:
+    """
+    # find maximum miller indices in grid
+    hkls_at_corner = []
+    for qvec in itertools.product(*[[max_q, -max_q]] * 3):
+        hkl = np.dot(BO, qvec)
+        hkls_at_corner.append(hkl)
+    max_hkl = np.max(hkls_at_corner, axis=0).astype(int)
+    return max_hkl
+
 
 def voxel_resolution(dens_dim, max_q):
     QBINS = np.linspace(-max_q, max_q, dens_dim+1)
@@ -36,10 +81,28 @@ def voxel_resolution(dens_dim, max_q):
     qX,qY,qZ = np.meshgrid(*([QCENT]*3), indexing='ij')
     qmag =np.sqrt( qX**2 + qY**2 + qZ**2)
     dspace = 1/qmag
-    return dspace 
+    return dspace
+
+def get_primitive_vectors(ucell_p, symbol):
+    """
+    :param ucell_p: unit cell 6-tuple (a_Ang, b_Ang, c_Ang, alpha_deg, beta_deg, gamma_deg)
+    :param symbol: lookupsymbol e.g. C2221
+    :return: the primitive vectors defining the crystal (in real space)
+    """
+    crys_sym = crystal.symmetry(ucell_p, symbol)
+    cbo = crys_sym.change_of_basis_op_to_primitive_setting()
+    crys_sym_prim = crys_sym.change_basis(cbo)
+
+    ucell = crys_sym.unit_cell()
+    ucell_prim = crys_sym_prim.unit_cell()
+    Orth = np.reshape(ucell_prim.orthogonalization_matrix(), (3, 3))
+    B = np.reshape(ucell.orthogonalization_matrix(), (3, 3))
+    Omatrix = np.reshape(cbo.c_inv().r().transpose().as_double(), (3,3))
+    a1, a2, a3 = Orth[:, 0], Orth[:, 1], Orth[:, 2]
+    return (a1,a2,a3)
 
 
-def whole_punch_W(W, dens_dim, max_q, width=1, ucell_p=None):
+def whole_punch_W(W, dens_dim, max_q, width=1, ucell_p=None, symbol=None):
     """
     set all values far from the Bragg peaks to 0
     :param W: input density
@@ -48,45 +111,27 @@ def whole_punch_W(W, dens_dim, max_q, width=1, ucell_p=None):
         1 keeps 17(?) pixels at every Bragg peak
     :return: W with 0s in between the Bragg reflections
     """
-    #TODO add test for this method; also, it could be phased out... 
-    if ucell_p is not None:
-        ucell_man = db_utils.manager_from_params(ucell_p)
-        Bmat = np.reshape(ucell_man.B_realspace, (3,3))
-        a1,a2,a3 = Bmat[:,0], Bmat[:,1], Bmat[:,2]
-    else:
-        a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
-    V = np.dot(a1, np.cross(a2,a3))
-    b1 = np.cross(a2,a3)/V
-    b2 = np.cross(a3,a1)/V
-    b3 = np.cross(a1,a2)/V
+    ucell_p, symbol = ucell_and_symbol(ucell_p, symbol)
+    BO = get_BO_matrix(ucell_p, symbol)
 
-    astar=np.linalg.norm(b1)
-    bstar=np.linalg.norm(b2)
-    cstar=np.linalg.norm(b3)
+    max_h, max_k, max_l = get_hkl_max(max_q, BO)
+
+    hvals = np.arange(-max_h+1, max_h,1)
+    kvals = np.arange(-max_k+1, max_k,1)
+    lvals = np.arange(-max_l+1, max_l,1)
+
+    hkl_grid = np.meshgrid(hvals, kvals, lvals, indexing='ij')
+    hkl_grid = np.array(hkl_grid)
+    BOinv = np.round(np.linalg.inv(BO), 8)
+
+    # find the q-values of the whole miller-indices
+    qa_vals, qb_vals, qc_vals = np.dot(hkl_grid.T, BOinv.T).T
 
     QBINS = np.linspace(-max_q, max_q, dens_dim+1)
-    QCENT = (QBINS[:-1] +QBINS[1:])*.5
-    qX,qY,qZ = np.meshgrid(*([QCENT]*3), indexing='ij')
-
-    frac_h = qX / astar
-    frac_k = qY/ bstar
-    frac_l = qZ/ cstar
-
-    H = np.ceil(frac_h-0.5)
-    K = np.ceil(frac_k-0.5)
-    L = np.ceil(frac_l-0.5)
-
-    hvals = np.arange(-H.max()+1, H.max(),1)
-    kvals = np.arange(-K.max()+1, K.max(),1)
-    lvals = np.arange(-L.max()+1, L.max(),1)
-
-    avals = hvals*astar
-    bvals = kvals*bstar
-    cvals = lvals*cstar
-
-    aidx = [np.argmin(np.abs(QCENT-a)) for a in avals]
-    bidx = [np.argmin(np.abs(QCENT-b)) for b in bvals]
-    cidx = [np.argmin(np.abs(QCENT-c)) for c in cvals]
+    QCENT = (QBINS[:-1] +QBINS[1:])*.5  # center of each voxel
+    aidx = [np.argmin(np.abs(QCENT-a)) for a in qa_vals.ravel()]
+    bidx = [np.argmin(np.abs(QCENT-b)) for b in qb_vals.ravel()]
+    cidx = [np.argmin(np.abs(QCENT-c)) for c in qc_vals.ravel()]
 
     Imap = np.zeros((dens_dim, dens_dim, dens_dim),bool)
     A,B,C = np.meshgrid(aidx, bidx, cidx, indexing='ij')
@@ -96,65 +141,77 @@ def whole_punch_W(W, dens_dim, max_q, width=1, ucell_p=None):
     return W*Imap, Imap
 
 
-def integrate_W(W, dens_dim, max_q, ucell_p=None):
-    if ucell_p is not None:
-        ucell_man = db_utils.manager_from_params(ucell_p)
-        Bmat = np.reshape(ucell_man.B_realspace, (3,3))
-        a1,a2,a3 = Bmat[:,0], Bmat[:,1], Bmat[:,2]
-    else:
-        a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
-        print(a1,a2,a3)
-    V = np.dot(a1, np.cross(a2,a3))
-    b1 = np.cross(a2,a3)/V
-    b2 = np.cross(a3,a1)/V
-    b3 = np.cross(a1,a2)/V
+def round_to(rounds, values):
+    I = np.searchsorted(rounds, values)
+    rounds_p = np.pad(rounds, 1, mode='edge')
+    rounded = np.vstack([rounds_p[I], rounds_p[I+1]])
+    residues = rounded - values
+    J = np.argmin(np.abs(residues), axis=0)
+    return J
 
-    astar=np.linalg.norm(b1)
-    bstar=np.linalg.norm(b2)
-    cstar=np.linalg.norm(b3)
+
+def integrate_W(W, dens_dim, max_q, ucell_p=None, symbol=None):
+    ucell_p, symbol = ucell_and_symbol(ucell_p, symbol)
+    BO = get_BO_matrix(ucell_p, symbol)
+
+    max_h,max_k,max_l = get_hkl_max(max_q, BO)
+
+    hvals = np.arange(-max_h+1, max_h,1)
+    kvals = np.arange(-max_k+1, max_k,1)
+    lvals = np.arange(-max_l+1, max_l,1)
+    hkl_grid = np.meshgrid(hvals, kvals, lvals, indexing='ij')
+    hkl_grid = np.array(hkl_grid)
+    BOinv = np.round(np.linalg.inv(BO), 8)
+
+    # find the q-values of the whole miller-indices
+    qa_vals, qb_vals, qc_vals = np.dot(hkl_grid.T, BOinv.T).T
 
     QBINS = np.linspace(-max_q, max_q, dens_dim+1)
-    QCENT = (QBINS[:-1] +QBINS[1:])*.5
-    qX,qY,qZ = np.meshgrid(*([QCENT]*3), indexing='ij')
+    QCENT = (QBINS[:-1] +QBINS[1:])*.5  # center of each voxel
+    qcorner = np.sqrt(3)*max_q
+    sel = (np.abs(qa_vals) < qcorner) * (np.abs(qb_vals) < qcorner) * (np.abs(qc_vals) < qcorner)
 
-    frac_h = qX / astar
-    frac_k = qY/ bstar
-    frac_l = qZ/ cstar
+    all_vals = [qa_vals[sel], qb_vals[sel], qc_vals[sel]]
+    all_pos = [np.searchsorted(QCENT, vals) for vals in all_vals]
+    selA = (all_pos[0] < dens_dim) * (all_pos[1] < dens_dim) * (all_pos[2] < dens_dim)
+    selB = (all_pos[0] >0) * (all_pos[1] >0) * (all_pos[2] >0)
+    selAB = selA * selB
 
-    H = np.ceil(frac_h-0.5)
-    K = np.ceil(frac_k-0.5)
-    L = np.ceil(frac_l-0.5)
-    
-    hvals = np.arange(-H.max()+1, H.max(),1)
-    kvals = np.arange(-K.max()+1, K.max(),1)
-    lvals = np.arange(-L.max()+1, L.max(),1)
+    all_inds = []
+    for pos, vals in zip(all_pos, all_vals):
+        qvals = vals[selAB]
+        qpos = pos[selAB]
 
-    avals = hvals*astar
-    bvals = kvals*bstar
-    cvals = lvals*cstar
+        left = np.abs(QCENT[qpos-1] - qvals)
+        right = np.abs(QCENT[qpos] - qvals)
+        left_or_right_choice = np.argmin(list(zip(left, right)), axis=1)
+        inds = [qpos[i]-1 if choice == 0 else qpos[i] for i, choice in enumerate(left_or_right_choice)]
+        all_inds.append(inds)
+    aidx, bidx, cidx = all_inds
+    all_hvals, all_kvals, all_lvals = map(lambda x: x[sel][selAB], hkl_grid)
 
-    aidx = [np.argmin(np.abs(QCENT-a)) for a in avals]
-    bidx = [np.argmin(np.abs(QCENT-b)) for b in bvals]
-    cidx = [np.argmin(np.abs(QCENT-c)) for c in cvals]
+    #aidx = [np.argmin(np.abs(QCENT-a)) for a in qa_vals.ravel()]
+    #bidx = [np.argmin(np.abs(QCENT-b)) for b in qb_vals.ravel()]
+    #cidx = [np.argmin(np.abs(QCENT-c)) for c in qc_vals.ravel()]
+    #all_hvals, all_kvals, all_lvals = map(lambda x: x.ravel(), hkl_grid)
 
-    hvals = hvals.astype(np.int32)
-    kvals = kvals.astype(np.int32)
-    lvals = lvals.astype(np.int32)
+    assert len(all_hvals) == len(aidx)
 
     Ivals = []
     hkl_idx = []
-    for a,h in zip(aidx, hvals):
-        for b,k in zip(bidx, kvals):
-            for c,l in zip(cidx, lvals):
-                hkl_idx.append( (h,k,l))
-                val = W[a,b,c] + W[a-1,b,c] + W[a+1,b,c] + \
-                    W[a,b-1,c] + W[a,b+1,c] + W[a,b,c-1] + W[a,b,c+1]
-                Ivals.append(val)
+    for h,k,l,a,b,c in zip(all_hvals, all_kvals, all_lvals, aidx, bidx, cidx):
+        try:
+            val = W[a,b,c] + W[a-1,b,c] + W[a+1,b,c] + \
+                W[a,b-1,c] + W[a,b+1,c] + W[a,b,c-1] + W[a,b,c+1]
+        except IndexError:
+            continue
+        hkl_idx.append( (h,k,l))
+        Ivals.append(val)
 
     return hkl_idx, Ivals
 
 
-def get_W_init(dens_dim, max_q, ndom=20, ucell_p=None):
+def get_W_init(dens_dim, max_q, ndom=20, ucell_p=None, symbol=None):
     """
     Get an initial guess of the density
     :param ndom: number of unit cells along crystal a-axis
@@ -163,28 +220,27 @@ def get_W_init(dens_dim, max_q, ndom=20, ucell_p=None):
          shape is spherical.
     :return: Density estimate
     """
-    if ucell_p is not None:
-        ucell_man = db_utils.manager_from_params(ucell_p)
-        Bmat = np.reshape(ucell_man.B_realspace, (3,3))
-        a1,a2,a3 = Bmat[:,0], Bmat[:,1], Bmat[:,2]
-    else:
-        a1,a2,a3 = sim_const.CRYSTAL.get_real_space_vectors()
-    V = np.dot(a1, np.cross(a2,a3))
-    b1 = np.cross(a2,a3)/V
-    b2 = np.cross(a3,a1)/V
-    b3 = np.cross(a1,a2)/V
+    ucell_p, symbol = ucell_and_symbol(ucell_p, symbol)
+    BO = get_BO_matrix(ucell_p, symbol)
 
-    astar=np.linalg.norm(b1)
-    bstar=np.linalg.norm(b2)
-    cstar=np.linalg.norm(b3)
+    astar, bstar, cstar = np.linalg.norm(np.linalg.inv(BO),axis=0)
+    print(astar, bstar, cstar)
 
     QBINS = np.linspace(-max_q, max_q, dens_dim+1)
     qbin_cent = (QBINS[:-1] +QBINS[1:])*.5
-    qX,qY,qZ = np.meshgrid(qbin_cent,qbin_cent,qbin_cent, indexing='ij')
+    qXYZ = np.array(np.meshgrid(qbin_cent,qbin_cent,qbin_cent, indexing='ij'))
 
-    frac_h = qX / astar
-    frac_k = qY/ bstar
-    frac_l = qZ/ cstar
+    qXYZ = qXYZ.reshape((3,-1))
+    chunksize=1000
+    Wsplit = np.array_split(qXYZ.T, qXYZ.shape[1] / chunksize)
+    all_frac_hkls = []
+    for Wchunk in Wsplit:
+        frac_hkls = np.dot(Wchunk, BO.T).T
+        all_frac_hkls.append(frac_hkls)
+    frac_h, frac_k, frac_l = np.hstack(all_frac_hkls).reshape((3,dens_dim, dens_dim, dens_dim))
+
+    # the above code is equivalent to the following, however the following has sttep RAM requirements, making it usually slow when dens_dim gets large
+    #frac_h, frac_k, frac_l = np.dot(qXYZ.T, BO.T).T
 
     H = np.ceil(frac_h-0.5)
     K = np.ceil(frac_k-0.5)
@@ -198,6 +254,7 @@ def get_W_init(dens_dim, max_q, ndom=20, ucell_p=None):
     del_l = L-frac_l
 
     hkl_rad_sq = na**2*del_h**2 + nb**2*del_k**2 + nc**2*del_l**2
+    print(na,nb,nc)
     W_init = np.exp(-hkl_rad_sq*2/0.63)
 
     return W_init
@@ -223,6 +280,7 @@ def corners_and_deltas(shape, x_min, x_max):
     deltas = deltas.astype(np.float64)
     return corners, deltas
 
+
 def load_quat_file(quat_file):
     """
     Load the data file written by Ti-Yen's quaternion grid sampler
@@ -239,7 +297,6 @@ def load_quat_file(quat_file):
     weights = quat_data[:,4]
 
     return rotMats, weights
-
 
 
 def load_qmap(qmap_file, as_1d=True):
@@ -528,9 +585,28 @@ class RotInds(dict):
 
         return send_to, recv_from
 
+def miller_array_from_integrate_output(h,I, symbol, ucell_p):
+    assert symbol is not None
+    assert ucell_p is not None
+    sym = crystal.symmetry(ucell_p, symbol)
+    cbo = sym.change_of_basis_op_to_primitive_setting()
+    sym_prim = sym.change_basis(cbo)
+    flex_h = flex.miller_index(h)
+    flex_intens = flex.double(I)
+    mset = miller.set(sym_prim, flex_h, True)
+    ma_prim = miller.array(mset, flex_intens).set_observation_type_xray_intensity()
+    ma = ma_prim.change_basis(cbo.inverse())
+    ma_asu = ma.map_to_asu()
+    info = list(zip(ma_asu.indices(), ma_asu.data()))
+    key = lambda x:x[0]
+    gb = groupby( sorted(info, key=key), key=key)
+    gb_data = {key: np.mean([i[1] for i in list(gr)]) for key, gr in gb}
+    new_h = list(gb_data.keys())
+    new_I = list(gb_data.values())
+    return new_h, new_I
 
 def symmetrize(density, dens_dim, max_q, symbol="P43212",
-               reshape=True, how=0, friedel=True):
+               reshape=True, how=0, friedel=True, uc=None):
     """
     :param dens_dim: density dimension along one edge (cubic)
     :param max_q: maximum q at corner of voxel
@@ -540,15 +616,29 @@ def symmetrize(density, dens_dim, max_q, symbol="P43212",
     if how==0:
         if lerpy is None:
             raise ImportError("emc extension module failed to load")
-    sgi = sgtbx.space_group_info(symbol)
-    sg = sgtbx.space_group(sgi.type().hall_symbol())
-    O = sg.all_ops()
+    uc, symbol = ucell_and_symbol(uc, symbol)
+    print("unit cell and symbol:", uc, symbol)
+    BO = get_BO_matrix(uc, symbol)
+
+    crys_sym = crystal.symmetry(uc, symbol)
+    cbo = crys_sym.change_of_basis_op_to_primitive_setting()
+    crys_sym = crys_sym.change_basis(cbo)
+    ucell = crys_sym.unit_cell()
+    #print("unit cell and symbol after change-of-basis:", ucell.parameters(), crys_sym.space_group().info().type().lookup_symbol())
+
+    Orth = sqr(ucell.orthogonalization_matrix())
+    #Orth = sqr(BO.T.ravel())
+    OrthInv = Orth.inverse()
+
+    O = crys_sym.space_group().all_ops()
+    print("Number of symmetry operations: %d" % len(O))
     sym_rot_mats = []
     sym_xyz = []
     for o in O:
         r = o.r()
-        R = np.reshape( r.as_double(), (3,3))
-        sym_rot_mats.append(R)
+        R = sqr(r.as_double())
+        ORO = OrthInv*R*Orth
+        sym_rot_mats.append(np.reshape(ORO, (3,3)))
         sym_xyz.append(r.as_xyz())
     sym_rot_mats = np.array(sym_rot_mats)
 
@@ -579,7 +669,7 @@ def symmetrize(density, dens_dim, max_q, symbol="P43212",
 
         d = L.densities()
         w = L.wts()
-        d = errdiv(d,w)
+        #d = errdiv(d,w)
         if reshape:
             d = d.reshape(dens_sh)
         L.free()
@@ -587,14 +677,15 @@ def symmetrize(density, dens_dim, max_q, symbol="P43212",
         A = np.zeros(dens_sh)
         B = np.zeros(dens_sh)
         for rot in sym_rot_mats:
-            qcoords_rot = np.dot( rot.T, qvecs.T).T
+            qcoords_rot = np.dot(rot.T, qvecs.T).T
             is_inbounds = qs_inbounds(qcoords_rot, dens_sh, xmin, xmax)
             trilinear_insertion(
                 A,B,
                 vectors=np.ascontiguousarray(qcoords_rot[is_inbounds]),
                 insert_vals=density.ravel().astype(np.float64)[is_inbounds],
                 x_min=xmin, x_max=xmax)
-        d = errdiv(A,B)
+        #d = errdiv(A,B)
+        d=A
     else:
         raise NotImplementedError("still working out the kinds of index-based symmetry")
         d = np.zeros_like(density)

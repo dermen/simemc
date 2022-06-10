@@ -4,8 +4,9 @@ from dxtbx.model.crystal import CrystalFactory
 
 
 BEAMSIZE=0.01  # mm, size of beam
-NCELLS_ABC=30,30,40  # mosaic domain size in unit cell lengths
+#NCELLS_ABC=30,30,40  # mosaic domain size in unit cell lengths
 NCELLS_ABC=90,21,24  # mosaic domain size in unit cell lengths
+#NCELLS_ABC=20,20,5.5
 OVERSAMPLE=3  # pixel sub-sampling factor
 MOS_DOMS=1  # makes sim slow if this is high, but used to generate spherical cap profiles (100-500 depending on mos_spread)
 MOS_SPREAD=0  # degrees, angular mosaicity if mos_doms > 1. Larger values require more domains (0.01-0.07 ish)
@@ -88,15 +89,15 @@ UCELL_B=79.1
 UCELL_C=38.4
 HALL='-P 4 2'
 
-UCELL_A = 68
-UCELL_B = 68
-UCELL_C = 104
-HALL='-P 4 2'
+#UCELL_A = 68
+#UCELL_B = 68
+#UCELL_C = 104
+#HALL='-P 4 2'
 
-UCELL_A=40.3
-UCELL_B=180.3
-UCELL_C=142.6
-HALL=' C 2c 2'
+#UCELL_A=40.3
+#UCELL_B=180.3
+#UCELL_C=142.6
+#HALL=' C 2c 2'
 
 _CRYSTAL_DICT={
     '__id__': 'crystal',

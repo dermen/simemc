@@ -47,7 +47,7 @@ class DensityUpdater(Updater):
         temp = np.random.random(self.emc.L.dens_sh)
         # TODO update for arbitrary UCELL
         _, self.relp_mask = utils.whole_punch_W(temp,
-            self.emc.L.dens_dim, self.emc.L.max_q, 1, ucell_p=self.emc.ucell_p)
+            self.emc.L.dens_dim, self.emc.L.max_q, 1, ucell_p=self.emc.ucell_p, symbol=self.emc.symbol)
         vox_res = utils.voxel_resolution(self.emc.L.dens_dim,
             self.emc.L.max_q)
         highRes_limit = 1./self.emc.L.max_q

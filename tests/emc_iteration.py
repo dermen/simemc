@@ -20,6 +20,7 @@ parser.add_argument("--dens_dim", type=int, default=256,help="number of voxels a
 parser.add_argument("--max_q", type=float, default=0.25,help="max q at voxel corner")
 parser.add_argument("--poly", type=float, default=None, help="fwhm percentage for poly spectra")
 parser.add_argument("--quat", type=int, default=70, help="number used as input to quat program")
+parser.add_argument("--noSymmetrize", action="store_true", help="do not expand symmetry during refinement")
 ARGS = parser.parse_args()
 
 import pylab as plt
@@ -179,6 +180,8 @@ def emc_iteration():
                                                               file_prefix=file_prefix)
     else:
         this_ranks_imgs, this_ranks_refls, this_ranks_names = load_images(ARGS.precomputedDir, ARGS.nshot)
+    COMM.barrier()
+    print0("Finished with image loading")
 
     if ARGS.onlyGenImages:
         exit()
@@ -195,10 +198,13 @@ def emc_iteration():
     this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
         hcut=ARGS.hcut, min_pred=ARGS.minpred)
 
+    print0("Getting maximum number of rot inds across all shots")
     max_rot_this_rank= max([len(rots) for rots in this_ranks_prob_rot])
     max_rot = COMM.gather(max_rot_this_rank)
     if COMM.rank==0:
         max_rot = max(max_rot)
+    else:
+        max_rot=None
     max_rot = COMM.bcast(max_rot)
     print0("Max rot inds=%d" % max_rot)
      
@@ -279,7 +285,7 @@ def emc_iteration():
                         density_update_method=ARGS.densityUpdater,
                         ucell_p=ucell_p,
                         shot_names=this_ranks_names,
-                        symmetrize=False,
+                        symmetrize=not ARGS.noSymmetrize,
                         symbol=sym)
 
     # run EMC wrapped in the line profiler

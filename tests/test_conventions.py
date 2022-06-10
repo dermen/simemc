@@ -83,6 +83,8 @@ def _test_conventions(use_hist_method=True, highRes=False):
         W = utils.errdiv(densities, weights)
 
 
+
+
     rotMats = Rotation.random(num_rot_mats).as_matrix()
     rot_idx = 1
     rotMats[rot_idx] = Umat

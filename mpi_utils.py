@@ -463,11 +463,11 @@ class EMC:
         den = self.L.densities()
         if self.symmetrize:
             if COMM.rank==0:
-                den = utils.symmetrize(den, self.L.dens_dim, self.L.max_q, symbol=self.symbol).ravel()
+                den = utils.symmetrize(den, self.L.dens_dim, self.L.max_q, symbol=self.symbol, uc=self.ucell_p).ravel()
             den = COMM.bcast(den)
 
         if self.whole_punch:
-            den,_ = utils.whole_punch_W(den, self.L.dens_dim, self.L.max_q, 1, self.ucell_p)
+            den,_ = utils.whole_punch_W(den, self.L.dens_dim, self.L.max_q, 1, self.ucell_p, symbol=self.symbol)
         self.L.update_density(den)
 
     def prep_for_insertion(self):
@@ -494,7 +494,7 @@ class EMC:
         if COMM.rank==0:
             num_zero = sum(np.array(num_per_shot)==0)
             ave_pos = np.mean(num_per_shot).mean()
-            self.print("Number of shots with 0 finite rot inds= %d. Mean num rot inds=%d for shots with finite rot inds (total shots=%d)" \
+            self.print("Number of shots with 0 finite rot inds= %.2f. Mean num rot inds=%d for shots with finite rot inds (total shots=%d)" \
                        % (num_zero, ave_pos, self.nshot_tot))
 
     def do_emc(self, num_iter):

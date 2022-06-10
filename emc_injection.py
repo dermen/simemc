@@ -3,6 +3,7 @@ import boost_adaptbx.boost.python as bp
 import numpy as np
 
 from simemc import emc
+from cctbx import crystal as cctbx_crystal
 
 from simemc import utils
 
@@ -63,6 +64,26 @@ def add_type_methods(cls):
 @bp.inject_into(emc.probable_orients)
 @add_type_methods
 class _():
+    #def allocate_symmetry_ops(self, symbol, ucell_p):
+    #    """
+    #    copy rotation operators, symmetry operators, and orthogonal matrix to GPU device
+    #    """
+    #    crys_sym = cctbx_crystal.symmetry(ucell_p, symbol)
+    #    sg = crys_sym.space_group()
+    #    rot_mats = []
+    #    trans_vecs = []
+    #    for op in sg.all_ops():
+    #        R = np.reshape(op.r().as_double(), (3,3))
+    #        rot_mats.append(R)
+    #        trans_vecs.append(op.t().as_double())
+    #    rot_mats = np.array(rot_mats)
+    #    trans_vecs = np.array(trans_vecs)
+
+    #    ucell = crys_sym.unit_cell()
+    #    O = np.reshape(ucell.orthogonalization_matrix(), (3,3))
+    #    Oinv = np.linalg.inv(O)
+    #    self._copy_sym_info(rot_mats, trans_vecs, O, Oinv)
+
     def allocate_orientations(self, dev_id, rotMats, maxNumQ):
         """
 

@@ -27,10 +27,8 @@ def random_crystal(rand_state=None):
 
 
 def get_famp():
-    PDB = "4bs7.pdb"
-    PDB = "5uvi.pdb"
-    PDB = "6wqa.pdb"
-    PDB = "5k2d.pdb"
+    PDB = "4bs7.pdb"  # for P43212
+    #PDB = "5k2d.pdb"  # for C2221
     # to retrieve the PDB, run `iotbx.fetch_pdb 4bs7` from cmdline
     if not os.path.exists(PDB):
         raise OSError("Download 4bs7.pdb using `iotbx.fecth_pdb 4bs7`")

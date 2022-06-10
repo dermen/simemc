@@ -51,6 +51,11 @@ class lerpyExt{
             bp::throw_error_already_set();
         }
     }
+
+    //inline void copy_sym_info(int device_id, np::ndarray rot_mats, np::ndarray trans_vecs, np::ndarray O){
+
+    //}
+
     inline void alloc(int device_id, np::ndarray rotations, np::ndarray densities, int maxNumQ,
                       bp::tuple corner, bp::tuple delta, np::ndarray qvecs, int maxNumRotInds,
                       int numDataPix){
@@ -361,6 +366,10 @@ BOOST_PYTHON_MODULE(emc){
         .def("wts",
               &lerpyExt::get_wts,
               "get the density weights")
+        
+        //.def("_copy_sym_info",
+        //      &lerpyExt::copy_sym_info,
+        //      "Copy symmetry operators to the GPU")
 
         .def("free", &lerpyExt::free, "free the gpu")
         
