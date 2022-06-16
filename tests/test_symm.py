@@ -50,7 +50,10 @@ def _test(dens_dim, max_q, friedel=False):
 
     # choose a slice
 
-    idx = 140 if highRes else 281
+    qbins = np.linspace(-max_q, max_q,dens_dim+1)
+    q=0.0244  # peak for lysozyme
+    idx = np.searchsorted(qbins,q)-1
+    print("Looking at index 140")
     img_asu = W_asu[idx]
     img2 = W2[idx]
     ysel = (Y<0)[idx]
