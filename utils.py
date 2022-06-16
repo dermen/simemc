@@ -129,13 +129,12 @@ def whole_punch_W(W, dens_dim, max_q, width=1, ucell_p=None, symbol=None):
 
     QBINS = np.linspace(-max_q, max_q, dens_dim+1)
     QCENT = (QBINS[:-1] +QBINS[1:])*.5  # center of each voxel
-    aidx = [np.argmin(np.abs(QCENT-a)) for a in qa_vals.ravel()]
-    bidx = [np.argmin(np.abs(QCENT-b)) for b in qb_vals.ravel()]
-    cidx = [np.argmin(np.abs(QCENT-c)) for c in qc_vals.ravel()]
+    aidx = np.array([np.argmin(np.abs(QCENT-a)) for a in qa_vals.ravel()])
+    bidx = np.array([np.argmin(np.abs(QCENT-b)) for b in qb_vals.ravel()])
+    cidx = np.array([np.argmin(np.abs(QCENT-c)) for c in qc_vals.ravel()])
 
     Imap = np.zeros((dens_dim, dens_dim, dens_dim),bool)
-    A,B,C = np.meshgrid(aidx, bidx, cidx, indexing='ij')
-    Imap[A,B,C] = True
+    Imap[aidx, bidx, cidx] = True
     Imap = ni.binary_dilation(Imap.astype(bool), iterations=width)
     Imap = Imap.reshape(W.shape)
     return W*Imap, Imap
