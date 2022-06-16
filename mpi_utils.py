@@ -55,7 +55,7 @@ def mpi_load_exp_ref(input_file, maxN=None):
     if maxN is not None:
         exp_names = exp_names[:maxN]
         ref_names = ref_names[:maxN]
-    imgs, refls = [],[]
+    imgs, refls, names = [],[],[]
     for i,(exp_name, ref_name) in enumerate(zip(exp_names, ref_names)):
 
         if i % COMM.size != COMM.rank:
@@ -66,8 +66,9 @@ def mpi_load_exp_ref(input_file, maxN=None):
         refl = flex.reflection_table.from_file(ref_name)
         imgs.append(img)
         refls.append(refl)
+        names.append(exp_name)
         print0f("Done loading image %d / %d" % (i+1, len(exp_names)))
-    return imgs, refls
+    return imgs, refls, names
 
 
 def load_emc_input(input_dirs, dt=None, max_num=None, min_prob_ori=0, max_prob_ori=None):
