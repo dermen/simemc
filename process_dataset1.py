@@ -20,9 +20,10 @@ from simemc.emc import lerpy
 
 
 outdir=sys.argv[1]
-perlmutt = True
-highRes=True
+perlmutt = False
+highRes=False
 ndevice = 4 if perlmutt else 8
+TEST_UCELLS = False
 
 if highRes:
     dens_dim = 512
@@ -40,15 +41,19 @@ else:
     datadir = os.environ["CSCRATCH"] + "/dataset_1"
     quat_file = "/global/cfs/cdirs/lcls/dermen/d9114_sims/CrystalNew/modules/simemc/quatgrid/c-quaternion120.bin"
 
-input_file =    datadir + "/exp_ref.txt"
+#input_file =    datadir + "/exp_ref.txt"
+#input_file =    datadir + "/all.txt"
+input_file =   "small_Caxis_1315.txt" 
+#input_file = "all_short_Caxis_from_probRot_test.txt"
 ref_geom_file = datadir + "/split_0000.expt"
 mask_file =     datadir + "/test_mask.pkl"
 ave_ucell = 68.48, 68.48, 104.38, 90,90,90
+symbol="P43212"
 hcut=0.025
 min_pred=3
 niter=100
 num_radial_bins = 1000
-maxN = 2 #None
+maxN = None
 
 highRes = 1./max_q
 
@@ -64,7 +69,7 @@ assert BEAM is not None
 assert DET is not None
 MASK = db_utils.load_mask(mask_file)
 DEV_ID = COMM.rank % ndevice
-this_ranks_imgs, this_ranks_refls = mpi_utils.mpi_load_exp_ref(input_file, maxN=maxN)
+this_ranks_imgs, this_ranks_refls, this_ranks_names = mpi_utils.mpi_load_exp_ref(input_file, maxN=maxN)
 
 print0 = mpi_utils.print0f
 print0("Creating radial profile maker!")
@@ -89,9 +94,32 @@ for i,R in enumerate(this_ranks_refls):
     assert len(Rsel) >= 3
     this_ranks_refls[i] = Rsel
 
-this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
-                                         Bmat_reference=Brecip, hcut=hcut, min_pred=min_pred,
-                                        verbose=COMM.rank==0, detector=DET,beam=BEAM)
+
+if TEST_UCELLS:
+    ave_ucell1 = 68.48, 68.48, 104.38, 90,90,90
+    ave_ucell2 = 68.17, 68.17, 108.19, 90,90,90
+    all_prob_rot = []
+    for uc in ave_ucell1, ave_ucell2: 
+        ucell_man = db_utils.manager_from_params(uc)
+        Brecip = ucell_man.B_recipspace
+        this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
+                                                 Bmat_reference=Brecip, hcut=hcut, min_pred=min_pred,
+                                                verbose=COMM.rank==0, detector=DET,beam=BEAM)
+        all_prob_rot.append( this_ranks_prob_rot)
+
+
+    preferred_ucell = np.argmax(list(zip([len(p) for p in all_prob_rot[0]], [len(p) for p in all_prob_rot[1]])),axis=1)
+    ucell_info = COMM.gather(list(zip(this_ranks_names, preferred_ucell)))
+    if COMM.rank==0:
+        np.save("ucell_info", ucell_info)
+    COMM.barrier()
+    exit()
+
+else:        
+    this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
+            Bmat_reference=Brecip, hcut=hcut, min_pred=min_pred,
+            verbose=COMM.rank==0, detector=DET,beam=BEAM)
+
 
 n_prob_rot = [len(prob_rots) for prob_rots in this_ranks_prob_rot]
 
@@ -130,7 +158,7 @@ if COMM.rank==0:
     ave_signal_level = np.mean(all_ranks_signal_levels)
 ave_signal_level = COMM.bcast(ave_signal_level)
 # let the initial density estimate be constant gaussians (add noise?)
-Wstart = utils.get_W_init(dens_dim, max_q, ucell_p=ave_ucell)
+Wstart = utils.get_W_init(dens_dim, max_q, ucell_p=ave_ucell, symbol=symbol)
 Wstart /= Wstart.max()
 Wstart *= ave_signal_level
 
@@ -265,7 +293,9 @@ emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
                     refine_scale_factors=True,
                     ave_signal_level=ave_signal_level,
                     scale_update_method="bfgs",
+                    shot_names=this_ranks_names,
                     density_update_method="lbfgs",
+                    symbol=symbol,
                     ucell_p=ave_ucell)
 
 # run emc for specified number of iterations

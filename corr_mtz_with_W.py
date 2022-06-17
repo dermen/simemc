@@ -11,17 +11,21 @@ from pylab import *
 from scipy.stats import spearmanr, pearsonr
 from simemc import utils
 
-highRes=4
+dens_dim=256
+max_q=0.25
+highRes=1/max_q
 CC = pearsonr
+symbol = "P43212"
+ucell_p = 68.48, 68.48, 104.38, 90,90,90
 
 Fmtz = any_reflection_file(args.mtz).as_miller_arrays()[0]
 Fmtz = Fmtz.as_amplitude_array()
 Fmtz = Fmtz.resolution_filter(d_min=highRes)
-ucell_p = Fmtz.unit_cell().parameters()
+#ucell_p = Fmtz.unit_cell().parameters()
 Fmtz_map = {hkl: val for hkl,val in zip(Fmtz.indices(), Fmtz.data())}
 D = Fmtz.d_spacings()
 dspace_map = {hkl:val for hkl, val in zip(D.indices(), D.data())}
-nbin = 20
+nbin = 15
 
 hcommon = None
 wnames = np.array(args.W)
@@ -37,11 +41,14 @@ for wname in wnames:
     try:
         W = h5py.File(wname, "r")['Wprime'][()]
     except OSError:
-        W = np.load(wname)[()].reshape((256,256,256))
+        W = np.load(wname)[()].reshape([dens_dim]*3)
     # TODO store ucell in W
-    h,I = utils.integrate_W(W, ucell_p=ucell_p)
+    h,I = utils.integrate_W(W, dens_dim, max_q, ucell_p, symbol)
     I = np.array(I)
-    assert np.all(I > 0)
+    is_pos = I >0
+    I = I[is_pos]
+    h = np.array(h)[is_pos]
+    #assert np.all(I > 0)
     I = np.sqrt(I)
     dataMap = {hkl:val for hkl,val in zip(list(map(tuple,h)), I)}
     if hcommon is None:
