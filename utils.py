@@ -668,7 +668,7 @@ def symmetrize(density, dens_dim, max_q, symbol="P43212",
 
         d = L.densities()
         w = L.wts()
-        #d = errdiv(d,w)
+        d = errdiv(d,w)
         if reshape:
             d = d.reshape(dens_sh)
         L.free()
