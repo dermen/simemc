@@ -1,3 +1,16 @@
+from argparse import ArgumentParser
+
+parser = ArgumentParser()
+parser.add_argument("outdir", help="name of output folder", type=str)
+parser.add_argument("--perlmutter", action="store_true", help="setup for perlmutter")
+parser.add_argument("--allshots", action="store_true", help="run on all shots")
+parser.add_argument("--allrefls", action="store_true", help="use all reflection to determine probable orientations. DEfault is to just use those refls out to max_q")
+parser.add_argument("--highres", action="store_true", help="use the high resolution setting (max_q=0.5, dens_dim=512). Otherwise use low-res (max_q=0.25, dens_dim=256)")
+parser.add_argument("--hcut", default=0.02, type=float, help="distance from prediction to observed spot, used in determining probably orientaitons")
+parser.add_argument('--min_pred', default=4, type=int, help="minimum number of spots that must be within hcut of a prediction in order for an orientation to be deemed probable")
+parser.add_argument("--restartfile", help="density file output by a previous run, e.g. Witer10.h5", default=None, type=str)
+args = parser.parse_args()
+
 
 import sys
 import os
@@ -6,6 +19,7 @@ from copy import deepcopy
 COMM = MPI.COMM_WORLD
 
 import numpy as np
+import h5py
 from scipy.ndimage import median_filter as mf
 from dials.array_family import flex
 import time
@@ -20,8 +34,8 @@ from simemc.emc import lerpy
 
 
 outdir=sys.argv[1]
-perlmutt = False
-highRes=False
+perlmutt = args.perlmutter
+highRes=args.highres
 ndevice = 4 if perlmutt else 8
 TEST_UCELLS = False
 
@@ -41,20 +55,23 @@ else:
     datadir = os.environ["CSCRATCH"] + "/dataset_1"
     quat_file = "/global/cfs/cdirs/lcls/dermen/d9114_sims/CrystalNew/modules/simemc/quatgrid/c-quaternion120.bin"
 
-#input_file =    datadir + "/exp_ref.txt"
-#input_file =    datadir + "/all.txt"
-input_file =   "small_Caxis_1315.txt" 
-#input_file = "all_short_Caxis_from_probRot_test.txt"
+USE_RSEL= not args.allrefls
+if args.allshots:
+    input_file = "all_short_Caxis_from_probRot_test.txt"
+else:
+    input_file = "small_Caxis_1315.txt" 
+
+
+start_file = args.restartfile
 ref_geom_file = datadir + "/split_0000.expt"
 mask_file =     datadir + "/test_mask.pkl"
 ave_ucell = 68.48, 68.48, 104.38, 90,90,90
 symbol="P43212"
-hcut=0.025
-min_pred=3
+hcut=args.hcut
+min_pred=args.min_pred
 niter=100
 num_radial_bins = 1000
 maxN = None
-
 highRes = 1./max_q
 
 mpi_utils.make_dir(outdir)
@@ -90,9 +107,12 @@ for i,R in enumerate(this_ranks_refls):
     Q = db_utils.refls_to_q(R, DET, BEAM)
     dspace = 1 / np.linalg.norm(Q, axis=1)
     sel = flex.bool(dspace >= highRes)
-    Rsel = R.select(sel)
-    assert len(Rsel) >= 3
-    this_ranks_refls[i] = Rsel
+    if USE_RSEL:
+        Rsel = R.select(sel)
+        assert len(Rsel) >= 3
+        this_ranks_refls[i] = Rsel
+    else:
+        this_ranks_refls[i] = R
 
 
 if TEST_UCELLS:
@@ -161,6 +181,9 @@ ave_signal_level = COMM.bcast(ave_signal_level)
 Wstart = utils.get_W_init(dens_dim, max_q, ucell_p=ave_ucell, symbol=symbol)
 Wstart /= Wstart.max()
 Wstart *= ave_signal_level
+
+if start_file is not None:
+    Wstart = h5py.File(start_file, 'r')["Wprime"][()]
 
 # get the emc trilerp instance
 qmap = utils.calc_qmap(DET, BEAM)
