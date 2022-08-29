@@ -1,5 +1,5 @@
 from argparse import ArgumentParser
-
+exit()
 parser = ArgumentParser()
 parser.add_argument("outdir", help="name of output folder", type=str)
 parser.add_argument("--perlmutter", action="store_true", help="setup for perlmutter")
@@ -64,7 +64,7 @@ else:
 
 start_file = args.restartfile
 ref_geom_file = datadir + "/split_0000.expt"
-mask_file =     datadir + "/test_mask.pkl"
+mask_file = datadir + "/test_mask.pkl"
 ave_ucell = 68.48, 68.48, 104.38, 90,90,90
 symbol="P43212"
 hcut=args.hcut
@@ -86,7 +86,7 @@ assert BEAM is not None
 assert DET is not None
 MASK = db_utils.load_mask(mask_file)
 DEV_ID = COMM.rank % ndevice
-this_ranks_imgs, this_ranks_refls, this_ranks_names = mpi_utils.mpi_load_exp_ref(input_file, maxN=maxN)
+this_ranks_imgs, this_ranks_refls, this_ranks_names, this_ranks_crystals = mpi_utils.mpi_load_exp_ref(input_file, maxN=maxN)
 
 print0 = mpi_utils.print0f
 print0("Creating radial profile maker!")
@@ -102,6 +102,10 @@ for i_img in range(len(this_ranks_imgs)):
     this_ranks_imgs[i_img] *= correction
 
 rots, wts = utils.load_quat_file(quat_file)
+if np.any([C is not None for C in this_ranks_crystals]):
+    extra_rots = [np.reshape(C.get_U(), (3,3)) for C in this_ranks_crystals if C is not None]
+    rots = np.append(rots, extra_rots, axis=0)
+    wts = np.append(wts, np.ones(len(extra_rots)) * np.mean(wts))
 
 for i,R in enumerate(this_ranks_refls):
     Q = db_utils.refls_to_q(R, DET, BEAM)

@@ -4,6 +4,7 @@ import time
 from simemc import utils
 from scipy.stats import pearsonr
 import pytest
+from pylab import *
 
 
 @pytest.mark.mpi_skip()
@@ -40,11 +41,11 @@ def _test(dens_dim, max_q, friedel=False):
     W_asu[~sel] = 0
 
     t = time.time()
-    W2 = utils.symmetrize(W_asu, dens_dim, max_q,how=0, uc=uc, symbol=symbol, friedel=friedel)
+    Wsym = utils.symmetrize(W_asu, dens_dim, max_q,how=0, uc=uc, symbol=symbol, friedel=friedel)
     t2 = time.time()-t
     t = time.time()
     #W3 = utils.symmetrize(W_asu,dens_dim, max_q,how=1, uc=uc, symbol=symbol, friedel=friedel)
-    #assert np.allclose(W2, W3)
+    #assert np.allclose(Wsym, W3)
     t3 = time.time()-t
     print("cuda %.4f sec, cpu=%.4f sec" % (t2,t3))
 
@@ -53,15 +54,23 @@ def _test(dens_dim, max_q, friedel=False):
     qbins = np.linspace(-max_q, max_q,dens_dim+1)
     q=0.0244  # peak for lysozyme
     idx = np.searchsorted(qbins,q)-1
-    print("Looking at index 140")
+    print("Looking at index %d" % idx)
+
+
     img_asu = W_asu[idx]
-    img2 = W2[idx]
+    img_sym = Wsym[idx]
     ysel = (Y<0)[idx]
     xsel = (X<0)[idx]
 
-    img2_rot180 = np.rot90(img2*(ysel*xsel),k=2)
-    cc = pearsonr(img_asu.ravel(), img2_rot180.ravel())[0]
-    #from IPython import embed;embed()
+    img_sym_rot180 = np.rot90(img_sym*(ysel*xsel),k=2)
+    cc = pearsonr(img_asu.ravel(), img_sym_rot180.ravel())[0]
+    Y= slice(195,215,1)
+    X = slice(125,165,1)
+    #subplot(211)
+    #imshow(img_sym_rot180[Y,X], vmax=5e-27, vmin=0)
+    #subplot(212)
+    #imshow(img_asu[Y,X], vmax=5e-27, vmin=0)
+    #show()
     assert cc >0.9
 
     print("OK")

@@ -13,7 +13,7 @@ parser.add_argument("--xtalsize", type=float, default=0.002, help="size of the c
 parser.add_argument("--nowater", action="store_true", help="dont add water background")
 parser.add_argument("--onlyGenImages", action="store_true", help="exit after simulating images")
 parser.add_argument("--precomputedDir", default=None, type=str, help="load simulated images and refl tables from the outdir")
-parser.add_argument("--startingDen", default=None, type=str, help="Path to a Witer%d.h5 file (output from previous run)")
+parser.add_argument("--startingDen", default=None, type=str, help="Path to a WiterX.h5 file (output from previous run)")
 parser.add_argument("--densityUpdater", type=str, default="lbfgs", choices=["lbfgs", "line_search", "analytical"],
                     help="the method for updating the density between iterations")
 parser.add_argument("--dens_dim", type=int, default=256,help="number of voxels along cubic density edge")
@@ -21,6 +21,7 @@ parser.add_argument("--max_q", type=float, default=0.25,help="max q at voxel cor
 parser.add_argument("--poly", type=float, default=None, help="fwhm percentage for poly spectra")
 parser.add_argument("--quat", type=int, default=70, help="number used as input to quat program")
 parser.add_argument("--noSymmetrize", action="store_true", help="do not expand symmetry during refinement")
+parser.add_argument("--useGTRots", action="store_true", help="use ground truth rotation matrices")
 ARGS = parser.parse_args()
 
 import pylab as plt
@@ -28,8 +29,6 @@ import numpy as np
 import os
 from line_profiler import LineProfiler
 import inspect
-from simtbx.diffBragg import utils as db_utils
-import time
 import glob
 import h5py
 from simemc import emc_updaters
@@ -57,6 +56,7 @@ def load_images(filedir, n=-1):
     this_ranks_imgs = []
     this_ranks_refls = []
     this_ranks_names = []
+    gt_rots = []
     filenames = glob.glob(filedir + "/*.h5")
 
     # first make sure all refls exist:
@@ -66,14 +66,16 @@ def load_images(filedir, n=-1):
         h5name = f
         refname = f.replace(".h5", ".refl")
         img = h5py.File(h5name, "r")["image"][()]
+        Umat = h5py.File(h5name, 'r')["Umat"][()]
         this_ranks_imgs.append(img)
         R = flex.reflection_table.from_file(refname)
         this_ranks_refls.append(R)
         this_ranks_names.append(f)
+        gt_rots.append(Umat)
         printR("Loaded shot %s (%d/%d)" % (h5name, i_f, len(filenames)))
         if len(this_ranks_imgs) == n:
             break
-    return this_ranks_imgs, this_ranks_refls, this_ranks_names
+    return this_ranks_imgs, this_ranks_refls, this_ranks_names, gt_rots
 
 
 def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
@@ -90,6 +92,7 @@ def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
     if ARGS.nowater:
         water *= 0
 
+    gt_rot_mats = []
     for i_shot in range(nshot):
         num_ref = 0
         while num_ref < MIN_REF_PER_SHOT:
@@ -107,15 +110,18 @@ def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
             print0("Shot %d / %d on device %d simulated with %d refls (%d required to proceed)"
                    % (i_shot+1, nshot, dev_id, num_ref, MIN_REF_PER_SHOT), flush=True)
 
+        ground_truth_U = C.get_U()
         R.as_file(file_prefix+ "_%d.refl" % i_shot)
         # store an h5 for optional quick reloading with method load_images (h5s load faster than cbfs)
         with h5py.File(file_prefix + "_%d.h5"% i_shot, "w") as h:
             h.create_dataset("image", data=img)
+            h.create_dataset("Umat", data=ground_truth_U)
+        gt_rot_mats.append(ground_truth_U)
         this_ranks_imgs.append(img)
         this_ranks_refls.append(R)
         this_ranks_names.append(file_prefix)
     sim_utils.delete_noise_sim(SIM)
-    return this_ranks_imgs, this_ranks_refls, this_ranks_names
+    return this_ranks_imgs, this_ranks_refls, this_ranks_names, gt_rot_mats
 
 
 
@@ -130,12 +136,16 @@ def get_rad_pro_maker(num_radial_bins=500):
     return radProMaker
 
 
-def load_rotation_samples():
+def load_rotation_samples(extra_rot_mats=None):
     quat_file = os.path.join(os.path.dirname(__file__), "../quatgrid/c-quaternion%d.bin" % ARGS.quat)
     if not os.path.exists(quat_file):
         raise OSError("Please generate the quaternion file %s  with `./quat -bin 70`" % quat_file)
     rots, wts = utils.load_quat_file(quat_file)
     rots = rots.astype(np.float32)
+    if extra_rot_mats is not None:
+        wts = np.hstack( (wts, np.ones(len(extra_rot_mats))*np.mean(wts)))
+        new_u = [np.reshape(r, (3, 3)) for r in extra_rot_mats]
+        rots = np.append(rots, new_u, axis=0)
     return rots, wts
 
 
@@ -176,10 +186,10 @@ def emc_iteration():
 
     file_prefix=os.path.join(cbfdir, "rank%d_shot"% COMM.rank)
     if ARGS.precomputedDir is None:
-        this_ranks_imgs, this_ranks_refls, this_ranks_names = generate_n_images(ARGS.nshot, COMM.rank, DEV_ID, ARGS.xtalsize, ARGS.phil,
+        this_ranks_imgs, this_ranks_refls, this_ranks_names, gt_rots = generate_n_images(ARGS.nshot, COMM.rank, DEV_ID, ARGS.xtalsize, ARGS.phil,
                                                               file_prefix=file_prefix)
     else:
-        this_ranks_imgs, this_ranks_refls, this_ranks_names = load_images(ARGS.precomputedDir, ARGS.nshot)
+        this_ranks_imgs, this_ranks_refls, this_ranks_names, gt_rots = load_images(ARGS.precomputedDir, ARGS.nshot)
     COMM.barrier()
     print0("Finished with image loading")
 
@@ -194,7 +204,10 @@ def emc_iteration():
         this_ranks_imgs[i_img] *= correction
 
     # probable orientations list per image
-    rots, wts = load_rotation_samples()
+    extra_rot_mats = None
+    if ARGS.useGTRots:
+        extra_rot_mats=gt_rots
+    rots, wts = load_rotation_samples(extra_rot_mats=extra_rot_mats)
     this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
         hcut=ARGS.hcut, min_pred=ARGS.minpred)
 
