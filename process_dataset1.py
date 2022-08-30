@@ -1,22 +1,35 @@
+
+from mpi4py import MPI
+COMM = MPI.COMM_WORLD
+
 from argparse import ArgumentParser
-exit()
-parser = ArgumentParser()
-parser.add_argument("outdir", help="name of output folder", type=str)
-parser.add_argument("--perlmutter", action="store_true", help="setup for perlmutter")
-parser.add_argument("--allshots", action="store_true", help="run on all shots")
-parser.add_argument("--allrefls", action="store_true", help="use all reflection to determine probable orientations. DEfault is to just use those refls out to max_q")
-parser.add_argument("--highres", action="store_true", help="use the high resolution setting (max_q=0.5, dens_dim=512). Otherwise use low-res (max_q=0.25, dens_dim=256)")
-parser.add_argument("--hcut", default=0.02, type=float, help="distance from prediction to observed spot, used in determining probably orientaitons")
-parser.add_argument('--min_pred', default=4, type=int, help="minimum number of spots that must be within hcut of a prediction in order for an orientation to be deemed probable")
-parser.add_argument("--restartfile", help="density file output by a previous run, e.g. Witer10.h5", default=None, type=str)
-args = parser.parse_args()
+if COMM.rank==0:
+    parser = ArgumentParser()
+    parser.add_argument("input", type=str, help="exp ref file (see utils.make_exp_ref_spec_file)")
+    parser.add_argument("mask", type=str, help="path to a dials mask (pickle) file")
+    parser.add_argument("geom", type=str, help="path to a dxtbx Experiment list containing accurate detector model")
+    parser.add_argument("quat", type=str, help="path to the quaternion file (see simemc/quatgrid/README)")
+    parser.add_argument("outdir", help="name of output folder", type=str)
+    parser.add_argument("--ndev", type=int, default=1)
+    parser.add_argument("--even", action="store_true", help="read in data from even line numbers in args.input file")
+    parser.add_argument("--odd", action="store_true", help="read in data from odd line numbers in args.input file")
+    parser.add_argument("--allrefls", action="store_true", help="use all reflection to determine probable orientations. DEfault is to just use those refls out to max_q")
+    parser.add_argument("--highres", action="store_true", help="use the high resolution setting (max_q=0.5, dens_dim=512). Otherwise use low-res (max_q=0.25, dens_dim=256)")
+    parser.add_argument("--hcut", default=0.02, type=float, help="distance from prediction to observed spot, used in determining probably orientaitons")
+    parser.add_argument("--medFilt", type=int, default=8)
+    parser.add_argument('--minPred', default=4, type=int, help="minimum number of spots that must be within hcut of a prediction in order for an orientation to be deemed probable")
+    parser.add_argument("--restartfile", help="density file output by a previous run, e.g. Witer10.h5", default=None, type=str)
+    parser.add_argument("--maxProc", default=None, type=int, help="only read this many shots from args.input file")
+    parser.add_argument("--useCrystals", action="store_true", help="if experiments in args.expt contain crystal models, use those as probable orientations")
+    args = parser.parse_args()
+else:
+    args = None
+
+args = COMM.bcast(args)
 
 
 import sys
 import os
-from mpi4py import MPI
-from copy import deepcopy
-COMM = MPI.COMM_WORLD
 
 import numpy as np
 import h5py
@@ -24,8 +37,6 @@ from scipy.ndimage import median_filter as mf
 from dials.array_family import flex
 import time
 
-from simtbx.modeling.forward_models import diffBragg_forward
-from dxtbx.model import Crystal
 from simemc import mpi_utils, utils
 from simemc.compute_radials import RadPros
 from simtbx.diffBragg import utils as db_utils
@@ -33,10 +44,8 @@ from dxtbx.model import ExperimentList
 from simemc.emc import lerpy
 
 
-outdir=sys.argv[1]
-perlmutt = args.perlmutter
 highRes=args.highres
-ndevice = 4 if perlmutt else 8
+ndevice = args.ndev
 TEST_UCELLS = False
 
 if highRes:
@@ -47,34 +56,23 @@ else:
     max_q=0.25
 
 
-mf_filter_sh=8,8
-if perlmutt:
-    datadir = os.environ["SCRATCH"] + "/dataset_1"
-    quat_file = "/global/cfs/cdirs/lcls/dermen/lyso/alcc-recipes/cctbx/modules/simemc/quatgrid/c-quaternion120.bin"
-else:
-    datadir = os.environ["CSCRATCH"] + "/dataset_1"
-    quat_file = "/global/cfs/cdirs/lcls/dermen/d9114_sims/CrystalNew/modules/simemc/quatgrid/c-quaternion120.bin"
+mf_filter_sh= args.medFilt, args.medFilt
 
 USE_RSEL= not args.allrefls
-if args.allshots:
-    input_file = "all_short_Caxis_from_probRot_test.txt"
-else:
-    input_file = "small_Caxis_1315.txt" 
 
 
-start_file = args.restartfile
-ref_geom_file = datadir + "/split_0000.expt"
-mask_file = datadir + "/test_mask.pkl"
+ref_geom_file = args.geom
+mask_file = args.mask
 ave_ucell = 68.48, 68.48, 104.38, 90,90,90
 symbol="P43212"
-hcut=args.hcut
-min_pred=args.min_pred
 niter=100
 num_radial_bins = 1000
-maxN = None
 highRes = 1./max_q
 
-mpi_utils.make_dir(outdir)
+mpi_utils.make_dir(args.outdir)
+if COMM.rank==0:
+    with open(os.path.join(args.outdir, "command_line_input.txt"), "w") as o:
+        o.write("Command line input:\n %s\n" % " ".join(sys.argv))
 
 ucell_man = db_utils.manager_from_params(ave_ucell)
 Brecip = ucell_man.B_recipspace
@@ -86,7 +84,7 @@ assert BEAM is not None
 assert DET is not None
 MASK = db_utils.load_mask(mask_file)
 DEV_ID = COMM.rank % ndevice
-this_ranks_imgs, this_ranks_refls, this_ranks_names, this_ranks_crystals = mpi_utils.mpi_load_exp_ref(input_file, maxN=maxN)
+this_ranks_imgs, this_ranks_refls, this_ranks_names, this_ranks_crystals = mpi_utils.mpi_load_exp_ref(args.input, maxN=args.maxProc, even=args.even, odd=args.odd)
 
 print0 = mpi_utils.print0f
 print0("Creating radial profile maker!")
@@ -101,8 +99,9 @@ correction /= correction.mean()
 for i_img in range(len(this_ranks_imgs)):
     this_ranks_imgs[i_img] *= correction
 
-rots, wts = utils.load_quat_file(quat_file)
-if np.any([C is not None for C in this_ranks_crystals]):
+rots, wts = utils.load_quat_file(args.quat)
+
+if args.useCrystals and np.any([C is not None for C in this_ranks_crystals]):
     extra_rots = [np.reshape(C.get_U(), (3,3)) for C in this_ranks_crystals if C is not None]
     rots = np.append(rots, extra_rots, axis=0)
     wts = np.append(wts, np.ones(len(extra_rots)) * np.mean(wts))
@@ -127,10 +126,9 @@ if TEST_UCELLS:
         ucell_man = db_utils.manager_from_params(uc)
         Brecip = ucell_man.B_recipspace
         this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
-                                                 Bmat_reference=Brecip, hcut=hcut, min_pred=min_pred,
+                                                 Bmat_reference=Brecip, hcut=args.hcut, min_pred=args.minPred,
                                                 verbose=COMM.rank==0, detector=DET,beam=BEAM)
         all_prob_rot.append( this_ranks_prob_rot)
-
 
     preferred_ucell = np.argmax(list(zip([len(p) for p in all_prob_rot[0]], [len(p) for p in all_prob_rot[1]])),axis=1)
     ucell_info = COMM.gather(list(zip(this_ranks_names, preferred_ucell)))
@@ -141,9 +139,14 @@ if TEST_UCELLS:
 
 else:        
     this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
-            Bmat_reference=Brecip, hcut=hcut, min_pred=min_pred,
-            verbose=COMM.rank==0, detector=DET,beam=BEAM)
+            Bmat_reference=Brecip, hcut=args.hcut, min_pred=args.minPred,
+            verbose=COMM.rank==0, detector=DET,beam=BEAM, hcut_incr=0.0025)
 
+has_no_rots = [len(prob_rots)==0 for prob_rots in this_ranks_prob_rot]
+has_no_rots = COMM.reduce(has_no_rots)
+if COMM.rank==0:
+    n_with_no_rots = sum(has_no_rots)
+    print0("Shots with 0 prob rots=%d" % n_with_no_rots)
 
 n_prob_rot = [len(prob_rots) for prob_rots in this_ranks_prob_rot]
 
@@ -163,6 +166,7 @@ for i_img, (img, R) in enumerate(zip(this_ranks_imgs, this_ranks_refls)):
     bg = mf(img_filled[0], mf_filter_sh)
 
     this_ranks_bgs.append(np.array([bg]))
+    #from IPython import embed;embed()
     t = time.time()-t
 
     signal_level = utils.signal_level_of_image(R, img)
@@ -186,8 +190,8 @@ Wstart = utils.get_W_init(dens_dim, max_q, ucell_p=ave_ucell, symbol=symbol)
 Wstart /= Wstart.max()
 Wstart *= ave_signal_level
 
-if start_file is not None:
-    Wstart = h5py.File(start_file, 'r')["Wprime"][()]
+if args.restartfile is not None:
+    Wstart = h5py.File(args.restartfile, 'r')["Wprime"][()]
 
 # get the emc trilerp instance
 qmap = utils.calc_qmap(DET, BEAM)
@@ -225,7 +229,7 @@ L.toggle_insert()
 L.update_density(Wstart)
 L.dens_dim=dens_dim
 if COMM.rank==0:
-    np.save(os.path.join(outdir, "Starting_density_relp"), Wstart)
+    np.save(os.path.join(args.outdir, "Starting_density_relp"), Wstart)
 
 init_shot_scales = np.ones(len(this_ranks_imgs))
 
@@ -314,7 +318,7 @@ emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
                     shot_mask=SHOT_MASK,
                     shot_background=this_ranks_bgs,
                     min_p=1e-5,
-                    outdir=outdir,
+                    outdir=args.outdir,
                     beta=1,
                     shot_scales=init_shot_scales,
                     refine_scale_factors=True,

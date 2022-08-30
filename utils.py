@@ -27,7 +27,7 @@ except ImportError:
     lerpy = None
     probable_orients = None
 from simemc import const
-from reborn.misc.interpolate import trilinear_insertion, trilinear_interpolation
+#from reborn.misc.interpolate import trilinear_insertion, trilinear_interpolation
 from cctbx import sgtbx
 from scipy import ndimage as ni
 from dials.algorithms.spot_finding.factory import FilterRunner
@@ -945,20 +945,39 @@ def signal_level_of_image(R, img):
     return signal_level
 
 
-def get_prob_rots_per_shot(O, R, hcut, min_pred, detector=None, beam=None):
+def get_prob_rots_per_shot(O, R, hcut, min_pred,
+                           detector=None, beam=None, hcut_incr=None):
+    """
+
+    :param O:
+    :param R: reflection table
+    :param hcut:
+    :param min_pred: min number of strong spots that must be mapped to predictions in order for rotation to be considered probable
+    :param detector:  dxtbx detectormodel
+    :param beam:  dxtbx beam model
+    :param hcut_incr: if provided, always increase hcut by this amount whenever number of prob rots is 0
+    :return:
+    """
     if detector is None:
         detector = sim_const.DETECTOR
     if beam is None:
         beam = sim_const.BEAM
     qvecs = db_utils.refls_to_q(R, detector, beam)
     qvecs = qvecs.astype(O.array_type)
-    prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
+    if hcut_incr is not None:
+        num_rot = 0
+        while num_rot==0:
+            prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
+            num_rot = len(prob_rot)
+            hcut = hcut + hcut_incr
+    else:
+        prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
     return prob_rot
 
 
 def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=None,
                  max_num_strong_spots=1000, hcut=0.1, min_pred=3, verbose=True,
-                detector=None,beam=None):
+                detector=None,beam=None, hcut_incr=None):
     if probable_orients is None:
         print("probable_orients failed to import")
         return
@@ -968,10 +987,10 @@ def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=N
         O.Bmatrix = sim_const.CRYSTAL.get_B()
     else:
         O.Bmatrix = Bmat_reference.elems
-    prob_rots_per_shot =[]
+    prob_rots_per_shot = []
     for i_img, R in enumerate(list_of_refl_tables):
         t = time.time()
-        prob_rot = get_prob_rots_per_shot(O, R, hcut, min_pred, detector, beam)
+        prob_rot = get_prob_rots_per_shot(O, R, hcut, min_pred, detector, beam, hcut_incr=hcut_incr)
         prob_rots_per_shot.append(prob_rot)
         if verbose:
             print("%d probable rots on shot %d / %d with %d strongs (%f sec)"

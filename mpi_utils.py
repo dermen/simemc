@@ -15,7 +15,6 @@ from simemc.sim_const import CRYSTAL
 
 from dxtbx.model import ExperimentList
 from simtbx.diffBragg.utils import image_data_from_expt
-import pylab as plt
 
 from simemc.compute_radials import RadPros
 import logging
@@ -50,11 +49,17 @@ def make_dir(dirname):
     COMM.barrier()
 
 
-def mpi_load_exp_ref(input_file, maxN=None):
+def mpi_load_exp_ref(input_file, maxN=None, odd=False, even=False):
     exp_names, ref_names = utils.load_expt_refl_file(input_file)
     if maxN is not None:
         exp_names = exp_names[:maxN]
         ref_names = ref_names[:maxN]
+    if odd or even:
+        assert not (odd and even)
+        start = 1 if odd else 0
+        exp_names = exp_names[start::2]
+        ref_names = ref_names[start::2]
+
     imgs, refls, names, crystals = [],[],[],[]
     for i,(exp_name, ref_name) in enumerate(zip(exp_names, ref_names)):
 
@@ -351,11 +356,8 @@ class EMC:
         if outdir is not None:
             make_dir(outdir)
             if COMM.rank==0:
-                plt.figure(1)
-                self.ax = plt.gca()
                 init_density_file = os.path.join(self.outdir, "Winit.h5")
                 self.save_h5(init_density_file)
-            #self.plot_models(init=True)
 
     def add_records(self):
         for i_rot, rot_ind in enumerate(self.prob_rots[self.i_shot]):
@@ -556,8 +558,6 @@ class EMC:
             t = time.time()-t
             iter_times.append(t)
             self.ave_time_per_iter = np.mean(iter_times)
-            #if self.i_emc % self.save_model_freq==0 or self.i_emc==num_iter:
-            #   self.plot_models()
 
     def log_R_dr(self, deriv=False):
         shot_log_R_dr = []
@@ -690,49 +690,6 @@ class EMC:
             print0("[ EmcStep%d ] SUCCESS RATE: %d/%d (%.2f %%); Wresid=%f" % (self.i_emc, nsuccess , self.nshot_tot, success_rate, wresid))
         if return_models:
             return models
-
-    def plot_models(self, init=False, pid=0):
-        """
-        currently unused, plot some of the models, compare with data
-        :param init:
-        :param pid:
-        :return:
-        """
-        # TODO: generalize to Npanel ?
-        self.print("Plotting models")
-        models = self.success_rate(init=init, return_models=True)
-        if self.outdir is None:
-            return
-        fig, axs = plt.subplots(nrows=2, ncols=4)
-        fig.set_size_inches((9.81,4.8))
-        N = min(4, self.nshots)
-        for i in range(N):
-            mod_img = models[i].reshape(self.img_sh)[pid]
-            dat_img = self.shots[i].reshape(self.img_sh)[pid]
-            imgs = mod_img, dat_img
-
-            img_ax = axs[0,i], axs[1,i]
-            for ax,img in zip(img_ax, imgs):
-                m = img.mean()
-                s = img.std()
-                ax.imshow(img, vmin=m-s, vmax=m+s)
-
-                ax.set_xticklabels([])
-                ax.set_yticklabels([])
-                ax.tick_params(length=0)
-                ax.grid(ls='--', lw=0.75)
-                ax.set_aspect('auto')
-            axs[0,0].set_ylabel("models")
-            axs[1,0].set_ylabel("data")
-
-        if init:
-            figname = os.path.join(self.outdir, "model_agreement_init_rank%d.png" % COMM.rank )
-            plt.suptitle("model versus data (init)")
-        else:
-            figname = os.path.join(self.outdir, "model_agreement_iter%d_rank%d.png" % (self.i_emc+1, COMM.rank) )
-            plt.suptitle("model versus data (iter=%d)" % (self.i_emc+1))
-        plt.savefig(figname)
-
 
 
 
