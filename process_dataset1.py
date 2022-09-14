@@ -21,12 +21,13 @@ if COMM.rank==0:
     parser.add_argument("--restartfile", help="density file output by a previous run, e.g. Witer10.h5", default=None, type=str)
     parser.add_argument("--maxProc", default=None, type=int, help="only read this many shots from args.input file")
     parser.add_argument("--useCrystals", action="store_true", help="if experiments in args.expt contain crystal models, use those as probable orientations")
+    parser.add_argument("--saveBg", action="store_true", help="write background images to disk( will be used upon restart)")
+    parser.add_argument("--useSavedBg", action="store_true")
     args = parser.parse_args()
 else:
     args = None
 
 args = COMM.bcast(args)
-
 
 import sys
 import os
@@ -52,7 +53,7 @@ if highRes:
     dens_dim = 512
     max_q = 0.5
 else:
-    dens_dim=256
+    dens_dim=401
     max_q=0.25
 
 
@@ -63,7 +64,7 @@ USE_RSEL= not args.allrefls
 
 ref_geom_file = args.geom
 mask_file = args.mask
-ave_ucell = 68.48, 68.48, 104.38, 90,90,90
+ave_ucell = 68.5, 68.5, 104.4, 90,90,90
 symbol="P43212"
 niter=100
 num_radial_bins = 1000
@@ -103,6 +104,24 @@ rots, wts = utils.load_quat_file(args.quat)
 
 if args.useCrystals and np.any([C is not None for C in this_ranks_crystals]):
     extra_rots = [np.reshape(C.get_U(), (3,3)) for C in this_ranks_crystals if C is not None]
+    extra_rots = COMM.gather(extra_rots)
+    this_ranks_gt_inds = []
+    all_req = []
+    if COMM.rank==0:
+        n = rots.shape[0]
+        for i_rank, more_rots in enumerate(extra_rots):
+            nmore = len(more_rots)
+            inds = np.arange(n, n+nmore)
+            n += nmore
+            req = COMM.isend(inds, dest=i_rank, tag=i_rank)
+            all_req.append(req)
+        extra_rots = np.concatenate(extra_rots)
+    extra_rots = COMM.bcast(extra_rots)
+
+    this_ranks_gt_inds = COMM.recv(source=0, tag=COMM.rank)
+    for req in all_req:
+        req.wait()
+
     rots = np.append(rots, extra_rots, axis=0)
     wts = np.append(wts, np.ones(len(extra_rots)) * np.mean(wts))
 
@@ -150,11 +169,8 @@ if COMM.rank==0:
 
 n_prob_rot = [len(prob_rots) for prob_rots in this_ranks_prob_rot]
 
-# fit background to each image; estimate signal level per image
-this_ranks_bgs = []
-this_ranks_signal_levels = []
-for i_img, (img, R) in enumerate(zip(this_ranks_imgs, this_ranks_refls)):
-    t = time.time()
+
+def background_fit(img, R, radProMaker):
     radial_pro, bg_mask = radProMaker.makeRadPro(
         data_pixels=img,
         strong_refl=R,
@@ -164,9 +180,22 @@ for i_img, (img, R) in enumerate(zip(this_ranks_imgs, this_ranks_refls)):
     img_filled = img.copy()
     img_filled[~bg_mask] = img_background[~bg_mask]
     bg = mf(img_filled[0], mf_filter_sh)
+    return bg
 
-    this_ranks_bgs.append(np.array([bg]))
-    #from IPython import embed;embed()
+
+
+# fit background to each image; estimate signal level per image
+this_ranks_bgs = []
+this_ranks_signal_levels = []
+for i_img, (img,name, R) in enumerate(zip(this_ranks_imgs, this_ranks_names, this_ranks_refls)):
+    t = time.time()
+    h5name = os.path.splitext(name)[0]+"_background.h5"
+    if os.path.exists(h5name) and args.useSavedBg:
+        with h5py.File(h5name,"r") as h5:
+            bg = h5["bg"][()]
+    else:
+        bg = np.array([background_fit(img, R, radProMaker)])
+    this_ranks_bgs.append(bg)
     t = time.time()-t
 
     signal_level = utils.signal_level_of_image(R, img)
@@ -180,18 +209,19 @@ for i_img, (img, R) in enumerate(zip(this_ranks_imgs, this_ranks_refls)):
     print0("Done with background image %d / %d (Took %f sec to fit bg) (signal=%f, bg_sig=%f)" % (i_img+1, len(this_ranks_imgs), t, signal_level, bg_signal_level))
 
 
+for img,bg,name in zip(this_ranks_imgs, this_ranks_bgs, this_ranks_names):
+    h5name = os.path.splitext(name)[0] +"_background.h5"
+    if args.saveBg:
+        with h5py.File(h5name, "w") as h5:
+            h5.create_dataset("bg", data=bg)
+            h5.create_dataset("img", data=img)
+
 all_ranks_signal_levels = COMM.reduce(this_ranks_signal_levels)
 ave_signal_level = None
 if COMM.rank==0:
     ave_signal_level = np.mean(all_ranks_signal_levels)
 ave_signal_level = COMM.bcast(ave_signal_level)
 # let the initial density estimate be constant gaussians (add noise?)
-Wstart = utils.get_W_init(dens_dim, max_q, ucell_p=ave_ucell, symbol=symbol)
-Wstart /= Wstart.max()
-Wstart *= ave_signal_level
-
-if args.restartfile is not None:
-    Wstart = h5py.File(args.restartfile, 'r')["Wprime"][()]
 
 # get the emc trilerp instance
 qmap = utils.calc_qmap(DET, BEAM)
@@ -206,7 +236,7 @@ Winit = np.zeros(L.dens_sh, np.float32)
 corner, deltas = utils.corners_and_deltas(L.dens_sh, L.xmin, L.xmax)
 maxRotInds = 100000  # TODO make this a property of lerpy, and catch if trying to pass more rot inds
 max_n= max(n_prob_rot)
-print("Max rots on rank %d: %d" % (COMM.rank, max_n))
+#print("Max rots on rank %d: %d" % (COMM.rank, max_n))
 if maxRotInds < max_n:
     maxRotInds = max_n
 
@@ -226,6 +256,83 @@ for i, img in enumerate(this_ranks_imgs):
 
 # set the starting density
 L.toggle_insert()
+
+print0("getting W init")
+Wstart = utils.get_W_init(dens_dim, max_q, ucell_p=ave_ucell, symbol=symbol)
+Wstart /= Wstart.max()
+Wstart *= ave_signal_level
+print0("done")
+
+if args.restartfile is not None:
+    Wstart = h5py.File(args.restartfile, 'r')["Wprime"][()]
+
+if args.useCrystals:
+
+    for ii, (gt_rot_idx, img, bg) in enumerate(zip(this_ranks_gt_inds, this_ranks_imgs, this_ranks_bgs)):
+        print0("inserting %d / %d" % (ii+1,len(this_ranks_imgs)))
+        L.trilinear_insertion(gt_rot_idx, img-bg)
+
+    rank_W = L.densities()
+    rank_wt = L.wts()
+
+    W = np.empty_like(rank_W)
+    wt = np.empty_like(rank_wt)
+    print0("reduction")
+    dt = MPI.DOUBLE if rank_W.dtype==np.float64 else MPI.DOUBLE
+    COMM.Reduce([rank_W,dt ] ,[W, dt])
+    print0("reduction")
+    COMM.Reduce([rank_wt,dt ] ,[wt, dt])
+
+    Wstart = utils.errdiv(W, wt)
+    Wstart = utils.symmetrize(Wstart, L.dens_dim, L.max_q, symbol=symbol, uc=ave_ucell)
+    Wstart = Wstart.reshape(L.dens_sh)
+
+    #if COMM.rank == 0:
+    #    #print0("prepare to integrate")
+    #    den = utils.errdiv(W,wt)
+    #    vox_res = utils.voxel_resolution(L.dens_dim, L.max_q)
+    #    den = utils.symmetrize(den, L.dens_dim, L.max_q, symbol=symbol, uc=ave_ucell)
+    #    den = den.reshape(L.dens_sh)
+    #    den[vox_res < 1/L.max_q] = 0
+    #    with h5py.File("Winit_ucell401_sym.h5", "w") as h5:
+    #        h5.create_dataset("Wprime", data=den)
+    #        h5.create_dataset("ucell", data=ave_ucell)
+
+    #print0("integrate")
+    #F = db_utils.get_complex_fcalc_from_pdb("6qxv.pdb", dmin=3.8).as_amplitude_array()
+    #Fmap = {h: v for h, v in zip(F.indices(), F.data())}
+    #ma = utils.integrate_W(den, den.shape[0], max_q, ave_ucell, symbol, kernel_iters=1, conn=2).resolution_filter(d_min=4,d_max=40)
+    #mamap = {h: v for h, v in zip(ma.indices(), ma.data())}
+    #vals = []
+    #for h in Fmap:
+    #    if Fmap[h] <= 0:
+    #        continue
+    #    if h in mamap:
+    #        if mamap[h] <= 0:
+    #            continue
+    #        vals.append((Fmap[h], mamap[h]))
+    #a, b = zip(*vals)
+    #from scipy.stats import pearsonr, spearmanr
+    #print(pearsonr(a, b))
+    #print(spearmanr(a, b))
+
+    #h, I = utils.integrate_W(den, L.dens_dim, L.max_q, ave_ucell, symbol)
+
+    #from iotbx.reflection_file_reader import  any_reflection_file
+    #ref = any_reflection_file("small_cxis_merge/iobs_all.mtz").as_miller_arrays()[0]
+    #refMap = { hidx: val for hidx, val in zip(ref.indices(), ref.data()) }
+    #vals = []
+    #for hkl,val in zip(h,I):
+    #    if val <=0:
+    #        continue
+    #    if hkl in refMap:
+    #        vals.append((val, refMap[hkl]))
+
+    #a,b = zip(*vals)
+    #CC = pearsonr(a,b)[0]
+    #CC2 = spearmanr(a,b)[0]
+    #print("pearson: %.4f, spearman=%.4f" %(CC,CC2))
+
 L.update_density(Wstart)
 L.dens_dim=dens_dim
 if COMM.rank==0:

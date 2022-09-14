@@ -3,6 +3,7 @@ import os
 import sympy
 from scipy.spatial.transform import Rotation
 from scipy.spatial import cKDTree, distance
+from scipy.ndimage import generate_binary_structure, iterate_structure, map_coordinates
 from scipy import ndimage as nd
 from simemc.compute_radials import RadPros
 import itertools
@@ -149,7 +150,38 @@ def round_to(rounds, values):
     return J
 
 
-def integrate_W(W, dens_dim, max_q, ucell_p=None, symbol=None):
+def integrate_W2(W, max_q, ucell_p=None, symbol=None, order=3):
+    ucell_p, symbol = ucell_and_symbol(ucell_p, symbol)
+    BO = get_BO_matrix(ucell_p, symbol)
+
+    max_h,max_k,max_l = get_hkl_max(max_q, BO)
+
+    hvals = np.arange(-max_h+1, max_h,1)
+    kvals = np.arange(-max_k+1, max_k,1)
+    lvals = np.arange(-max_l+1, max_l,1)
+    hkl_grid = np.meshgrid(hvals, kvals, lvals, indexing='ij')
+    hkl_grid = np.array(hkl_grid)
+    BOinv = np.round(np.linalg.inv(BO), 8)
+
+    # find the q-values of the whole miller-indices
+    qa_vals, qb_vals, qc_vals = np.dot(hkl_grid.T, BOinv.T).T
+    xmin, xmax = get_xmin_xmax(max_q, W.shape[0])
+    (ca,cb,cc), (del_qa, del_qb, del_qc) = corners_and_deltas(W.shape, xmin, xmax)
+    qa_inds = (qa_vals-ca) / del_qa
+    qb_inds = (qb_vals-cb) / del_qb
+    qc_inds = (qc_vals-cc) / del_qc
+    out = map_coordinates(W, [qa_inds, qb_inds , qc_inds], order=order)
+    H, K, L = map(lambda x: x.ravel(), hkl_grid.astype(np.int32))
+    hkl_inds = list(map(tuple, np.vstack((H, K, L)).T))
+    flex_hkl = flex.miller_index(hkl_inds)
+    sym = crystal.symmetry(ucell_p, symbol)
+    mset = miller.set(sym, flex_hkl , True)
+    intens_dat = flex.double(out.ravel())
+    ma = miller.array(mset, intens_dat)
+    return ma
+
+
+def integrate_W(W, dens_dim, max_q, ucell_p=None, symbol=None, order=None, kernel_iters=None, conn=2):
     ucell_p, symbol = ucell_and_symbol(ucell_p, symbol)
     BO = get_BO_matrix(ucell_p, symbol)
 
@@ -189,25 +221,60 @@ def integrate_W(W, dens_dim, max_q, ucell_p=None, symbol=None):
     aidx, bidx, cidx = all_inds
     all_hvals, all_kvals, all_lvals = map(lambda x: x[sel][selAB], hkl_grid)
 
-    #aidx = [np.argmin(np.abs(QCENT-a)) for a in qa_vals.ravel()]
-    #bidx = [np.argmin(np.abs(QCENT-b)) for b in qb_vals.ravel()]
-    #cidx = [np.argmin(np.abs(QCENT-c)) for c in qc_vals.ravel()]
-    #all_hvals, all_kvals, all_lvals = map(lambda x: x.ravel(), hkl_grid)
+    if kernel_iters is not None:
+        # create a kernel for integrating each peak in the 3-d map
+        base_kernel = generate_binary_structure(3,conn)  # 3 dimensional kernel
+        kernel = iterate_structure(base_kernel, kernel_iters)  # enlargen kernel to bring in more neighboring voxels
+        ksz = int(kernel.shape[0]/2)  # kernel always has odd dimension
 
-    assert len(all_hvals) == len(aidx)
+        # iterate over peaks and integrate using the kernel
+        hkls = flex.miller_index()
+        data = flex.double()
+        for i1, i2, i3, h, k, l in zip(aidx, bidx, cidx, all_hvals, all_kvals, all_lvals):
+            i1_slc = slice(i1-ksz, i1+ksz+1,1)
+            i2_slc = slice(i2-ksz, i2+ksz+1,1)
+            i3_slc = slice(i3-ksz, i3+ksz+1,1)
+            peakRegion = W[i1_slc, i2_slc, i3_slc]  # region around one peak, same shape as kernel
+            integrated_val = peakRegion[kernel].sum()
+            data.append(integrated_val)
+            hkls.append((int(h), int(k), int(l)))
 
-    Ivals = []
-    hkl_idx = []
-    for h,k,l,a,b,c in zip(all_hvals, all_kvals, all_lvals, aidx, bidx, cidx):
-        try:
-            val = W[a,b,c] + W[a-1,b,c] + W[a+1,b,c] + \
-                W[a,b-1,c] + W[a,b+1,c] + W[a,b,c-1] + W[a,b,c+1]
-        except IndexError:
-            continue
-        hkl_idx.append( (h,k,l))
-        Ivals.append(val)
+        sym = crystal.symmetry(ucell_p, symbol)
+        mset = miller.set(sym, hkls , True)
+        ma = miller.array(mset, data)
+        ma = ma.set_observation_type_xray_intensity()
+        return ma
 
-    return hkl_idx, Ivals
+    elif order is not None:
+        out = map_coordinates(W, [aidx, bidx, cidx], order=order)
+        hkl_inds = list(map(tuple, np.vstack((all_hvals, all_kvals, all_lvals)).T.astype(np.int32)))
+        flex_hkl = flex.miller_index(hkl_inds)
+        intens_dat = flex.double(out.ravel())
+        sym = crystal.symmetry(ucell_p, symbol)
+        mset = miller.set(sym, flex_hkl , True)
+        ma = miller.array(mset, intens_dat)
+        ma = ma.set_observation_type_xray_intensity()
+        return ma
+    else:
+        #aidx = [np.argmin(np.abs(QCENT-a)) for a in qa_vals.ravel()]
+        #bidx = [np.argmin(np.abs(QCENT-b)) for b in qb_vals.ravel()]
+        #cidx = [np.argmin(np.abs(QCENT-c)) for c in qc_vals.ravel()]
+        #all_hvals, all_kvals, all_lvals = map(lambda x: x.ravel(), hkl_grid)
+
+        assert len(all_hvals) == len(aidx)
+
+        Ivals = []
+        hkl_idx = []
+        for h,k,l,a,b,c in zip(all_hvals, all_kvals, all_lvals, aidx, bidx, cidx):
+            try:
+                val = W[a,b,c] + W[a-1,b,c] + W[a+1,b,c] + \
+                    W[a,b-1,c] + W[a,b+1,c] + W[a,b,c-1] + W[a,b,c+1]
+            except IndexError:
+                continue
+            hkl_idx.append( (h,k,l))
+            Ivals.append(val)
+
+        return hkl_idx, Ivals
 
 
 def get_W_init(dens_dim, max_q, ndom=20, ucell_p=None, symbol=None):
@@ -223,7 +290,6 @@ def get_W_init(dens_dim, max_q, ndom=20, ucell_p=None, symbol=None):
     BO = get_BO_matrix(ucell_p, symbol)
 
     astar, bstar, cstar = np.linalg.norm(np.linalg.inv(BO),axis=0)
-    print(astar, bstar, cstar)
 
     QBINS = np.linspace(-max_q, max_q, dens_dim+1)
     qbin_cent = (QBINS[:-1] +QBINS[1:])*.5
@@ -253,7 +319,6 @@ def get_W_init(dens_dim, max_q, ndom=20, ucell_p=None, symbol=None):
     del_l = L-frac_l
 
     hkl_rad_sq = na**2*del_h**2 + nb**2*del_k**2 + nc**2*del_l**2
-    print(na,nb,nc)
     W_init = np.exp(-hkl_rad_sq*2/0.63)
 
     return W_init
