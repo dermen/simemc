@@ -21,6 +21,7 @@ class lerpyExt{
     lerpyExt(){}
     lerpy gpu;
     bool auto_convert_arrays = true;
+    bool has_sym_ops = false;
     int size_of_cudareal = sizeof(CUDAREAL);
 
 
@@ -52,12 +53,17 @@ class lerpyExt{
         }
     }
 
-    //inline void copy_sym_info(int device_id, np::ndarray rot_mats, np::ndarray trans_vecs, np::ndarray O){
+    inline void copy_sym_info(np::ndarray& rot_mats){
+        sym_ops_to_dev(gpu, rot_mats);
+        has_sym_ops = true;
+    }
 
-    //}
+    inline void symmetrize(np::ndarray& q_vecs){
+        symmetrize_density(gpu, q_vecs);
+    }
 
-    inline void alloc(int device_id, np::ndarray rotations, np::ndarray densities, int maxNumQ,
-                      bp::tuple corner, bp::tuple delta, np::ndarray qvecs, int maxNumRotInds,
+    inline void alloc(int device_id, np::ndarray& rotations, np::ndarray& densities, int maxNumQ,
+                      bp::tuple corner, bp::tuple delta, np::ndarray& qvecs, int maxNumRotInds,
                       int numDataPix){
         int num_rot=rotations.shape(0)/9;
         gpu.device = device_id;
@@ -277,14 +283,14 @@ public:
         return B;
     }
 
-    inline void alloc(int device_id, np::ndarray rotations, int maxQvecs){
+    inline void alloc(int device_id, np::ndarray& rotations, int maxQvecs){
         int num_rot=rotations.shape(0)/9;
         setup_orientMatch( device_id, maxQvecs, gpu, rotations, true);
     }
     inline void free(){
         free_orientMatch(gpu);
     }
-    inline np::ndarray oriPeaks(np::ndarray qvecs,
+    inline np::ndarray oriPeaks(np::ndarray& qvecs,
                          float hcut, int minWithinHcut, bool verbose){
         orientPeaks(gpu, qvecs, hcut, minWithinHcut, verbose);
 
@@ -356,6 +362,9 @@ BOOST_PYTHON_MODULE(emc){
         .add_property("size_of_cudareal",
                        make_getter(&lerpyExt::size_of_cudareal,rbv()),
                        "CUDAREAL is this many bytes")
+        .add_property("has_sym_ops",
+            make_getter(&lerpyExt::has_sym_ops,rbv()),
+            "Whether the sym ops were set")
         .def("densities",
               &lerpyExt::get_densities,
               "get the densities")
@@ -367,9 +376,12 @@ BOOST_PYTHON_MODULE(emc){
               &lerpyExt::get_wts,
               "get the density weights")
         
-        //.def("_copy_sym_info",
-        //      &lerpyExt::copy_sym_info,
-        //      "Copy symmetry operators to the GPU")
+        .def("_copy_sym_info",
+              &lerpyExt::copy_sym_info,
+              "Copy symmetry operators to the GPU")
+        .def("_symmetrize",
+              &lerpyExt::symmetrize,
+              "Symmetrize the density thats on the GPU (be sure to call _copy_sym_info first)")
 
         .def("free", &lerpyExt::free, "free the gpu")
         

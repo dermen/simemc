@@ -4,6 +4,7 @@ import numpy as np
 
 from simemc import emc
 from cctbx import crystal as cctbx_crystal
+from scitbx.matrix import sqr
 
 from simemc import utils
 
@@ -127,7 +128,36 @@ class _():
     @property
     def dens_sh(self):
         return self.dens_dim , self.dens_dim, self.dens_dim
-    
+
+    def symmetrize(self):
+        """Symmetrize the density(be sure to call set_sym_ops prior to calling this method!)"""
+        if not self.has_sym_ops:
+            raise RuntimeError("One must set the symmetry operators(see method set_sym_ops) first")
+
+        QBINS = np.linspace(-self.max_q, self.max_q, self.dens_dim+1)
+        QCENT = (QBINS[:-1] +QBINS[1:])*.5
+        self._symmetrize(QCENT)
+
+    def set_sym_ops(self, uc, symbol):
+        crys_sym = cctbx_crystal.symmetry(uc, symbol)
+        cbo = crys_sym.change_of_basis_op_to_primitive_setting()
+        crys_sym = crys_sym.change_basis(cbo)
+        ucell = crys_sym.unit_cell()
+
+        Orth = sqr(ucell.orthogonalization_matrix())
+        OrthInv = Orth.inverse()
+
+        O = crys_sym.space_group().all_ops()
+        print("Number of symmetry operations: %d" % len(O))
+        sym_rot_mats = []
+        for o in O:
+            r = o.r()
+            R = sqr(r.as_double())
+            ORO = OrthInv * R * Orth
+            sym_rot_mats.append(np.reshape(ORO, (3, 3)))
+        sym_rot_mats = np.array(sym_rot_mats, dtype=self.array_type).ravel()
+        self._copy_sym_info(sym_rot_mats)
+
     def allocate_lerpy(self, dev_id, rotMats, densities, maxNumQ, corners, deltas, qvecs, maxNumRotInds, numDataPix):
         """
         :param dev_id:

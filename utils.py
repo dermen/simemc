@@ -677,9 +677,10 @@ def symmetrize(density, dens_dim, max_q, symbol="P43212",
     :param density: can be 1d or 3d (usually 1d)
     :param symbol: space group lookup symbol
     """
+    # TODO: avoid recreating a LERPY instance if how==0 (e.g. use an already existing instance)
     if how==0:
         if lerpy is None:
-            raise ImportError("emc extension module failed to load")
+            raise ModuleNotFoundError("emc extension module failed to load")
     uc, symbol = ucell_and_symbol(uc, symbol)
     print("unit cell and symbol:", uc, symbol)
     BO = get_BO_matrix(uc, symbol)
@@ -710,7 +711,8 @@ def symmetrize(density, dens_dim, max_q, symbol="P43212",
     xmin, xmax = get_xmin_xmax(max_q, dens_dim)
     QBINS = np.linspace(-max_q, max_q, dens_dim+1)
     QCENT = (QBINS[:-1] +QBINS[1:])*.5
-    qvecs = np.vstack(tuple(map(lambda x: x.ravel(), np.meshgrid(QCENT, QCENT, QCENT) ))).T
+    qvecs = np.vstack(tuple(map(lambda x: x.ravel(), np.meshgrid(QCENT, QCENT, QCENT, indexing='ij') ))).T
+    # this equiv to for i in Qcent for j in Qcent for k in Qcent: [i,j,k]
     if how==0:
         L = lerpy()
         L.dens_dim=dens_dim

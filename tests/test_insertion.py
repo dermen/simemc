@@ -74,50 +74,53 @@ def _test(highRes=False):
     L.update_density(W2)
     W_rt = L.trilinear_interpolation(0)
     assert np.allclose(W_rt, 1)
+    try:
+        from reborn.misc.interpolate import trilinear_insertion, trilinear_interpolation
 
-    from reborn.misc.interpolate import trilinear_insertion, trilinear_interpolation
-    qcoords_rot = np.dot( rotMats[0].T, qcoords.T).T
-    is_inbounds = utils.qs_inbounds(qcoords_rot, W.shape, X_MIN, X_MAX)
-    A = np.zeros(W.shape)
-    B = np.zeros(W.shape)
-    trilinear_insertion(
-        A,B,
-        vectors=qcoords_rot[is_inbounds],
-        insert_vals=vals.ravel()[is_inbounds],
-        x_min=X_MIN, x_max=X_MAX)
-    A1 = A.copy()
-    B1 = B.copy()
-    trilinear_insertion(
-        A,B,
-        vectors=qcoords_rot[is_inbounds],
-        insert_vals=vals.ravel()[is_inbounds],
-        x_min=X_MIN, x_max=X_MAX)
+        qcoords_rot = np.dot( rotMats[0].T, qcoords.T).T
+        is_inbounds = utils.qs_inbounds(qcoords_rot, W.shape, X_MIN, X_MAX)
+        A = np.zeros(W.shape)
+        B = np.zeros(W.shape)
+        trilinear_insertion(
+            A,B,
+            vectors=qcoords_rot[is_inbounds],
+            insert_vals=vals.ravel()[is_inbounds],
+            x_min=X_MIN, x_max=X_MAX)
+        A1 = A.copy()
+        B1 = B.copy()
+        trilinear_insertion(
+            A,B,
+            vectors=qcoords_rot[is_inbounds],
+            insert_vals=vals.ravel()[is_inbounds],
+            x_min=X_MIN, x_max=X_MAX)
 
-    assert np.allclose(A1*2, A)
-    assert np.allclose(B1*2, B)
+        assert np.allclose(A1*2, A)
+        assert np.allclose(B1*2, B)
 
-    A = utils.errdiv(A,B)
+        A = utils.errdiv(A,B)
 
-    W_rt = trilinear_interpolation(
-        A, qcoords_rot[is_inbounds],
-        x_min=X_MIN, x_max=X_MAX)
+        W_rt = trilinear_interpolation(
+            A, qcoords_rot[is_inbounds],
+            x_min=X_MIN, x_max=X_MAX)
 
-    assert np.allclose( W_rt, 1)
+        assert np.allclose( W_rt, 1)
 
-    W_rt_from_GPUdensity = trilinear_interpolation(
-        W2.reshape((n,n,n)).astype(np.float64), qcoords_rot[is_inbounds],
-        x_min=X_MIN, x_max=X_MAX)
-    assert np.allclose( W_rt_from_GPUdensity, 1)
+        W_rt_from_GPUdensity = trilinear_interpolation(
+            W2.reshape((n,n,n)).astype(np.float64), qcoords_rot[is_inbounds],
+            x_min=X_MIN, x_max=X_MAX)
+        assert np.allclose( W_rt_from_GPUdensity, 1)
 
-    L.toggle_insert()
-    assert np.allclose(L.densities(), 0)
-    assert np.allclose(L.wts(), 0)
+        L.toggle_insert()
+        assert np.allclose(L.densities(), 0)
+        assert np.allclose(L.wts(), 0)
 
-    vals1 = np.ones(img_sh)
-    vals2 = np.ones(img_sh)*2
-    L.copy_image_data(vals1)
-    L.copy_image_data(vals2)
-    assert np.all(vals1*2==vals2)
+        vals1 = np.ones(img_sh)
+        vals2 = np.ones(img_sh)*2
+        L.copy_image_data(vals1)
+        L.copy_image_data(vals2)
+        assert np.all(vals1*2==vals2)
+    except ImportError:
+        pass
 
     print("OK")
 

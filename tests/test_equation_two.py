@@ -236,7 +236,7 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
         Rcpu.append(r)
         Wr = L.trilinear_interpolation(i_rot)
         r2 = np.sum(data1*np.log1p(background + Wr+epsilon) - Wr - background)
-        Rcpu2.append(r2)  # TODO whats important about Wcpu2 ?
+        Rcpu2.append(r2)  # TODO whats important about Rcpu2 ?
     t = time.time()-t - twaste
     print("CPU:",np.round(Rcpu[:3],3), "(%.3f sec)" % t)
     try:

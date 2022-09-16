@@ -3,7 +3,7 @@ import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 from scipy.stats import pearsonr
 
-from reborn.misc.interpolate import trilinear_interpolation, trilinear_insertion
+#from reborn.misc.interpolate import trilinear_interpolation, trilinear_insertion
 from simemc import utils, sim_const, sim_utils
 from simemc.emc import lerpy
 import pytest
@@ -60,9 +60,9 @@ def _test(highRes=False):
     #rgi_near = RegularGridInterpolator((qs, qs, qs), W, method='nearest', fill_value=0,bounds_error=False)
 
     Wr_line = rgi_line(qcoords_rot).reshape(img.shape)
-    Wr_reborn = trilinear_interpolation(np.ascontiguousarray(W), np.ascontiguousarray(qcoords_rot),
-                                      x_min=X_MIN,
-                                      x_max=X_MAX).reshape(img.shape)
+    #Wr_reborn = trilinear_interpolation(np.ascontiguousarray(W), np.ascontiguousarray(qcoords_rot),
+    #                                  x_min=X_MIN,
+    #                                  x_max=X_MAX).reshape(img.shape)
 
     # now try with the CUDA interpolator
     L = lerpy()
@@ -77,7 +77,7 @@ def _test(highRes=False):
     Wr_simemc = L.trilinear_interpolation(0).reshape(img.shape)
 
     inbounds = utils.qs_inbounds(qcoords, dens_shape, X_MIN, X_MAX).reshape(img.shape)
-    assert pearsonr(Wr_reborn[inbounds], Wr_simemc[inbounds])[0] >.999
+    #assert pearsonr(Wr_reborn[inbounds], Wr_simemc[inbounds])[0] >.999
     assert pearsonr(Wr_line[inbounds], Wr_simemc[inbounds])[0] >.999
 
     print("OK!")

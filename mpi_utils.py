@@ -292,7 +292,7 @@ class EMC:
         self.density_update_method = density_update_method
 
         self.ave_signal_level=ave_signal_level
-        self.L = L
+        self.L = L  # lerpy instance
         self.shots = shots
         self.max_scale = 1e6
         self.shot_sums = np.zeros(len(self.shots))
@@ -445,12 +445,19 @@ class EMC:
         self.print("Waiting for other ranks to catch up before reducing")
         COMM.barrier()
         self.print("Reducing density")
-        den = self.L.densities()
-        wts = self.L.wts()
-        self.print("den reduce (max/min)=", den.max(), den.min())
-        den = COMM.bcast(COMM.reduce(den))
+        rank_den = self.L.densities()
+        rank_wts = self.L.wts()
+        self.print("den reduce (max/min)=", rank_den.max(), rank_den.min())
+        den = np.empty_like(rank_den)
+        wts = np.empty_like(rank_wts)
+        dt = MPI.DOUBLE if self.L.array_type==np.float64 else MPI.FLOAT
+        COMM.Reduce([rank_den, dt],[den, dt])
+        COMM.Bcast([den, dt])
+        #den = COMM.bcast(COMM.reduce(den))
         self.print("wts reduce")
-        wts = COMM.bcast(COMM.reduce(wts))
+        COMM.Reduce([rank_wts, dt],[wts, dt])
+        COMM.Bcast([wts, dt])
+        #wts = COMM.bcast(COMM.reduce(wts))
         den = utils.errdiv(den, wts)
         self.set_new_density(den)
 

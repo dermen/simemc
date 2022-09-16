@@ -106,7 +106,7 @@ class DensityUpdater(Updater):
         emc.L.update_density(dens)
 
         functional = 0
-        grad = np.zeros(len(x))
+        rank_grad = np.zeros(len(x))
 
         for i_shot in range(emc.nshots):
             self.emc.print("Maximization iter %d ( %d/ %d)" % (self.iter_num+1, i_shot+1, emc.nshots), end="\r", flush=True)
@@ -120,10 +120,14 @@ class DensityUpdater(Updater):
             shot_grad = emc.L.dens_deriv(finite_rot_inds, finite_P_dr, verbose=False, shot_scale_factor=emc.shot_scales[i_shot])
             log_Rdr = np.array(emc.L.get_out())
 
-            grad += shot_grad[self.relp_mask]
+            rank_grad += shot_grad[self.relp_mask]
             functional += (finite_P_dr*log_Rdr).sum()
 
-        grad = COMM.bcast(COMM.reduce(grad))
+        grad = np.empty_like(rank_grad)
+        dt = MPI.DOUBLE if self.emc.L.array_type==np.float64 else MPI.FLOAT
+        COMM.Reduce([rank_grad, dt],[grad, dt])
+        COMM.Bcast([grad, dt])
+        #grad = COMM.bcast(COMM.reduce(grad))
         functional = COMM.bcast(COMM.reduce(functional))
 
         # Because we reparameterized, such that W = exp(x), then grad = dW/dx *grad = exp(x)*grad = density*grad

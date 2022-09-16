@@ -18,7 +18,7 @@ void free_orientMatch(gpuOrient& gpu){
 }
 
 void setup_orientMatch(int dev_id, int maxNumQ, gpuOrient& gpu,
-                       np::ndarray Umats, bool alloc ){
+                       np::ndarray& Umats, bool alloc ){
     int numRot = Umats.shape(0)/9;
     if (alloc){
         gpu.numRot = numRot;
@@ -60,7 +60,7 @@ void setup_orientMatch(int dev_id, int maxNumQ, gpuOrient& gpu,
 }
 
 
-void orientPeaks(gpuOrient& gpu, np::ndarray qvecs, CUDAREAL hcut,
+void orientPeaks(gpuOrient& gpu, np::ndarray& qvecs, CUDAREAL hcut,
                  int minPred, bool verbose){
 
     double time;

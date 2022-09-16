@@ -50,7 +50,7 @@ ndevice = args.ndev
 TEST_UCELLS = False
 
 if highRes:
-    dens_dim = 512
+    dens_dim = 511
     max_q = 0.5
 else:
     dens_dim=401
@@ -160,6 +160,7 @@ else:
     this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
             Bmat_reference=Brecip, hcut=args.hcut, min_pred=args.minPred,
             verbose=COMM.rank==0, detector=DET,beam=BEAM, hcut_incr=0.0025)
+# TODO: if useCrystals, assert known orientations are present in this_ranks_prob_rot
 
 has_no_rots = [len(prob_rots)==0 for prob_rots in this_ranks_prob_rot]
 has_no_rots = COMM.reduce(has_no_rots)
@@ -278,14 +279,16 @@ if args.useCrystals:
     W = np.empty_like(rank_W)
     wt = np.empty_like(rank_wt)
     print0("reduction")
-    dt = MPI.DOUBLE if rank_W.dtype==np.float64 else MPI.DOUBLE
+    dt = MPI.DOUBLE if rank_W.dtype==np.float64 else MPI.FLOAT
     COMM.Reduce([rank_W,dt ] ,[W, dt])
     print0("reduction")
     COMM.Reduce([rank_wt,dt ] ,[wt, dt])
-
+    print0("dividing")
     Wstart = utils.errdiv(W, wt)
+    print0("Symmetrizing")
     Wstart = utils.symmetrize(Wstart, L.dens_dim, L.max_q, symbol=symbol, uc=ave_ucell)
     Wstart = Wstart.reshape(L.dens_sh)
+    Wstart[Wstart<0] = 0
 
     #if COMM.rank == 0:
     #    #print0("prepare to integrate")
@@ -333,6 +336,7 @@ if args.useCrystals:
     #CC2 = spearmanr(a,b)[0]
     #print("pearson: %.4f, spearman=%.4f" %(CC,CC2))
 
+print0("updateing starting density")
 L.update_density(Wstart)
 L.dens_dim=dens_dim
 if COMM.rank==0:
@@ -421,6 +425,7 @@ SHOT_MASK = inbounds*MASK.ravel()
 #
 
 # make the mpi emc object
+print0("instantiating emc class instance")
 emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
                     shot_mask=SHOT_MASK,
                     shot_background=this_ranks_bgs,
@@ -437,4 +442,6 @@ emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
                     ucell_p=ave_ucell)
 
 # run emc for specified number of iterations
+print0("Begin EMC")
 emc.do_emc(niter)
+print0("Finish EMC")

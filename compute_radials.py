@@ -89,10 +89,12 @@ class RadPros:
 
     @property
     def mask(self):
+        """ the good pixels (values of False indicate bad pixels)"""
         return self._mask
 
     @mask.setter
     def mask(self, val):
+        """ the good pixels (values of False indicate bad pixels)"""
         assert isinstance(val, np.ndarray)
         assert val.dtype==bool
         assert val.shape==self.img_sh
@@ -165,17 +167,21 @@ class RadPros:
             assert data_pixels is not None
             data = data_pixels
 
-        if strong_refl is None:
-            assert strong_params is not None
-            all_peak_masks = [~dials_find_spots(data[pid], self.mask[pid], strong_params)\
+        if strong_refl is None and strong_params is None:
+            is_a_peak = None
+        elif strong_refl is None and strong_params is not None:
+            is_a_peak = [dials_find_spots(data[pid], self.mask[pid], strong_params)\
                                 for pid in range(len(data))]
         else:
-            all_peak_masks = ~strong_spot_mask(strong_refl, self.detector)
+            is_a_peak = strong_spot_mask(strong_refl, self.detector)
 
         if apply_corrections:
             data /= (self.POLAR*self.OMEGA)
         bin_labels = self.all_Qbins.copy()
-        combined_mask = np.logical_and(all_peak_masks, self.mask)
+        if is_a_peak is not None:
+            combined_mask = np.logical_and(~is_a_peak, self.mask)  # self.mask is the good pixels (True=good)
+        else:
+            combined_mask = self.mask
         bin_labels[~combined_mask] = 0
         with np.errstate(divide='ignore', invalid='ignore'):
             if use_median:
