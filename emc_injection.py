@@ -139,22 +139,28 @@ class _():
         self._symmetrize(QCENT)
 
     def set_sym_ops(self, uc, symbol):
-        crys_sym = cctbx_crystal.symmetry(uc, symbol)
-        cbo = crys_sym.change_of_basis_op_to_primitive_setting()
-        crys_sym = crys_sym.change_basis(cbo)
-        ucell = crys_sym.unit_cell()
+        """
+        Note, only call this method AFTER calling allocate_lerpy
+        :param uc: 6-tuple of unit cell params (a,b,c,apha,beta,gamma) in angstroms/degrees
+        :param symbol:  lookupsymbol e.g. C2221 or P43212
+        :return:
+        """
+        # TODO: assert the GPU was already allocated (e.g. should be called after allocate_lerpy
 
-        Orth = sqr(ucell.orthogonalization_matrix())
-        OrthInv = Orth.inverse()
+        if not self.dev_is_allocated:
+            raise RuntimeError("run allocate_lerpy once before calling this method")
 
-        O = crys_sym.space_group().all_ops()
-        print("Number of symmetry operations: %d" % len(O))
+        sym = cctbx_crystal.symmetry(uc, symbol)
+        O = sym.space_group().all_ops()
+
+        if len(O) > self.max_num_rots:
+            raise RuntimeError("Device was only allocated for %d rot mats, however num_sym_ops=%d" %(self.max_num_rots, len(O)))
+
         sym_rot_mats = []
         for o in O:
             r = o.r()
             R = sqr(r.as_double())
-            ORO = OrthInv * R * Orth
-            sym_rot_mats.append(np.reshape(ORO, (3, 3)))
+            sym_rot_mats.append(np.reshape(R, (3, 3)))
         sym_rot_mats = np.array(sym_rot_mats, dtype=self.array_type).ravel()
         self._copy_sym_info(sym_rot_mats)
 
@@ -179,6 +185,12 @@ class _():
 
     def trilinear_interpolation(self, rot_idx, verbose=False):
         return self._trilinear_interpolation(int(rot_idx), verbose)
+
+    def apply_friedel_symmetry(self):
+        """note, only use this if the density has been normalized by the weights"""
+        d = self.densities().reshape(self.dens_sh)
+        d = 0.5*(d +np.flip(d))
+        self.update_density(d.ravel())
 
     def trilinear_insertion(self, rot_idx, vals, mask=None, verbose=False, tomo_wt=1, bg=None):
         """

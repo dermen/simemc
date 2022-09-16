@@ -51,6 +51,7 @@ struct lerpy {
   CUDAREAL tomogram_wt=1;  // specify a weight for each tomogram (experimental)
   bool use_poisson_stats=true; // if False, a Gaussian random variable is used to describe the pixel measurements
   CUDAREAL sigma_r_sq=0.25;  // variance model for each pixel (e.g. dark noise variance)
+  bool is_allocated=false; // whether device arrays have been allocated
 };
 
 void relp_mask_to_device(lerpy& gpu, np::ndarray& relp_mask);

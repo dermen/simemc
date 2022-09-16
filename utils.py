@@ -181,6 +181,14 @@ def integrate_W2(W, max_q, ucell_p=None, symbol=None, order=3):
     return ma
 
 
+def get_p1_ucell(ucell, sym):
+    sym = crystal.symmetry(ucell, sym)
+    to_p1 = sym.change_of_basis_op_to_primitive_setting()
+    sym_p1 = sym.change_basis(to_p1)
+    p1_ucell = sym_p1.unit_cell().parameters()
+    return p1_ucell
+
+
 def integrate_W(W, dens_dim, max_q, ucell_p=None, symbol=None, order=None, kernel_iters=None, conn=2):
     ucell_p, symbol = ucell_and_symbol(ucell_p, symbol)
     BO = get_BO_matrix(ucell_p, symbol)
@@ -239,8 +247,15 @@ def integrate_W(W, dens_dim, max_q, ucell_p=None, symbol=None, order=None, kerne
             data.append(integrated_val)
             hkls.append((int(h), int(k), int(l)))
 
+        p1_ucell = get_p1_ucell(ucell_p, symbol)
+        p1_sym = crystal.symmetry(p1_ucell, "P1")
+        p1_mset = miller.set(p1_sym, hkls, True)
+        # get the operator to gor from this space group defined by `symbol` to P1
         sym = crystal.symmetry(ucell_p, symbol)
-        mset = miller.set(sym, hkls , True)
+        op_to_p1 = sym.change_of_basis_op_to_primitive_setting()
+        # apply operator
+        mset = p1_mset.change_basis(op_to_p1.inverse())
+        mset = miller.set(sym, mset.indices(), True)
         ma = miller.array(mset, data)
         ma = ma.set_observation_type_xray_intensity()
         return ma

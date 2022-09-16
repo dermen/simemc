@@ -79,6 +79,15 @@ class lerpyExt{
         gpu.delta[2] = bp::extract<double>(delta[2]);
         prepare_for_lerping( gpu, rotations, densities, qvecs);
     }
+
+    inline int get_max_num_rots(){
+        return gpu.maxNumRotInds;
+    }
+
+    inline bool get_dev_is_allocated(){
+        return gpu.is_allocated;
+    }
+
     inline void copy_pixels( np::ndarray& pixels, np::ndarray& mask, np::ndarray& bg){
         // assert len pixels matches up
         if (pixels.shape(0) != gpu.numQ){
@@ -323,6 +332,9 @@ BOOST_PYTHON_MODULE(emc){
     typedef bp::default_call_policies dcp;
     typedef bp::return_internal_reference<> rir;
 
+    /**********************************************************************************************/
+    /* Lerpy class (main kernels used in EMC, lots of linear interpolation, hence the name lerpy) */
+    /**********************************************************************************************/
     bp::class_<lerpyExt>("lerpy", bp::no_init)
         .def(bp::init<>("returns a class instance"))
         .def ("_allocate_lerpy", &lerpyExt::alloc, "allocate the device")
@@ -394,9 +406,19 @@ BOOST_PYTHON_MODULE(emc){
                        make_function(&lerpyExt::get_maxQ,rbv()),
                        make_function(&lerpyExt::set_maxQ,dcp()),
                        "the maximum q magnitude (defines density edge length from -maxQ to +maxQ)")
+
+        .add_property("max_num_rots",
+                       make_function(&lerpyExt::get_max_num_rots,rbv()),
+                       "GPU was allocated for this many rotations")
+
+        .add_property("dev_is_allocated",
+                       make_function(&lerpyExt::get_dev_is_allocated,rbv()),
+                       "return True if GPU arrays are allocated")
         ;
 
+    /******************************/
     /* Orientation matching class */
+    /******************************/
     bp::class_<probaOr>("probable_orients", bp::no_init)
         .def(bp::init<>("returns a class instance"))
         .def ("_allocate_orientations", &probaOr::alloc, "move the orientations to the device")

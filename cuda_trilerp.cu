@@ -94,7 +94,7 @@ void sym_ops_to_dev(lerpy& gpu, np::ndarray& rot_mats){
         mat_temp << rxx, rxy, rxz,
                     ryx, ryy, ryz,
                     rzx, rzy, rzz;
-        gpu.rotMatsSym[i_sym] = mat_temp.transpose(); // TODO check transpose
+        gpu.rotMatsSym[i_sym] = mat_temp.transpose();
     }
 }
 
@@ -122,6 +122,7 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
     // here we store the current values of gpu.data and gpu.qVecs, as we will be hijacking those arrays for symmetrization
     eigVec3_vec temp_qvec;
     std::vector<CUDAREAL> temp_data;
+    std::vector<bool> temp_mask;
     // check that nuymDataPixles is same as numQ;
     if (gpu.numQ != gpu.numDataPixels){
         printf("Warning numQ=%d != numDataPixels=%d\n", gpu.numQ, gpu.numDataPixels);
@@ -130,12 +131,15 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
     for (int i=0; i< gpu.numDataPixels; i++){
         temp_data.push_back(gpu.data[i]);
         temp_qvec.push_back(gpu.qVecs[i]);
+        temp_mask.push_back(gpu.mask[i]);
+        gpu.mask[i] = true; // mask only applies to the detector images, so ignore for symmetrization
     }
 
     // copy the density to a host array
     std::vector<CUDAREAL> current_density;
-    for (int i=0; i < gpu.numDens; i++)
+    for (int i=0; i < gpu.numDens; i++){
         current_density.push_back(gpu.densities[i]);
+    }
 
     // reset the density and wts to 0
     toggle_insert_mode(gpu);
@@ -146,17 +150,22 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
         if (stop > gpu.numDens)
             stop = gpu.numDens;
         int densDim_sq = gpu.densDim*gpu.densDim;
-        for (int i=start; i < stop; i++){
-            gpu.data[i] = current_density[i];
-            int qi = i / densDim_sq;
-            int qj = (i/gpu.densDim) % gpu.densDim;
-            int qk = i % gpu.densDim;
-            gpu.qVecs[i] = VEC3(q_cent[qi], q_cent[qj], q_cent[qk]);
+        int i_q=0;
+        for (int i_dens=start; i_dens < stop; i_dens++){
+            gpu.data[i_q] = current_density[i_dens];
+            int qi = i_dens / densDim_sq;
+            int qj = (i_dens/gpu.densDim) % gpu.densDim;
+            int qk = i_dens % gpu.densDim;
+            CUDAREAL dens_qx=q_cent[qi];
+            CUDAREAL dens_qy=q_cent[qj];
+            CUDAREAL dens_qz=q_cent[qk];
+            gpu.qVecs[i_q] = VEC3(dens_qx, dens_qy, dens_qz);
+            i_q ++;
         }
         int chunk_num_q = stop - start;
         for (int i_sym=0; i_sym < gpu.num_sym_op; i_sym++){
             trilinear_insertion_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
-                    (gpu.densities, gpu.wts, gpu.data, gpu.mask, gpu.tomogram_wt, gpu.qVecs,
+                    (gpu.densities, gpu.wts, gpu.data, gpu.mask, 1, gpu.qVecs,
                      gpu.rotMatsSym[i_sym], chunk_num_q,
                      gpu.densDim, gpu.densDim, gpu.densDim,
                      gpu.corner[0], gpu.corner[1], gpu.corner[2],
@@ -166,18 +175,20 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
         }
     }
 
-    // copy the original data and qvectors (corresponding to the detector pixels) back to device
+    //// copy the original data and qvectors (corresponding to the detector pixels) back to device
     for (int i=0; i < gpu.numDataPixels; i++){
         gpu.data[i] = temp_data[i];
         gpu.qVecs[i] = temp_qvec[i];
+        gpu.mask[i] = temp_mask[i];
     }
+
     // normalize the new density:
     for (int i=0; i < gpu.numDens; i++){
         CUDAREAL wt = gpu.wts[i];
         if (wt > 0)
             gpu.densities[i] = gpu.densities[i] / wt;
         else
-            gpu.densities[i] = 0;
+            gpu.densities[i] = 0; // note: the density should already by 0 if wt=0
     }
 }
 
@@ -236,6 +247,9 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
     for (int i=0; i < gpu.numDens; i++){
         gpu.densities[i] = *(dens_ptr+i);
     }
+
+    gpu.is_allocated = true;
+
 }
 
 
@@ -411,6 +425,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
 }
 
 void free_lerpy(lerpy& gpu){
+//  TODO free sym ops
     if (gpu.qVecs != NULL)
         gpuErr(cudaFree(gpu.qVecs));
     if (gpu.rotInds!= NULL)
@@ -437,6 +452,7 @@ void free_lerpy(lerpy& gpu){
         gpuErr(cudaFree(gpu.densities_gradient));
     if (gpu.wts!= NULL)
         gpuErr(cudaFree(gpu.wts));
+    gpu.is_allocated = false;
 }
 
 __device__ __inline__ unsigned int get_densities_index(int i,int j,int k, int nx, int ny, int nz)
