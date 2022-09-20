@@ -3,9 +3,42 @@ COMM = MPI.COMM_WORLD
 
 import numpy as np
 from scipy.optimize import minimize, line_search
-
+from xfel.merging.application.utils.memory_usage import get_memory_usage
 from simtbx.diffBragg.refiners.parameters import Parameters, RangedParameter
 from simemc import utils, mpi_utils
+import socket
+from itertools import groupby
+
+
+def print_gpu_usage_across_ranks(L):
+    free_mem = L.get_gpu_mem()/1024**3
+    dev_id = L.dev_id
+    all_data = COMM.gather([dev_id, free_mem])
+    if COMM.rank==0:
+        gb = groupby(sorted(all_data, key=lambda x:x[0]), key=lambda x:x[0])
+        gpu_mem_info = {dev: [i for _,i in list(vals)] for dev, vals in gb}
+        seen_hosts = set()
+        dev_host_s = {}
+        for dev in gpu_mem_info:
+            for free_mem in gpu_mem_info[dev]:
+                host = socket.gethostname()
+                if (dev, host) in seen_hosts:
+                    continue
+                print("device %d  on host %s has %.2f GB  free" % (dev,host, free_mem))
+                seen_hosts = seen_hosts.union({(dev,host)})
+
+
+def print_cpu_mem_usage():
+    memMB = get_memory_usage()/1024
+    host = socket.gethostname()
+    all_data = COMM.gather([host, memMB])
+    if COMM.rank==0:
+        gb = groupby(sorted(all_data, key=lambda x:x[0]), key=lambda x:x[0])
+        cpu_mem_info = {host: [i for _,i in list(vals)] for host, vals in gb}
+        for host in cpu_mem_info:
+            for peak_mem in cpu_mem_info[host]:
+                print("host %s has used %.2f GB of memory" % (host, peak_mem))
+                break
 
 
 class Updater:
@@ -91,7 +124,8 @@ class DensityUpdater(Updater):
         else:
             raise NotImplementedError("method %s not supported" % how)
         dens_opt = np.zeros_like(dens_start)
-        dens_opt[self.relp_mask] = np.exp(xopt)
+        with np.errstate(over='raise'):
+            dens_opt[self.relp_mask] = np.exp(xopt)
         return dens_opt
 
     def target(self, x):
@@ -101,15 +135,23 @@ class DensityUpdater(Updater):
 
         # x is the log of the density
         # Apply reparameterization to keep density positive
-        dens[self.relp_mask] = np.exp(x)
+        with np.errstate(over='raise'):
+            dens[self.relp_mask] = np.exp(x)
 
         emc.L.update_density(dens)
 
         functional = 0
-        rank_grad = np.zeros(len(x))
+        grad = np.zeros(len(x))
+
+        print_gpu_usage_across_ranks(self.emc.L)
+        print_cpu_mem_usage()
 
         for i_shot in range(emc.nshots):
-            self.emc.print("Maximization iter %d ( %d/ %d)" % (self.iter_num+1, i_shot+1, emc.nshots), end="\r", flush=True)
+            self.emc.print("Maximization iter %d ( %d/ %d)" % (self.iter_num+1, i_shot+1, emc.nshots)) #, end="\r", flush=True)
+            #if COMM.rank==0:
+            #    #gpu_mem = self.emc.L.get_gpu_mem()/1024**3
+            #    #from IPython import embed;embed()
+            #    #print("Free GPU memory on one GPU: %.2f" % (socket.gethostname(), gpu_mem))
             P_dr = emc.shot_P_dr[i_shot]
             is_finite_prob = np.array(P_dr) >= self.min_prob
             
@@ -120,20 +162,16 @@ class DensityUpdater(Updater):
             shot_grad = emc.L.dens_deriv(finite_rot_inds, finite_P_dr, verbose=False, shot_scale_factor=emc.shot_scales[i_shot])
             log_Rdr = np.array(emc.L.get_out())
 
-            rank_grad += shot_grad[self.relp_mask]
+            grad += shot_grad[self.relp_mask]
             functional += (finite_P_dr*log_Rdr).sum()
 
-        grad = np.empty_like(rank_grad)
-        dt = MPI.DOUBLE if self.emc.L.array_type==np.float64 else MPI.FLOAT
-        COMM.Reduce([rank_grad, dt],[grad, dt])
-        COMM.Bcast([grad, dt])
-        #grad = COMM.bcast(COMM.reduce(grad))
+        grad = COMM.bcast(COMM.reduce(grad))
         functional = COMM.bcast(COMM.reduce(functional))
 
-        # Because we reparameterized, such that W = exp(x), then grad = dW/dx *grad = exp(x)*grad = density*grad
+        # Because we reparameterized, such that W = exp(x), then grad -> dW/dx *grad = exp(x)*grad = density*grad
         grad *= dens[self.relp_mask]
 
-        # running a minimizer so return the negative loglike and its gradient
+        # running a minimizer, so return the negative loglike and its gradient
         self.iter_num += 1
         return -functional, -grad
 

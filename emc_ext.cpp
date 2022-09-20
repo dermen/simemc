@@ -53,6 +53,14 @@ class lerpyExt{
         }
     }
 
+    inline size_t _get_gpu_mem(){
+        return get_gpu_mem(gpu);
+    }
+
+    inline int get_dev_id(){
+        return gpu.device;
+    }
+
     inline void copy_sym_info(np::ndarray& rot_mats){
         sym_ops_to_dev(gpu, rot_mats);
         has_sym_ops = true;
@@ -414,6 +422,12 @@ BOOST_PYTHON_MODULE(emc){
         .add_property("dev_is_allocated",
                        make_function(&lerpyExt::get_dev_is_allocated,rbv()),
                        "return True if GPU arrays are allocated")
+
+        .def("get_gpu_mem", &lerpyExt::_get_gpu_mem, "get free GPU memory in bytes (for dev_id that was used in allocate_lerpy)")
+
+        .add_property("dev_id",
+                       make_function(&lerpyExt::get_dev_id,rbv()),
+                       "return the GPU device ID used to allocate lerpy")
         ;
 
     /******************************/

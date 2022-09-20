@@ -23,6 +23,7 @@ if COMM.rank==0:
     parser.add_argument("--useCrystals", action="store_true", help="if experiments in args.expt contain crystal models, use those as probable orientations")
     parser.add_argument("--saveBg", action="store_true", help="write background images to disk( will be used upon restart)")
     parser.add_argument("--useSavedBg", action="store_true")
+    parser.add_argument("--maxIter", type=int, default=60)
     args = parser.parse_args()
 else:
     args = None
@@ -53,7 +54,7 @@ if highRes:
     dens_dim = 511
     max_q = 0.5
 else:
-    dens_dim=401
+    dens_dim=301
     max_q=0.25
 
 
@@ -255,6 +256,8 @@ for i, img in enumerate(this_ranks_imgs):
     this_ranks_imgs[i] = img.astype(L.array_type).ravel()
     this_ranks_bgs[i] = this_ranks_bgs[i].astype(L.array_type).ravel()
 
+L.set_sym_ops(ave_ucell, symbol)
+
 # set the starting density
 L.toggle_insert()
 
@@ -273,9 +276,15 @@ if args.useCrystals:
         print0("inserting %d / %d" % (ii+1,len(this_ranks_imgs)))
         L.trilinear_insertion(gt_rot_idx, img-bg)
 
+    #W = L.densities()
+    #wt = L.wts()
+    #print0("shape of W", W.shape)
+    #print0("shape of wt", wt.shape)
+    #W = COMM.bcast(COMM.reduce(W))
+    #wt = COMM.bcast(COMM.reduce(wt))
+
     rank_W = L.densities()
     rank_wt = L.wts()
-
     W = np.empty_like(rank_W)
     wt = np.empty_like(rank_wt)
     print0("reduction")
@@ -283,64 +292,19 @@ if args.useCrystals:
     COMM.Reduce([rank_W,dt ] ,[W, dt])
     print0("reduction")
     COMM.Reduce([rank_wt,dt ] ,[wt, dt])
+    COMM.Bcast([W, dt])
+    COMM.Bcast([wt, dt])
     print0("dividing")
     Wstart = utils.errdiv(W, wt)
     print0("Symmetrizing")
-    Wstart = utils.symmetrize(Wstart, L.dens_dim, L.max_q, symbol=symbol, uc=ave_ucell)
-    Wstart = Wstart.reshape(L.dens_sh)
+    L.update_density(Wstart.ravel())
+    L.symmetrize()
+    L.apply_friedel_symmetry()
+    Wstart = L.densities().reshape(L.dens_sh)
     Wstart[Wstart<0] = 0
 
-    #if COMM.rank == 0:
-    #    #print0("prepare to integrate")
-    #    den = utils.errdiv(W,wt)
-    #    vox_res = utils.voxel_resolution(L.dens_dim, L.max_q)
-    #    den = utils.symmetrize(den, L.dens_dim, L.max_q, symbol=symbol, uc=ave_ucell)
-    #    den = den.reshape(L.dens_sh)
-    #    den[vox_res < 1/L.max_q] = 0
-    #    with h5py.File("Winit_ucell401_sym.h5", "w") as h5:
-    #        h5.create_dataset("Wprime", data=den)
-    #        h5.create_dataset("ucell", data=ave_ucell)
-
-    #print0("integrate")
-    #F = db_utils.get_complex_fcalc_from_pdb("6qxv.pdb", dmin=3.8).as_amplitude_array()
-    #Fmap = {h: v for h, v in zip(F.indices(), F.data())}
-    #ma = utils.integrate_W(den, den.shape[0], max_q, ave_ucell, symbol, kernel_iters=1, conn=2).resolution_filter(d_min=4,d_max=40)
-    #mamap = {h: v for h, v in zip(ma.indices(), ma.data())}
-    #vals = []
-    #for h in Fmap:
-    #    if Fmap[h] <= 0:
-    #        continue
-    #    if h in mamap:
-    #        if mamap[h] <= 0:
-    #            continue
-    #        vals.append((Fmap[h], mamap[h]))
-    #a, b = zip(*vals)
-    #from scipy.stats import pearsonr, spearmanr
-    #print(pearsonr(a, b))
-    #print(spearmanr(a, b))
-
-    #h, I = utils.integrate_W(den, L.dens_dim, L.max_q, ave_ucell, symbol)
-
-    #from iotbx.reflection_file_reader import  any_reflection_file
-    #ref = any_reflection_file("small_cxis_merge/iobs_all.mtz").as_miller_arrays()[0]
-    #refMap = { hidx: val for hidx, val in zip(ref.indices(), ref.data()) }
-    #vals = []
-    #for hkl,val in zip(h,I):
-    #    if val <=0:
-    #        continue
-    #    if hkl in refMap:
-    #        vals.append((val, refMap[hkl]))
-
-    #a,b = zip(*vals)
-    #CC = pearsonr(a,b)[0]
-    #CC2 = spearmanr(a,b)[0]
-    #print("pearson: %.4f, spearman=%.4f" %(CC,CC2))
-
-print0("updateing starting density")
+print0("updating starting density")
 L.update_density(Wstart)
-L.dens_dim=dens_dim
-if COMM.rank==0:
-    np.save(os.path.join(args.outdir, "Starting_density_relp"), Wstart)
 
 init_shot_scales = np.ones(len(this_ranks_imgs))
 
@@ -350,79 +314,6 @@ inbounds = utils.qs_inbounds(qcoords, L.dens_sh , L.xmin, L.xmax)
 inbounds = inbounds.reshape(this_ranks_imgs[0].shape)
 print0("INIT SHOT SCALES:", init_shot_scales)
 SHOT_MASK = inbounds*MASK.ravel()
-
-#class Model:
-#    def __init__(self):
-#        self.fluxes = [1e12]
-#        self.energies = [db_utils.ENERGY_CONV/BEAM.get_wavelength()]
-#        self.Famp = db_utils.make_miller_array("P43212", ave_ucell)
-#        hall = self.Famp.space_group_info().type().hall_symbol()
-#        ucell_man = db_utils.manager_from_params(ave_ucell)
-#        Bmat = np.reshape(ucell_man.B_realspace, (3, 3))
-#        a1, a2, a3 = map(tuple, [Bmat[:, 0], Bmat[:, 1], Bmat[:, 2]])
-#        cryst_descr = {'__id__': 'crystal',
-#                       'real_space_a': a1,
-#                       'real_space_b': a2,
-#                       'real_space_c': a3,
-#                       'space_group_hall_symbol': hall}
-#
-#        self.CRYST= Crystal.from_dict(cryst_descr)
-#
-#    def sanity_check_model(self, umat):
-#        C= deepcopy(self.CRYST)
-#        umat = tuple(umat.ravel())
-#        C.set_U(umat)
-#        model = diffBragg_forward(
-#            C, DET, BEAM, self.Famp, self.energies, self.fluxes,
-#            oversample=1, Ncells_abc=(20,20,20),
-#            mos_dom=1, mos_spread=0, beamsize_mm=0.001,
-#            device_Id=0,
-#            show_params=False, crystal_size_mm=0.005, printout_pix=None,
-#            verbose=0, default_F=0, interpolate=0, profile="gauss",
-#            mosaicity_random_seeds=None,
-#            show_timings=False,
-#            nopolar=False, diffuse_params=None)
-#        return model
-
-#M = Model()
-#
-#for i,img in enumerate(this_ranks_imgs):
-#    R = this_ranks_refls[i]
-#    x, y, z = R['xyzobs.px.value'].parts()
-#
-#    x-=0.5
-#    y-=0.5
-#    models =[]
-#    new_group = True
-#    prev_model = None
-#    for rot_id in this_ranks_prob_rot[i]:
-#
-#        umat = rots[rot_id]
-#        model = M.sanity_check_model(umat)
-#        if prev_model is None:
-#            prev_model = model
-#            new_group = True
-#        else:
-#            if np.allclose(prev_model, model):
-#                new_group = False
-#            else:
-#                new_group = True
-#                prev_model = model
-#        if new_group:
-#
-#            Rpred = utils.refls_from_sims(model, DET, BEAM, thresh=1e-4)
-#            utils.label_strong_reflections(Rpred, R, 1)
-#            nclose = np.sum(Rpred['is_strong'])
-#            Rclose = Rpred.select(Rpred["is_strong"])
-#            xobs, yobs, _ = Rclose["xyzobs.px"] .parts()
-#            xcal, ycal,_ = Rclose["xyzcal.px"].parts()
-#
-#            pred_dist = np.mean(np.sqrt((xobs-xcal)**2 + (yobs-ycal)**2))
-#            print("model %d, nclose=%d, predoffset=%.4f pix" %(rot_id, nclose, pred_dist ))
-#
-#    from IPython import embed;embed()
-#
-#
 
 # make the mpi emc object
 print0("instantiating emc class instance")
@@ -441,6 +332,7 @@ emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
                     symbol=symbol,
                     ucell_p=ave_ucell)
 
+emc.max_iter = args.maxIter
 # run emc for specified number of iterations
 print0("Begin EMC")
 emc.do_emc(niter)

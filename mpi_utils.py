@@ -263,10 +263,12 @@ class EMC:
         else:
             assert len(ucell_p) == 6
             self.ucell_p = ucell_p
-        
+
         if symbol is None:
             symbol = CRYSTAL.get_space_group().info().type().lookup_symbol()
         self.symbol=symbol
+
+        self.max_iter = 60
 
         self.shot_names = shot_names  # optional names identifying each shot (for book-keeping)
         assert len(shots) > 0
@@ -293,6 +295,7 @@ class EMC:
 
         self.ave_signal_level=ave_signal_level
         self.L = L  # lerpy instance
+        self.L.set_sym_ops(self.ucell_p, self.symbol)
         self.shots = shots
         self.max_scale = 1e6
         self.shot_sums = np.zeros(len(self.shots))
@@ -340,7 +343,7 @@ class EMC:
         self.success_corr = 0.2
         self.i_emc = 0
         self.save_model_freq = 10
-        self.dens_sh = self.L.dens_dim, self.L.dens_dim, self.L.dens_dim
+        self.dens_sh = self.L.dens_sh
         self.qs_inbounds = utils.qs_inbounds(self.L.qvecs.reshape((-1,3)), self.dens_sh, self.L.xmin, self.L.xmax)
         self.apply_density_rules()
         self.ave_time_per_iter = 0
@@ -445,19 +448,23 @@ class EMC:
         self.print("Waiting for other ranks to catch up before reducing")
         COMM.barrier()
         self.print("Reducing density")
-        rank_den = self.L.densities()
-        rank_wts = self.L.wts()
-        self.print("den reduce (max/min)=", rank_den.max(), rank_den.min())
-        den = np.empty_like(rank_den)
-        wts = np.empty_like(rank_wts)
-        dt = MPI.DOUBLE if self.L.array_type==np.float64 else MPI.FLOAT
-        COMM.Reduce([rank_den, dt],[den, dt])
-        COMM.Bcast([den, dt])
-        #den = COMM.bcast(COMM.reduce(den))
+        den = self.L.densities()
+        wts = self.L.wts()
+
+
+        #rank_den = self.L.densities()
+        #rank_wts = self.L.wts()
+        #self.print("den reduce (max/min)=", rank_den.max(), rank_den.min())
+        #den = np.empty_like(rank_den)
+        #wts = np.empty_like(rank_wts)
+        #dt = MPI.DOUBLE if self.L.array_type==np.float64 else MPI.FLOAT
+        #COMM.Reduce([rank_den, dt],[den, dt])
+        #COMM.Bcast([den, dt])
+        den = COMM.bcast(COMM.reduce(den))
         self.print("wts reduce")
-        COMM.Reduce([rank_wts, dt],[wts, dt])
-        COMM.Bcast([wts, dt])
-        #wts = COMM.bcast(COMM.reduce(wts))
+        #COMM.Reduce([rank_wts, dt],[wts, dt])
+        #COMM.Bcast([wts, dt])
+        wts = COMM.bcast(COMM.reduce(wts))
         den = utils.errdiv(den, wts)
         self.set_new_density(den)
 
@@ -472,15 +479,15 @@ class EMC:
         self.print("delta_W rms:", self.all_Wresid)
 
     def apply_density_rules(self):
-        den = self.L.densities()
         if self.symmetrize:
-            if COMM.rank==0:
-                den = utils.symmetrize(den, self.L.dens_dim, self.L.max_q, symbol=self.symbol, uc=self.ucell_p).ravel()
-            den = COMM.bcast(den)
+            # TODO optionally do this on one rank?
+            self.L.symmetrize()
+            self.L.apply_friedel_symmetry()
 
         if self.whole_punch:
+            den = self.L.densities().reshape(self.L.dens_sh)
             den,_ = utils.whole_punch_W(den, self.L.dens_dim, self.L.max_q, 1, self.ucell_p, symbol=self.symbol)
-        self.L.update_density(den)
+            self.L.update_density(den)
 
     def prep_for_insertion(self):
         self.L.toggle_insert()
@@ -552,7 +559,7 @@ class EMC:
                 self.reduce_density()
             elif self.density_update_method in ["line_search", "lbfgs"]:
                 density_updater = emc_updaters.DensityUpdater(self)
-                den = density_updater.update(how=self.density_update_method)
+                den = density_updater.update(how=self.density_update_method, lbfgs_maxiter=self.max_iter)
                 self.set_new_density(den)
             else:
                 raise NotImplementedError("Unknown method %s" % self.density_update_method)

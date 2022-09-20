@@ -66,6 +66,7 @@ void set_threads_blocks(lerpy& gpu);  // sets the blocksize
 void do_after_kernel();
 void sym_ops_to_dev(lerpy& gpu, np::ndarray& rot_mats);
 void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent);
+size_t get_gpu_mem(lerpy& gpu) ;
 
 // fills the gpu.out array with interpolated values, 1 for each qvec
 void do_a_lerp(lerpy& gpu,
@@ -87,7 +88,7 @@ struct gpuOrient {
     int max_numQ;
     int numRot;
     int numBlocks, blockSize;
-    int device;
+    int device=-1;
     bp::list probable_rot_inds;
     MAT3 Bmat; // upper diagonal Bmatrix (reciprocal space same convention as dxtbx Crystal.get_B())
 };

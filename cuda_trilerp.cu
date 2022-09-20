@@ -423,6 +423,16 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         printf("Post-kernel time=%f msec\n", time);
     }
 }
+/*
+  return free gpu memory in bytes for allocated device (gpu.device)
+*/
+size_t get_gpu_mem(lerpy& gpu) {
+   size_t free, total;
+   cudaMemGetInfo( &free, &total );
+   //printf("GPU %d memory: free=%zd, total=%zd, \n", gpu.device,free , total );
+   //double gpu_mem_mb = double(free)/1024/1024;
+   return free;
+}
 
 void free_lerpy(lerpy& gpu){
 //  TODO free sym ops
