@@ -491,7 +491,7 @@ class EMC:
     def set_new_density(self, den):
         self.ensure_same(den)
         self.LOGGER.debug("Update density (i_emc=%d)" %self.i_emc)
-        self.L.update_density(den)
+        self.L.update_density(den.ravel())
         self.apply_density_rules()
 
     def apply_density_rules(self):
@@ -503,10 +503,7 @@ class EMC:
             self.print("Applying Friedel symmetry")
             self.LOGGER.debug("Applying friedel symmetry (i_emc=%d)" % self.i_emc)
             self.L.symmetrize()
-            den = self.L.densities()
             self.L.apply_friedel_symmetry()
-            den = self.L.densities()
-
 
         if self.whole_punch:
             self.print("reshape density")
@@ -517,7 +514,7 @@ class EMC:
             den,_ = utils.whole_punch_W(den, self.L.dens_dim, self.L.max_q, 1, self.ucell_p, symbol=self.symbol)
             self.print("Update density again")
             self.LOGGER.debug("update dens again (i_emc=%d)" %self.i_emc)
-            self.L.update_density(den)
+            self.L.update_density(den.ravel())
 
     def prep_for_insertion(self):
         self.L.toggle_insert()

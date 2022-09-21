@@ -52,7 +52,7 @@ def add_type_methods(cls):
                     print("convert type")
                     vals = vals.astype(dt)
                 else:
-                    raise TypeError("Arral elems have incorrect type, should be %s" % str(dt))
+                    raise TypeError("Array elems have incorrect type, should be %s" % str(dt))
 
         if not vals.flags.c_contiguous:
             print("make contiguous")

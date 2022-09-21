@@ -112,16 +112,8 @@ class DensityUpdater(Updater):
 
         #xstart = np.log(dens_start[self.relp_mask])
         theta = dens_start[self.relp_mask]
+        self.emc.ensure_same(theta)  # ensure all ranks have same starging density
         xstart = np.sqrt((theta + 1)**2 -1)
-       
-        # ensure all ranks begin with same starting density ...  
-        req = COMM.isend(xstart,dest=0, tag=COMM.rank)
-        if COMM.rank==0:
-            for i_rank in range(COMM.size):
-                other_rank_x = COMM.recv(source=i_rank, tag=i_rank) 
-                if not np.allclose( xstart, other_rank_x):
-                    raise RuntimeError("startin densities differ between rank0 and rank %d" % i_rank)
-        req.wait()
 
         if how=="line_search":
             f, g = self.target(xstart)
