@@ -1,25 +1,29 @@
-import numpy as np
+import itertools
+import time
+from itertools import groupby
 import os
-import sympy
+import numpy as np
 from scipy.spatial.transform import Rotation
 from scipy.spatial import cKDTree, distance
 from scipy.ndimage import generate_binary_structure, iterate_structure, map_coordinates
 from scipy import ndimage as nd
-from simemc.compute_radials import RadPros
-import itertools
-import time
-from dials.command_line.stills_process import phil_scope
-from dxtbx.model import ExperimentList
+from scipy import ndimage as ni
+import sympy
+
 from simtbx.diffBragg import utils as db_utils
-from dials.array_family import flex
-from dials.algorithms.spot_finding.factory import SpotFinderFactory
 from cctbx import crystal
 from scitbx.matrix import sqr
 from libtbx.phil import parse
 from cctbx import miller
+from dxtbx.model import ExperimentList
+from dials.command_line.stills_process import phil_scope
+from dials.algorithms.spot_finding.factory import SpotFinderFactory
 from dials.array_family import flex
-from itertools import groupby
+from dials.algorithms.spot_finding.factory import FilterRunner
+from dials.model.data import PixelListLabeller, PixelList
+from dials.algorithms.spot_finding.finder import pixel_list_to_reflection_table
 
+from simemc.compute_radials import RadPros
 from simemc import sim_const
 try:
     from simemc.emc import lerpy
@@ -27,13 +31,8 @@ try:
 except ImportError:
     lerpy = None
     probable_orients = None
-from simemc import const
-#from reborn.misc.interpolate import trilinear_insertion, trilinear_interpolation
-from cctbx import sgtbx
-from scipy import ndimage as ni
-from dials.algorithms.spot_finding.factory import FilterRunner
-from dials.model.data import PixelListLabeller, PixelList
-from dials.algorithms.spot_finding.finder import pixel_list_to_reflection_table
+
+LOGNAME = "simemc.ranklog"
 
 
 def ucell_and_symbol(ucell_p, symbol):

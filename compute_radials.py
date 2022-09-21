@@ -1,7 +1,3 @@
-# TODO generalize for variable wavelength
-# NOTES: dxtbx radial average (which wraps xfel's radial average , a C++ extension module)
-# could also work, but I noticed the beam center is forced to be an integer in that implementation
-# Probably doesnt matter much for this work..
 
 from scipy import ndimage
 import numpy as np

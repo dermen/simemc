@@ -32,17 +32,19 @@ args = COMM.bcast(args)
 
 import sys
 import os
-
 import numpy as np
 import h5py
 from scipy.ndimage import median_filter as mf
-from dials.array_family import flex
 import time
 
-from simemc import mpi_utils, utils
-from simemc.compute_radials import RadPros
+from dials.array_family import flex
 from simtbx.diffBragg import utils as db_utils
 from dxtbx.model import ExperimentList
+
+
+from simemc import mpi_utils
+from simemc import utils
+from simemc.compute_radials import RadPros
 from simemc.emc import lerpy
 
 
@@ -75,6 +77,8 @@ mpi_utils.make_dir(args.outdir)
 if COMM.rank==0:
     with open(os.path.join(args.outdir, "command_line_input.txt"), "w") as o:
         o.write("Command line input:\n %s\n" % " ".join(sys.argv))
+
+mpi_utils.setup_rank_log_files(args.outdir + "/ranklogs", utils.LOGNAME)
 
 ucell_man = db_utils.manager_from_params(ave_ucell)
 Brecip = ucell_man.B_recipspace
@@ -335,5 +339,18 @@ emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
 emc.max_iter = args.maxIter
 # run emc for specified number of iterations
 print0("Begin EMC")
-emc.do_emc(niter)
+error_logger = mpi_utils.setup_rank_log_files(args.outdir+"/ranklogs", name="errors", ext="err")
+try:
+    emc.do_emc(niter)
+except Exception as err:
+    from traceback import format_tb
+    # prepend RANK to each line of the traceback
+    _,_,tb = sys.exc_info()
+    tb_s = "".join(format_tb(tb))
+    tb_s = tb_s.replace("\n", "\nRANK%04d"%COMM.rank)
+    err_s = str(err)+"\n"+ tb_s
+    error_logger.critical(err_s)# , exc_info=True)
+    #error_logger.critical(err, exc_info=True)
+    COMM.Abort()
+
 print0("Finish EMC")

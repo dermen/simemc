@@ -8,6 +8,7 @@ from simtbx.diffBragg.refiners.parameters import Parameters, RangedParameter
 from simemc import utils, mpi_utils
 import socket
 from itertools import groupby
+import logging
 
 
 def print_gpu_usage_across_ranks(L):
@@ -44,6 +45,7 @@ def print_cpu_mem_usage():
 class Updater:
 
     def __init__(self, emc):
+        self.LOGGER = logging.getLogger(utils.LOGNAME)
         self.emc = emc
         self.f = None
         self.g = None  # gradient of refinement parameters
@@ -101,7 +103,7 @@ class DensityUpdater(Updater):
 
         is_zero = dens_start == 0
         if np.any(is_zero):
-            self.emc.print("WARNING!!!!!!! Density is 0 in some places", flush=True)
+            self.LOGGER.debug("WARNING!!!!!!! Density is 0 in some places")
             min_pos_val = min(1e-7, dens_start[~is_zero].min())
             dens_start[is_zero] = min_pos_val
 
@@ -124,8 +126,12 @@ class DensityUpdater(Updater):
         else:
             raise NotImplementedError("method %s not supported" % how)
         dens_opt = np.zeros_like(dens_start)
-        with np.errstate(over='raise'):
-            dens_opt[self.relp_mask] = np.exp(xopt)
+        try:
+            with np.errstate(over='raise'):
+                dens_opt[self.relp_mask] = np.exp(xopt)
+        except FloatingPointError:
+            self.LOGGER.debug("RANK %d reporting floating point error! Exploding MPI" %COMM.rank)
+            COMM.Abort()
         return dens_opt
 
     def target(self, x):
@@ -135,8 +141,12 @@ class DensityUpdater(Updater):
 
         # x is the log of the density
         # Apply reparameterization to keep density positive
-        with np.errstate(over='raise'):
-            dens[self.relp_mask] = np.exp(x)
+        try:
+            with np.errstate(over='raise'):
+                dens[self.relp_mask] = np.exp(x)
+        except FloatingPointError:
+            self.LOGGER.debug("rank %d exploding MPI because fpoint error!!!!!!!" % COMM.rank)
+            COMM.Abort()
 
         emc.L.update_density(dens)
 
@@ -147,7 +157,9 @@ class DensityUpdater(Updater):
         print_cpu_mem_usage()
 
         for i_shot in range(emc.nshots):
-            self.emc.print("Maximization iter %d ( %d/ %d)" % (self.iter_num+1, i_shot+1, emc.nshots)) #, end="\r", flush=True)
+            print_s = "Maximization iter %d ( %d/ %d)" % (self.iter_num+1, i_shot+1, emc.nshots)
+            self.LOGGER.debug(print_s)
+            self.emc.print(print_s)
             #if COMM.rank==0:
             #    #gpu_mem = self.emc.L.get_gpu_mem()/1024**3
             #    #from IPython import embed;embed()
@@ -165,10 +177,13 @@ class DensityUpdater(Updater):
             grad += shot_grad[self.relp_mask]
             functional += (finite_P_dr*log_Rdr).sum()
 
+        self.LOGGER.debug("Done with rank grad/functional (iter %d)" % self.iter_num)
+
         grad = COMM.bcast(COMM.reduce(grad))
         functional = COMM.bcast(COMM.reduce(functional))
 
         # Because we reparameterized, such that W = exp(x), then grad -> dW/dx *grad = exp(x)*grad = density*grad
+        self.LOGGER.debug("scaling the gradient (iter %d)" % self.iter_num)
         grad *= dens[self.relp_mask]
 
         # running a minimizer, so return the negative loglike and its gradient

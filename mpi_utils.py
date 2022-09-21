@@ -193,7 +193,6 @@ def load_emc_input(input_dirs, dt=None, max_num=None, min_prob_ori=0, max_prob_o
 
 
 def setup_profile_log_files(logdir, name='simemc.profile', overwrite=True):
-    """params: PHIL params, see simtbx.diffBragg.hopper phil string"""
     make_dir(logdir)
 
     mpi_logger._make_logger(name,
@@ -202,6 +201,15 @@ def setup_profile_log_files(logdir, name='simemc.profile', overwrite=True):
                  overwrite=overwrite,
                  formatter=logging.Formatter(mpi_logger.SIMPLE_FORMAT))
 
+
+def setup_rank_log_files(logdir, name, overwrite=True, ext="log"):
+    make_dir(logdir)
+    logger = mpi_logger._make_logger(name,
+                        os.path.join(logdir, mpi_logger.HOST+"_simemc.%s" % ext),
+                        level=logging.DEBUG,
+                        overwrite=overwrite,
+                        formatter=logging.Formatter(mpi_logger.SIMPLE_FORMAT))
+    return logger
 
 
 def print_profile(stats, timed_methods=None):
@@ -258,6 +266,9 @@ class EMC:
         :param density_update_method: str, can be either 'analytical' or  'line_search'. The latter uses numerical optimization
             (see emc_updaters.DensityUpdater class)
         """
+
+        self.LOGGER = logging.getLogger(utils.LOGNAME)
+
         if ucell_p is None:
             self.ucell_p = CRYSTAL.get_unit_cell().parameters()
         else:
@@ -344,12 +355,14 @@ class EMC:
         self.i_emc = 0
         self.save_model_freq = 10
         self.dens_sh = self.L.dens_sh
-        self.qs_inbounds = utils.qs_inbounds(self.L.qvecs.reshape((-1,3)), self.dens_sh, self.L.xmin, self.L.xmax)
-        self.apply_density_rules()
         self.ave_time_per_iter = 0
         self.refine_scale_factors = refine_scale_factors
         self.update_scale_factors = False  # if the specific iteration is updating the per-shot scale factors
         self.update_density = True  # if the specific iteration is updating the density
+
+        self.qs_inbounds = utils.qs_inbounds(self.L.qvecs.reshape((-1,3)), self.dens_sh, self.L.xmin, self.L.xmax)
+        self.apply_density_rules()
+
         for i,s in enumerate(self.shots):
             shot_mask_in_bounds = self.shot_mask[self.qs_inbounds]
             shot_in_bounds = s[self.qs_inbounds]
@@ -469,24 +482,39 @@ class EMC:
         self.set_new_density(den)
 
     def set_new_density(self, den):
-        self.print("MEAN DENSITY:", den.mean())
+        #self.print("MEAN DENSITY:", den.mean())
+        self.print("Updating DENSITY:")
+        self.LOGGER.debug("Update density (i_emc=%d)" %self.i_emc)
         self.L.update_density(den)
         self.apply_density_rules()
 
+        self.print("Computing residual")
         residuals = den-self.Wprev
-        rms_diff = np.sqrt(np.mean(np.sum(residuals**2)))
+        self.print("Computing Rms diff")
+        rms_diff = np.sqrt(np.mean(residuals.ravel()**2))
         self.all_Wresid.append(rms_diff)
         self.print("delta_W rms:", self.all_Wresid)
 
     def apply_density_rules(self):
         if self.symmetrize:
             # TODO optionally do this on one rank?
+            self.print("Applying crystal symmetry")
+            self.LOGGER.debug("Applying crystal symmetry (i_emc=%d)" % self.i_emc)
+            self.L.symmetrize()
+            self.print("Applying Friedel symmetry")
+            self.LOGGER.debug("Applying friedel symmetry (i_emc=%d)" % self.i_emc)
             self.L.symmetrize()
             self.L.apply_friedel_symmetry()
 
         if self.whole_punch:
+            self.print("reshape density")
+            self.LOGGER.debug("reshape dens (i_emc=%d)" %self.i_emc)
             den = self.L.densities().reshape(self.L.dens_sh)
+            self.print("whole punch density")
+            self.LOGGER.debug("whole punch dens (i_emc=%d)" %self.i_emc)
             den,_ = utils.whole_punch_W(den, self.L.dens_dim, self.L.max_q, 1, self.ucell_p, symbol=self.symbol)
+            self.print("Update density again")
+            self.LOGGER.debug("update dens again (i_emc=%d)" %self.i_emc)
             self.L.update_density(den)
 
     def prep_for_insertion(self):
