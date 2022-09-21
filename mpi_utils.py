@@ -464,7 +464,6 @@ class EMC:
         den = self.L.densities()
         wts = self.L.wts()
 
-
         #rank_den = self.L.densities()
         #rank_wts = self.L.wts()
         #self.print("den reduce (max/min)=", rank_den.max(), rank_den.min())
@@ -481,19 +480,19 @@ class EMC:
         den = utils.errdiv(den, wts)
         self.set_new_density(den)
 
+    def ensure_same(self, den):
+        req = COMM.isend(den, dest=0, tag=COMM.rank)
+        if COMM.rank==0:
+            for i_rank in range(COMM.size):
+                other_rank_den = COMM.recv(source=i_rank, tag=i_rank)
+                assert np.allclose(den, other_rank_den)
+        req.wait()
+
     def set_new_density(self, den):
-        #self.print("MEAN DENSITY:", den.mean())
-        self.print("Updating DENSITY:")
+        self.ensure_same(den)
         self.LOGGER.debug("Update density (i_emc=%d)" %self.i_emc)
         self.L.update_density(den)
         self.apply_density_rules()
-
-        self.print("Computing residual")
-        residuals = den-self.Wprev
-        self.print("Computing Rms diff")
-        rms_diff = np.sqrt(np.mean(residuals.ravel()**2))
-        self.all_Wresid.append(rms_diff)
-        self.print("delta_W rms:", self.all_Wresid)
 
     def apply_density_rules(self):
         if self.symmetrize:
@@ -504,7 +503,10 @@ class EMC:
             self.print("Applying Friedel symmetry")
             self.LOGGER.debug("Applying friedel symmetry (i_emc=%d)" % self.i_emc)
             self.L.symmetrize()
+            den = self.L.densities()
             self.L.apply_friedel_symmetry()
+            den = self.L.densities()
+
 
         if self.whole_punch:
             self.print("reshape density")
@@ -685,6 +687,7 @@ class EMC:
         if not os.path.exists(dirname):
             os.makedirs(dirname)
         fname = os.path.join(dirname, "P_dr_iter%d.npz" % (self.i_emc+1))
+        # TODO use dtype obj for jagged arrays
         np.savez(fname, rots=self.prob_rots, Pdr=self.shot_P_dr, names=self.shot_names)
 
     def success_rate(self, init=False, return_models=False):

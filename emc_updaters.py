@@ -81,14 +81,17 @@ class DensityUpdater(Updater):
         super().__init__(*args, **kwargs)
         temp = np.random.random(self.emc.L.dens_sh)
         # TODO update for arbitrary UCELL
-        _, self.relp_mask = utils.whole_punch_W(temp,
-            self.emc.L.dens_dim, self.emc.L.max_q, 1, ucell_p=self.emc.ucell_p, symbol=self.emc.symbol)
-        vox_res = utils.voxel_resolution(self.emc.L.dens_dim,
-            self.emc.L.max_q)
-        highRes_limit = 1./self.emc.L.max_q
-        vox_inbounds = vox_res >= highRes_limit # TODO generalize
-        self.relp_mask = np.logical_and(self.relp_mask, vox_inbounds)
-        self.relp_mask = self.relp_mask.ravel()
+        self.relp_mask=None
+        if COMM.rank==0:
+            _, self.relp_mask = utils.whole_punch_W(temp,
+                self.emc.L.dens_dim, self.emc.L.max_q, 1, ucell_p=self.emc.ucell_p, symbol=self.emc.symbol)
+            vox_res = utils.voxel_resolution(self.emc.L.dens_dim,
+                self.emc.L.max_q)
+            highRes_limit = 1./self.emc.L.max_q
+            vox_inbounds = vox_res >= highRes_limit # TODO generalize
+            self.relp_mask = np.logical_and(self.relp_mask, vox_inbounds)
+            self.relp_mask = self.relp_mask.ravel()
+        self.relp_mask = COMM.bcast(self.relp_mask)
         self.emc.L.copy_relp_mask_to_device(self.relp_mask)
         self.min_prob = 1e-5
 
@@ -107,7 +110,18 @@ class DensityUpdater(Updater):
             min_pos_val = min(1e-7, dens_start[~is_zero].min())
             dens_start[is_zero] = min_pos_val
 
-        xstart = np.log(dens_start[self.relp_mask])
+        #xstart = np.log(dens_start[self.relp_mask])
+        theta = dens_start[self.relp_mask]
+        xstart = np.sqrt((theta + 1)**2 -1)
+       
+        # ensure all ranks begin with same starting density ...  
+        req = COMM.isend(xstart,dest=0, tag=COMM.rank)
+        if COMM.rank==0:
+            for i_rank in range(COMM.size):
+                other_rank_x = COMM.recv(source=i_rank, tag=i_rank) 
+                if not np.allclose( xstart, other_rank_x):
+                    raise RuntimeError("startin densities differ between rank0 and rank %d" % i_rank)
+        req.wait()
 
         if how=="line_search":
             f, g = self.target(xstart)
@@ -120,33 +134,31 @@ class DensityUpdater(Updater):
             xopt = xstart + alpha*pk
 
         elif how == "lbfgs":
-            out = minimize(self, xstart, method="L-BFGS-B", jac=self.jac, callback=self.check_convergence,
+            out = minimize(self, xstart, method="L-BFGS-B", jac=self.jac, callback=None,
                            options={"maxiter": lbfgs_maxiter})
             xopt = out.x
+            self.LOGGER.debug("Minimization has terminated in %d iterations (final value=%10.7g, msg=%s, success=%s)" % (out.nit,out.fun, out.message, out.success))
+            self.emc.ensure_same(xopt)
         else:
             raise NotImplementedError("method %s not supported" % how)
         dens_opt = np.zeros_like(dens_start)
-        try:
-            with np.errstate(over='raise'):
-                dens_opt[self.relp_mask] = np.exp(xopt)
-        except FloatingPointError:
-            self.LOGGER.debug("RANK %d reporting floating point error! Exploding MPI" %COMM.rank)
-            COMM.Abort()
+        with np.errstate(over='raise'):
+            dens_opt[self.relp_mask] = np.sqrt(xopt**2 +1) -1
         return dens_opt
 
     def target(self, x):
+        x = COMM.bcast(x)  # for some reason parameter updates were drifting ...
+
         emc = self.emc
 
         dens = np.zeros(emc.L.dens_dim**3)
 
         # x is the log of the density
         # Apply reparameterization to keep density positive
-        try:
-            with np.errstate(over='raise'):
-                dens[self.relp_mask] = np.exp(x)
-        except FloatingPointError:
-            self.LOGGER.debug("rank %d exploding MPI because fpoint error!!!!!!!" % COMM.rank)
-            COMM.Abort()
+        with np.errstate(over='raise'):
+            #dens[self.relp_mask] = np.exp(x)
+            theta = np.sqrt(x**2+1) -1
+            dens[self.relp_mask] = theta
 
         emc.L.update_density(dens)
 
@@ -156,14 +168,11 @@ class DensityUpdater(Updater):
         print_gpu_usage_across_ranks(self.emc.L)
         print_cpu_mem_usage()
 
+        self.LOGGER.debug("Compute func/grads for %d shots" % emc.nshots)
         for i_shot in range(emc.nshots):
             print_s = "Maximization iter %d ( %d/ %d)" % (self.iter_num+1, i_shot+1, emc.nshots)
             self.LOGGER.debug(print_s)
             self.emc.print(print_s)
-            #if COMM.rank==0:
-            #    #gpu_mem = self.emc.L.get_gpu_mem()/1024**3
-            #    #from IPython import embed;embed()
-            #    #print("Free GPU memory on one GPU: %.2f" % (socket.gethostname(), gpu_mem))
             P_dr = emc.shot_P_dr[i_shot]
             is_finite_prob = np.array(P_dr) >= self.min_prob
             
@@ -177,31 +186,29 @@ class DensityUpdater(Updater):
             grad += shot_grad[self.relp_mask]
             functional += (finite_P_dr*log_Rdr).sum()
 
-        self.LOGGER.debug("Done with rank grad/functional (iter %d)" % self.iter_num)
-
-        grad = COMM.bcast(COMM.reduce(grad))
-        functional = COMM.bcast(COMM.reduce(functional))
+        self.LOGGER.debug("Done with rank grad/functional (iter %d)" % (self.iter_num+1))
+        COMM.barrier()
+        self.LOGGER.debug("Reducing grad")
+        grad = COMM.reduce(grad)
+        grad = COMM.bcast(grad)
+        COMM.barrier()
+        self.LOGGER.debug("functional")
+        functional = COMM.reduce(functional)
+        functional = COMM.bcast(functional)
 
         # Because we reparameterized, such that W = exp(x), then grad -> dW/dx *grad = exp(x)*grad = density*grad
-        self.LOGGER.debug("scaling the gradient (iter %d)" % self.iter_num)
-        grad *= dens[self.relp_mask]
+        self.LOGGER.debug("Scaling the gradient (iter %d)" % (self.iter_num+1))
+        dtheta_dx = x/np.sqrt(x**2+1)
+        grad_scaled = grad * dtheta_dx
+        self.emc.print("")
+        emc_s = "Done with emc iter num: %d (F=%f,G=%10.7g,Gs=%10.7g,|x|=%f, |dth_dx|=%f)" % (self.iter_num+1, functional, np.mean(grad), np.mean(grad_scaled), np.linalg.norm(x), np.linalg.norm(dtheta_dx))
+
+        self.emc.print(emc_s, flush=True)
+        self.LOGGER.debug(emc_s)
 
         # running a minimizer, so return the negative loglike and its gradient
         self.iter_num += 1
-        return -functional, -grad
-
-
-    def check_convergence(self, x):
-        #if self.iter_num==0:
-        #    self.xprev = x
-        #    xresid_s = ""
-        #else:
-        #    xresid = np.abs(x-self.xprev).mean()
-        #    self.xprev = x
-        #    xresid_s = str(xresid)
-        if self.f is not None:
-            self.emc.print("")
-            self.emc.print("Done with emc iter num: %d (target=%f)" % (self.iter_num, self.f), flush=True)
+        return -functional, -grad_scaled
 
 
 class ScaleUpdater(Updater):
@@ -284,7 +291,7 @@ class ScaleUpdater(Updater):
         if bfgs:
             try:
                 out = minimize(self, x0=x0, jac=self.jac, method="L-BFGS-B", bounds=bounds,
-                               callback=self.check_convergence, options={'maxiter': 100})
+                               callback=None, options={'maxiter': 100})
                 xopt = out.x
             except StopIteration:
                 xopt = self.xprev
@@ -349,6 +356,7 @@ class ScaleUpdater(Updater):
         :param x: refiner parameters (all shot scale factors across all MPI ranks)
         :return: 2-tuple of (float, np.ndarray same length as x )
         """
+        x = COMM.bcast(x)  # should always be the same here, but noticed drift in density updater...
         emc = self.emc
         functional = 0
         grad = np.zeros(len(x))

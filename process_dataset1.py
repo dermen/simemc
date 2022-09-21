@@ -23,6 +23,7 @@ if COMM.rank==0:
     parser.add_argument("--useCrystals", action="store_true", help="if experiments in args.expt contain crystal models, use those as probable orientations")
     parser.add_argument("--saveBg", action="store_true", help="write background images to disk( will be used upon restart)")
     parser.add_argument("--useSavedBg", action="store_true")
+    parser.add_argument("--noSym", action="store_true")
     parser.add_argument("--maxIter", type=int, default=60)
     args = parser.parse_args()
 else:
@@ -334,6 +335,7 @@ emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
                     shot_names=this_ranks_names,
                     density_update_method="lbfgs",
                     symbol=symbol,
+                    symmetrize=not args.noSym,
                     ucell_p=ave_ucell)
 
 emc.max_iter = args.maxIter
