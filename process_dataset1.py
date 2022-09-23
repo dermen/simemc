@@ -57,7 +57,7 @@ if highRes:
     dens_dim = 511
     max_q = 0.5
 else:
-    dens_dim=301
+    dens_dim=601
     max_q=0.25
 
 
@@ -267,38 +267,40 @@ L.set_sym_ops(ave_ucell, symbol)
 L.toggle_insert()
 
 print0("getting W init")
-Wstart = utils.get_W_init(dens_dim, max_q, ucell_p=ave_ucell, symbol=symbol)
-Wstart /= Wstart.max()
-Wstart *= ave_signal_level
-print0("done")
 
 if args.restartfile is not None:
     Wstart = h5py.File(args.restartfile, 'r')["Wprime"][()]
 
-if args.useCrystals:
+elif args.useCrystals:
 
     for ii, (gt_rot_idx, img, bg) in enumerate(zip(this_ranks_gt_inds, this_ranks_imgs, this_ranks_bgs)):
         print0("inserting %d / %d" % (ii+1,len(this_ranks_imgs)))
         L.trilinear_insertion(gt_rot_idx, img-bg)
 
-    #W = L.densities()
-    #wt = L.wts()
-    #print0("shape of W", W.shape)
-    #print0("shape of wt", wt.shape)
+    W = L.densities()
+    wt = L.wts()
+    print0("shape of W", W.shape)
     #W = COMM.bcast(COMM.reduce(W))
+    W = mpi_utils.reduce_large(W, sz=32**3, buffers=True, broadcast=True, verbose=True)
+
+    print0("shape of wt", wt.shape)
+    wt = mpi_utils.reduce_large(wt, sz=32**3, buffers=True, broadcast=True, verbose=True)
     #wt = COMM.bcast(COMM.reduce(wt))
 
-    rank_W = L.densities()
-    rank_wt = L.wts()
-    W = np.empty_like(rank_W)
-    wt = np.empty_like(rank_wt)
-    print0("reduction")
-    dt = MPI.DOUBLE if rank_W.dtype==np.float64 else MPI.FLOAT
-    COMM.Reduce([rank_W,dt ] ,[W, dt])
-    print0("reduction")
-    COMM.Reduce([rank_wt,dt ] ,[wt, dt])
-    COMM.Bcast([W, dt])
-    COMM.Bcast([wt, dt])
+    #rank_W = L.densities()
+    #rank_wt = L.wts()
+    #W = np.empty_like(rank_W)
+    #wt = np.empty_like(rank_wt)
+    #print0("reduction")
+
+    #dt = MPI.DOUBLE if rank_W.dtype==np.float64 else MPI.FLOAT
+    #COMM.Reduce([rank_W,dt ] ,[W, dt])
+    #print0("reduction")
+    #COMM.Reduce([rank_wt,dt ] ,[wt, dt])
+    #print0("Bcast")
+    #COMM.Bcast([W, dt])
+    #print0("Bcast")
+    #COMM.Bcast([wt, dt])
     print0("dividing")
     Wstart = utils.errdiv(W, wt)
     print0("Symmetrizing")
@@ -307,6 +309,20 @@ if args.useCrystals:
     L.apply_friedel_symmetry()
     Wstart = L.densities().reshape(L.dens_sh)
     Wstart[Wstart<0] = 0
+
+else:
+    Wstart = utils.get_W_init(dens_dim, max_q, ucell_p=ave_ucell, symbol=symbol)
+
+print0("done")
+
+Wstart /= Wstart.max()
+Wstart *= ave_signal_level
+    
+if COMM.rank==0:
+    with h5py.File("temp651.h5", "w") as h:
+        h.create_dataset("Wprime", data=Wstart)
+        h.create_dataset("ucell", data=ave_ucell)
+exit()
 
 print0("updating starting density")
 L.update_density(Wstart)

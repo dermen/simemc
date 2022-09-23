@@ -242,6 +242,8 @@ def integrate_W(W, dens_dim, max_q, ucell_p=None, symbol=None, order=None, kerne
             i2_slc = slice(i2-ksz, i2+ksz+1,1)
             i3_slc = slice(i3-ksz, i3+ksz+1,1)
             peakRegion = W[i1_slc, i2_slc, i3_slc]  # region around one peak, same shape as kernel
+            #from IPython import embed;embed()
+
             integrated_val = peakRegion[kernel].sum()
             data.append(integrated_val)
             hkls.append((int(h), int(k), int(l)))

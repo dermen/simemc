@@ -242,6 +242,57 @@ def print_profile(stats, timed_methods=None):
             printR("%5d%14.2f%9.2f%s" % (l, timespent[i_l]*unit*1e3, frac_t, line))
 
 
+def reduce_large(v, sz=None, broadcast=True, verbose=False, buffers=False):
+    """
+    reduce /broadcast large numpy arrays
+    :param v: numpy array with lots of elements e.g. np.random.random((700,700,700))
+    :param sz: reduce v this many elements at a time
+    :param broadcast: broadcast result to all ranks
+    :param verbose: print statements, to see what slow step is
+    :param buffers: depending on system and size of array, buffers will speed things up
+        NOTE: buffers has given inconsistent results in some settings.. see MPI.Reduce method emphasis on capital R
+    :return: reduced array. If broadcast is False, return value is None for ranks>0
+    """
+    v_sh = v.shape
+    if v.dtype==np.float64:
+        dt = MPI.DOUBLE
+    elif v.dtype==np.float32:
+        dt = MPI.FLOAT
+    else:
+        assert v.dtype==int
+        dt = MPI.INT
+    if verbose:
+        print0f("ravel")
+    v = v.ravel()
+    if sz is None:
+        sz = 32**3
+    v_slices = []
+    nchunk = int(np.ceil(len(v) / sz))
+
+    for i_chunk, i_rng in enumerate(np.array_split(np.arange(len(v)), nchunk)):
+        if verbose:
+            print0f("reduce slice %d / %d" %(i_chunk+1, nchunk), end="\r")
+
+        start = i_rng[0]
+        stop = i_rng[-1]+1
+        v_slc_rank = np.array(v[start:stop])
+        COMM.barrier()
+
+        if buffers:
+            v_slc = np.empty_like(v_slc_rank)
+            COMM.Reduce([v_slc_rank,dt], [v_slc, dt])
+        else:
+            v_slc = COMM.reduce(v_slc_rank)
+        if broadcast:
+            v_slc = COMM.bcast(v_slc)
+        v_slices.append(v_slc)
+    v_red = None
+    if not np.any([slc is None for slc in v_slices]):
+        v_red = np.hstack(v_slices)
+        v_red = v_red.reshape(v_sh)
+    return v_red
+
+
 class EMC:
 
     def __init__(self, L, shots, prob_rots, shot_background=None, shot_mask=None, min_p=0, outdir=None, beta=1,
