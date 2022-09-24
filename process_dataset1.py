@@ -57,7 +57,7 @@ if highRes:
     dens_dim = 511
     max_q = 0.5
 else:
-    dens_dim=601
+    dens_dim=351
     max_q=0.25
 
 
@@ -109,39 +109,53 @@ for i_img in range(len(this_ranks_imgs)):
 rots, wts = utils.load_quat_file(args.quat)
 
 if args.useCrystals and np.any([C is not None for C in this_ranks_crystals]):
-    extra_rots = [np.reshape(C.get_U(), (3,3)) for C in this_ranks_crystals if C is not None]
+    extra_rots = [np.reshape(C.get_U(), (3,3)) if C is not None else None for C in this_ranks_crystals]
     extra_rots = COMM.gather(extra_rots)
-    this_ranks_gt_inds = []
     all_req = []
     if COMM.rank==0:
-        n = rots.shape[0]
+        extra_rots_not_none = []
+        extra_rot_ind = rots.shape[0]
         for i_rank, more_rots in enumerate(extra_rots):
-            nmore = len(more_rots)
-            inds = np.arange(n, n+nmore)
-            n += nmore
+            inds = []  # inds is either None, or the index of the crystal rotation matrix in the grid
+            for i_rot, Umat in enumerate(more_rots):
+                if Umat is None:
+                    inds.append(None)
+                else:
+                    extra_rots_not_none.append(Umat)
+                    inds.append(extra_rot_ind)
+                    extra_rot_ind += 1
+
             req = COMM.isend(inds, dest=i_rank, tag=i_rank)
             all_req.append(req)
-        extra_rots = np.concatenate(extra_rots)
-    extra_rots = COMM.bcast(extra_rots)
+    else:
+        extra_rots_not_none = None
+
+    extra_rots_not_none = COMM.bcast(extra_rots_not_none)
 
     this_ranks_gt_inds = COMM.recv(source=0, tag=COMM.rank)
     for req in all_req:
         req.wait()
 
-    rots = np.append(rots, extra_rots, axis=0)
-    wts = np.append(wts, np.ones(len(extra_rots)) * np.mean(wts))
+    rots = np.append(rots, extra_rots_not_none, axis=0)
+    wts = np.append(wts, np.ones(len(extra_rots_not_none)) * np.mean(wts))
 
+num_with_less_than_3 = 0
 for i,R in enumerate(this_ranks_refls):
     Q = db_utils.refls_to_q(R, DET, BEAM)
     dspace = 1 / np.linalg.norm(Q, axis=1)
     sel = flex.bool(dspace >= highRes)
-    if USE_RSEL:
-        Rsel = R.select(sel)
-        assert len(Rsel) >= 3
+    Rsel = R.select(sel)
+    nsel = len(Rsel)
+    if nsel <3:
+        num_with_less_than_3 += 1
+    if USE_RSEL and nsel >=3:
         this_ranks_refls[i] = Rsel
     else:
         this_ranks_refls[i] = R
 
+num_with_less_than_3 = COMM.reduce(num_with_less_than_3)
+if COMM.rank==0:
+    print("Number of shots with fewer than 3 refls within the  max_q cutoff=%d" %num_with_less_than_3)
 
 if TEST_UCELLS:
     ave_ucell1 = 68.48, 68.48, 104.38, 90,90,90
@@ -167,6 +181,30 @@ else:
             Bmat_reference=Brecip, hcut=args.hcut, min_pred=args.minPred,
             verbose=COMM.rank==0, detector=DET,beam=BEAM, hcut_incr=0.0025)
 # TODO: if useCrystals, assert known orientations are present in this_ranks_prob_rot
+
+# for all of the loaded experiments with crystals, lets add the ground truth rotation matrix
+# to the list of probable rotation indices....
+nmissing_gt = 0
+nwith_gt = 0
+for ii,(gt, inds) in enumerate(zip(this_ranks_gt_inds, this_ranks_prob_rot)):
+    if gt is not None:
+        nwith_gt += 1
+        if gt not in set(inds):
+            this_ranks_prob_rot[ii] = np.append(this_ranks_prob_rot[ii], gt)
+            nmissing_gt += 1
+nwith_gt = COMM.reduce(nwith_gt)
+nmissing_gt = COMM.reduce(nmissing_gt)
+if COMM.rank==0:
+    print0("Out of %d experiments with provided crystals, %d did not determine the gt rot ind as probable" %(nwith_gt, nmissing_gt))
+
+# sanity test on gt rot inds
+for gt, C in zip(this_ranks_gt_inds, this_ranks_crystals):
+    if C is None:
+        continue
+    Umat = rots[gt]
+    Umat2 = np.reshape(C.get_U(), (3,3))
+    assert np.allclose(Umat, Umat2)
+
 
 has_no_rots = [len(prob_rots)==0 for prob_rots in this_ranks_prob_rot]
 has_no_rots = COMM.reduce(has_no_rots)
@@ -216,7 +254,7 @@ for i_img, (img,name, R) in enumerate(zip(this_ranks_imgs, this_ranks_names, thi
     print0("Done with background image %d / %d (Took %f sec to fit bg) (signal=%f, bg_sig=%f)" % (i_img+1, len(this_ranks_imgs), t, signal_level, bg_signal_level))
 
 
-for img,bg,name in zip(this_ranks_imgs, this_ranks_bgs, this_ranks_names):
+for img, bg, name in zip(this_ranks_imgs, this_ranks_bgs, this_ranks_names):
     h5name = os.path.splitext(name)[0] +"_background.h5"
     if args.saveBg:
         with h5py.File(h5name, "w") as h5:
@@ -272,10 +310,12 @@ if args.restartfile is not None:
     Wstart = h5py.File(args.restartfile, 'r')["Wprime"][()]
 
 elif args.useCrystals:
-
+    # TODO: is it better to start the density as 3D gaussians ?
     for ii, (gt_rot_idx, img, bg) in enumerate(zip(this_ranks_gt_inds, this_ranks_imgs, this_ranks_bgs)):
+        if gt_rot_idx is None:
+            continue
         print0("inserting %d / %d" % (ii+1,len(this_ranks_imgs)))
-        L.trilinear_insertion(gt_rot_idx, img-bg)
+        L.trilinear_insertion(gt_rot_idx, img-bg)  # TODO: should we insert the difference ?
 
     W = L.densities()
     wt = L.wts()
@@ -285,22 +325,6 @@ elif args.useCrystals:
 
     print0("shape of wt", wt.shape)
     wt = mpi_utils.reduce_large(wt, sz=32**3, buffers=True, broadcast=True, verbose=True)
-    #wt = COMM.bcast(COMM.reduce(wt))
-
-    #rank_W = L.densities()
-    #rank_wt = L.wts()
-    #W = np.empty_like(rank_W)
-    #wt = np.empty_like(rank_wt)
-    #print0("reduction")
-
-    #dt = MPI.DOUBLE if rank_W.dtype==np.float64 else MPI.FLOAT
-    #COMM.Reduce([rank_W,dt ] ,[W, dt])
-    #print0("reduction")
-    #COMM.Reduce([rank_wt,dt ] ,[wt, dt])
-    #print0("Bcast")
-    #COMM.Bcast([W, dt])
-    #print0("Bcast")
-    #COMM.Bcast([wt, dt])
     print0("dividing")
     Wstart = utils.errdiv(W, wt)
     print0("Symmetrizing")
@@ -317,12 +341,11 @@ print0("done")
 
 Wstart /= Wstart.max()
 Wstart *= ave_signal_level
-    
-if COMM.rank==0:
-    with h5py.File("temp651.h5", "w") as h:
-        h.create_dataset("Wprime", data=Wstart)
-        h.create_dataset("ucell", data=ave_ucell)
-exit()
+
+#if COMM.rank==0:
+#    with h5py.File("temp651.h5", "w") as h:
+#        h.create_dataset("Wprime", data=Wstart)
+#        h.create_dataset("ucell", data=ave_ucell)
 
 print0("updating starting density")
 L.update_density(Wstart)

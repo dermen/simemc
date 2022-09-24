@@ -1,23 +1,28 @@
-from mpi4py import MPI
+
+import os
+import logging
+import glob
+import socket
 import time
 from copy import deepcopy
-from simemc import utils
+from itertools import groupby
+
+from mpi4py import MPI
 import sympy
 from scipy.stats import pearsonr
-import os
 import h5py
-import glob
-from dials.array_family import flex
 import numpy as np
-from simtbx.diffBragg import mpi_logger
-from simemc import emc_updaters
-from simemc.sim_const import CRYSTAL
-
+from dials.array_family import flex
+from xfel.merging.application.utils.memory_usage import get_memory_usage
 from dxtbx.model import ExperimentList
+from simtbx.diffBragg import mpi_logger
 from simtbx.diffBragg.utils import image_data_from_expt
 
+
+from simemc import utils
+from simemc import emc_updaters
+from simemc.sim_const import CRYSTAL
 from simemc.compute_radials import RadPros
-import logging
 
 COMM = MPI.COMM_WORLD
 
@@ -540,7 +545,7 @@ class EMC:
         req.wait()
 
     def set_new_density(self, den):
-        self.ensure_same(den)
+        #self.ensure_same(den)
         self.LOGGER.debug("Update density (i_emc=%d)" %self.i_emc)
         self.L.update_density(den.ravel())
         self.apply_density_rules()
@@ -591,7 +596,7 @@ class EMC:
         if COMM.rank==0:
             num_zero = sum(np.array(num_per_shot)==0)
             ave_pos = np.mean(num_per_shot).mean()
-            self.print("Number of shots with 0 finite rot inds= %.2f. Mean num rot inds=%d for shots with finite rot inds (total shots=%d)" \
+            self.print("Number of shots with 0 finite rot inds= %.2f. Mean num rot inds=%.2f for shots with finite rot inds (total shots=%d)" \
                        % (num_zero, ave_pos, self.nshot_tot))
 
     def do_emc(self, num_iter):
@@ -785,8 +790,6 @@ class EMC:
             return models
 
 
-
-
 def determine_rank_with_most_inserts(emc):
     total_inserts_this_rank = len(np.hstack(emc.prob_rots))
     total_inserts_each_rank = COMM.gather(total_inserts_this_rank)
@@ -797,5 +800,43 @@ def determine_rank_with_most_inserts(emc):
     return rank_with_most, total_inserts_this_rank
 
 
+def print_gpu_usage_across_ranks(L, logger=None):
+    """
+
+    :param L: lerpy instance (see emc_ext)
+    :param logger: python logger
+    :return:
+    """
+    free_mem = L.get_gpu_mem()/1024**3
+    dev_id = L.dev_id
+    all_data = COMM.gather([dev_id, free_mem])
+    if COMM.rank==0:
+        gb = groupby(sorted(all_data, key=lambda x:x[0]), key=lambda x:x[0])
+        gpu_mem_info = {dev: [i for _,i in list(vals)] for dev, vals in gb}
+        seen_hosts = set()
+        for dev in gpu_mem_info:
+            for free_mem in gpu_mem_info[dev]:
+                host = socket.gethostname()
+                if (dev, host) in seen_hosts:
+                    continue
+                if logger is not None:
+                    logger.debug("device %d  on host %s has %.2f GB  free" % (dev,host, free_mem))
+                else:
+                    print("device %d  on host %s has %.2f GB  free" % (dev, host, free_mem))
+                seen_hosts = seen_hosts.union({(dev,host)})
 
 
+def print_cpu_mem_usage(logger=None):
+    memMB = get_memory_usage()/1024
+    host = socket.gethostname()
+    all_data = COMM.gather([host, memMB])
+    if COMM.rank==0:
+        gb = groupby(sorted(all_data, key=lambda x:x[0]), key=lambda x:x[0])
+        cpu_mem_info = {host: [i for _,i in list(vals)] for host, vals in gb}
+        for host in cpu_mem_info:
+            for peak_mem in cpu_mem_info[host]:
+                if logger is not None:
+                    logger.debug("host %s has used %.2f GB of memory" % (host, peak_mem))
+                else:
+                    print("host %s has used %.2f GB of memory" % (host, peak_mem))
+                break

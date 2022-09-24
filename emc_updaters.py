@@ -3,43 +3,9 @@ COMM = MPI.COMM_WORLD
 
 import numpy as np
 from scipy.optimize import minimize, line_search
-from xfel.merging.application.utils.memory_usage import get_memory_usage
 from simtbx.diffBragg.refiners.parameters import Parameters, RangedParameter
 from simemc import utils, mpi_utils
-import socket
-from itertools import groupby
 import logging
-
-
-def print_gpu_usage_across_ranks(L):
-    free_mem = L.get_gpu_mem()/1024**3
-    dev_id = L.dev_id
-    all_data = COMM.gather([dev_id, free_mem])
-    if COMM.rank==0:
-        gb = groupby(sorted(all_data, key=lambda x:x[0]), key=lambda x:x[0])
-        gpu_mem_info = {dev: [i for _,i in list(vals)] for dev, vals in gb}
-        seen_hosts = set()
-        dev_host_s = {}
-        for dev in gpu_mem_info:
-            for free_mem in gpu_mem_info[dev]:
-                host = socket.gethostname()
-                if (dev, host) in seen_hosts:
-                    continue
-                print("device %d  on host %s has %.2f GB  free" % (dev,host, free_mem))
-                seen_hosts = seen_hosts.union({(dev,host)})
-
-
-def print_cpu_mem_usage():
-    memMB = get_memory_usage()/1024
-    host = socket.gethostname()
-    all_data = COMM.gather([host, memMB])
-    if COMM.rank==0:
-        gb = groupby(sorted(all_data, key=lambda x:x[0]), key=lambda x:x[0])
-        cpu_mem_info = {host: [i for _,i in list(vals)] for host, vals in gb}
-        for host in cpu_mem_info:
-            for peak_mem in cpu_mem_info[host]:
-                print("host %s has used %.2f GB of memory" % (host, peak_mem))
-                break
 
 
 class Updater:
@@ -112,7 +78,7 @@ class DensityUpdater(Updater):
 
         #xstart = np.log(dens_start[self.relp_mask])
         theta = dens_start[self.relp_mask]
-        self.emc.ensure_same(theta)  # ensure all ranks have same starging density
+        #self.emc.ensure_same(theta)  # ensure all ranks have same starging density
         xstart = np.sqrt((theta + 1)**2 -1)
 
         if how=="line_search":
@@ -130,7 +96,8 @@ class DensityUpdater(Updater):
                            options={"maxiter": lbfgs_maxiter})
             xopt = out.x
             self.LOGGER.debug("Minimization has terminated in %d iterations (final value=%10.7g, msg=%s, success=%s)" % (out.nit,out.fun, out.message, out.success))
-            self.emc.ensure_same(xopt)
+            self.emc.print("")
+            #self.emc.ensure_same(xopt)
         else:
             raise NotImplementedError("method %s not supported" % how)
         dens_opt = np.zeros_like(dens_start)
@@ -157,14 +124,14 @@ class DensityUpdater(Updater):
         functional = 0
         grad = np.zeros(len(x))
 
-        print_gpu_usage_across_ranks(self.emc.L)
-        print_cpu_mem_usage()
+        mpi_utils.print_gpu_usage_across_ranks(self.emc.L, logger=self.LOGGER)
+        mpi_utils.print_cpu_mem_usage(logger=self.LOGGER)
 
         self.LOGGER.debug("Compute func/grads for %d shots" % emc.nshots)
         for i_shot in range(emc.nshots):
             print_s = "Maximization iter %d ( %d/ %d)" % (self.iter_num+1, i_shot+1, emc.nshots)
             self.LOGGER.debug(print_s)
-            self.emc.print(print_s)
+            self.emc.print(print_s, end="\r", flush=True)
             P_dr = emc.shot_P_dr[i_shot]
             is_finite_prob = np.array(P_dr) >= self.min_prob
             
@@ -181,8 +148,7 @@ class DensityUpdater(Updater):
         self.LOGGER.debug("Done with rank grad/functional (iter %d)" % (self.iter_num+1))
         COMM.barrier()
         self.LOGGER.debug("Reducing grad")
-        grad = COMM.reduce(grad)
-        grad = COMM.bcast(grad)
+        grad = mpi_utils.reduce_large(grad,broadcast=True)
         COMM.barrier()
         self.LOGGER.debug("functional")
         functional = COMM.reduce(functional)
@@ -192,10 +158,10 @@ class DensityUpdater(Updater):
         self.LOGGER.debug("Scaling the gradient (iter %d)" % (self.iter_num+1))
         dtheta_dx = x/np.sqrt(x**2+1)
         grad_scaled = grad * dtheta_dx
-        self.emc.print("")
+        #self.emc.print("")
         emc_s = "Done with emc iter num: %d (F=%f,G=%10.7g,Gs=%10.7g,|x|=%f, |dth_dx|=%f)" % (self.iter_num+1, functional, np.mean(grad), np.mean(grad_scaled), np.linalg.norm(x), np.linalg.norm(dtheta_dx))
 
-        self.emc.print(emc_s, flush=True)
+        #self.emc.print(emc_s, flush=True)
         self.LOGGER.debug(emc_s)
 
         # running a minimizer, so return the negative loglike and its gradient
