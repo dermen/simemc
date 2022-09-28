@@ -58,8 +58,8 @@ __global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
                            CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
 
 
-void do_after_kernel(){
-    error_msg(cudaGetLastError(), "after kernel call");
+void do_after_kernel(int rank){
+    error_msg(cudaGetLastError(), "after kernel call", rank);
     cudaDeviceSynchronize();
 }
 
@@ -72,8 +72,6 @@ void sym_ops_to_dev(lerpy& gpu, np::ndarray& rot_mats){
     }
     else if (gpu.rotMatsSym != NULL && num_sym_op != gpu.num_sym_op){
         printf("Warning: re-allocating for different number of sym ops\n");
-        cudaFree(gpu.rotMatsSym);
-        gpuErr(cudaMallocManaged((void **)&gpu.rotMatsSym, num_sym_op*sizeof(MAT3)));
         gpu.num_sym_op = num_sym_op;
     }
 
@@ -171,7 +169,7 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
                      gpu.corner[0], gpu.corner[1], gpu.corner[2],
                      gpu.delta[0], gpu.delta[1], gpu.delta[2]
                     );
-            do_after_kernel();
+            do_after_kernel(gpu.mpi_rank);
         }
     }
 
@@ -203,6 +201,7 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
 
     gpuErr(cudaSetDevice(gpu.device));
     gpuErr(cudaMallocManaged((void **)&gpu.rotMats, gpu.numRot*sizeof(MAT3)));
+    //gpuErr(cudaMalloc((void ** )&gpu.rotMats, sizeof(MAT3) * gpu.numRot));
     gpuErr(cudaMallocManaged((void **)&gpu.densities, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.densities_gradient, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.out, gpu.maxNumQ*sizeof(CUDAREAL)));
@@ -215,6 +214,7 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
     gpuErr(cudaMallocManaged((void **)&gpu.background, gpu.numDataPixels*sizeof(CUDAREAL)));
 
     MAT3 Umat; // orientation matrix
+    //MAT3 * temp = new MAT3[gpu.numRot];
     CUDAREAL* Umats_ptr = reinterpret_cast<CUDAREAL*>(Umats.get_data());
     for (int i_rot=0; i_rot < gpu.numRot; i_rot ++){
         int i= i_rot*9;
@@ -231,7 +231,10 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
                 uyx, uyy, uyz,
                 uzx, uzy, uzz;
         gpu.rotMats[i_rot] = Umat.transpose();
+        //temp[i_rot] = Umat.transpose();
     }
+    //gpuErr(cudaMemcpy(gpu.rotMats, temp, sizeof(MAT3) * gpu.numRot, cudaMemcpyHostToDevice));
+    //delete temp;
 
     CUDAREAL* qvec_ptr = reinterpret_cast<CUDAREAL*>(qvectors.get_data());
     for (int i_q = 0; i_q < gpu.numQ; i_q++) {
@@ -340,6 +343,8 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
      */
     if (task==0){
         MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
+        //int offset = gpu.rotInds[0];
+        //cudaMemcpy(&rotMat, gpu.rotMats+offset, sizeof(MAT3), cudaMemcpyDeviceToHost);
         trilinear_interpolation_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
                 (gpu.densities, gpu.qVecs, gpu.out,
                  rotMat, gpu.numQ,
@@ -392,6 +397,8 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
     else if (task==2)  {
         if (verbose)printf("Trilinear insertion!\n");
         MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
+        //int offset = gpu.rotInds[0];
+        //cudaMemcpy(&rotMat, gpu.rotMats+offset, sizeof(MAT3), cudaMemcpyDeviceToHost);
 //      NOTE: here gpu.data are the insert values
         trilinear_insertion_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
                 (gpu.densities, gpu.wts, gpu.data, gpu.mask, gpu.tomogram_wt, gpu.qVecs,
@@ -402,7 +409,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                 );
    
     }
-    do_after_kernel();
+    do_after_kernel(gpu.mpi_rank);
     if (verbose) {
         gettimeofday(&t2, 0);
         time = (1000000.0 * (t2.tv_sec - t1.tv_sec) + t2.tv_usec - t1.tv_usec) / 1000.0;
@@ -643,6 +650,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
         idx5 = get_densities_index(i0, j1, k1, nx, ny, nz);
         idx6 = get_densities_index(i1, j1, k0, nx, ny, nz);
         idx7 = get_densities_index(i1, j1, k1, nx, ny, nz);
+        // TODO verify indices idx0-idx7 are inbounds
 
         atomicAdd(&densities[idx0], val*a0);
         atomicAdd(&densities[idx1], val*a1);

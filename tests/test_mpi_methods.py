@@ -3,7 +3,7 @@ from mpi4py import MPI
 import pytest
 import numpy as np
 
-from simemc.mpi_utils import reduce_large, print0
+from simemc.mpi_utils import bcast_large, reduce_large, print0
 
 COMM= MPI.COMM_WORLD
 
@@ -17,7 +17,9 @@ def test_large_reduce():
     v = np.random.random((200,200,200))
 
     print0("reduce whole", flush=True)
-    v_all = COMM.bcast(COMM.reduce(v))
+    v_all = COMM.reduce(v)
+    v_all = bcast_large(v_all)
+    #v_all = COMM.bcast(COMM.reduce(v))
     print0("Reduce chunked", flush=True)
     v_all2 = reduce_large(v, verbose=True, sz=64**3, broadcast=False)
 

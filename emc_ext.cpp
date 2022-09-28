@@ -7,6 +7,8 @@
 #include <boost/python/numpy.hpp>
 #include <boost/python/args.hpp>
 #include <iostream>
+#include <mpi.h>
+#include <mpi4py/mpi4py.h>
 #include "cuda_trilerp.h"
 #define BOOST_LIB_NAME "boost_numpy"
 #include <boost/config/auto_link.hpp>
@@ -263,6 +265,15 @@ class lerpyExt{
         gpu.maxQ = maxQ;
     }
 
+    inline double get_rank(){
+        return gpu.mpi_rank;
+    }
+
+    inline void set_rank(int rank){
+        gpu.mpi_rank = rank;
+    }
+
+
     inline void free(){
         free_lerpy(gpu);
     }
@@ -330,12 +341,25 @@ public:
                M(2,0), M(2,1), M(2,2));
     }
 
+    inline void alloc_IPC(int device_id, np::ndarray& rotations,
+                        int maxQvecs, int numRot, bp::object py_comm){
+
+      PyObject* py_obj = py_comm.ptr();
+      MPI_Comm *comm_p = PyMPIComm_Get(py_obj);
+      if (comm_p == NULL) bp::throw_error_already_set();
+      setup_orientMatch_IPC(device_id, maxQvecs, gpu,
+                     rotations, numRot, *comm_p);
+    }
+
 };
 
 
 BOOST_PYTHON_MODULE(emc){
+//  important initialization
     Py_Initialize();
     np::initialize();
+    if (import_mpi4py() < 0) return;
+
     typedef bp::return_value_policy<bp::return_by_value> rbv;
     typedef bp::default_call_policies dcp;
     typedef bp::return_internal_reference<> rir;
@@ -415,6 +439,11 @@ BOOST_PYTHON_MODULE(emc){
                        make_function(&lerpyExt::set_maxQ,dcp()),
                        "the maximum q magnitude (defines density edge length from -maxQ to +maxQ)")
 
+        .add_property("rank",
+                       make_function(&lerpyExt::get_rank,rbv()),
+                       make_function(&lerpyExt::set_rank,dcp()),
+                       "set the mpi rank from python (its used in varuous printf statements)")
+
         .add_property("max_num_rots",
                        make_function(&lerpyExt::get_max_num_rots,rbv()),
                        "GPU was allocated for this many rotations")
@@ -441,7 +470,7 @@ BOOST_PYTHON_MODULE(emc){
         .def ("print_rotMat", &probaOr::print_rotMat, "show elements of allocated rotMat i_rot")
         .def ("get_probable_orients", &probaOr::listOrients, "returns a list of rotation matrix indices")
         .add_property("Bmatrix",
-                       make_function(&probaOr::get_B,rbv()),
+                       make_function(&probaOr::get_B,rbv()),mpi_utils.bcast_large(
                        make_function(&probaOr::set_B,dcp()),
                        "the Bmatrix (dxtbx Crystal.get_B() format)")
         .add_property("size_of_cudareal",
@@ -451,6 +480,7 @@ BOOST_PYTHON_MODULE(emc){
             make_getter(&probaOr::auto_convert_arrays,rbv()),
             make_setter(&probaOr::auto_convert_arrays,dcp()),
             "If arrays passed to `copy_image_data` or `update_density` aren't suitable, convert them to suitable arrays. A suitable array is C-contiguous and of type CUDAREAL")
+        .def ("_allocate_orientations_IPC", &probaOr::alloc_IPC, "allocate the device using inter process comm")
         ;
 
 }

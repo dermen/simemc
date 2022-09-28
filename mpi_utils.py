@@ -27,6 +27,34 @@ from simemc.compute_radials import RadPros
 COMM = MPI.COMM_WORLD
 
 
+def get_host_comm():
+    """
+    get an MPI communicator for all ranks sharing a specific host
+    """
+    HOST = socket.gethostname()
+    unique_hosts = COMM.gather(HOST)
+    HOST_MAP = None
+    if COMM.rank==0:
+        HOST_MAP = {HOST:i for i,HOST in enumerate(set(unique_hosts))}
+    HOST_MAP = COMM.bcast(HOST_MAP)
+    HOST_COMM = COMM.Split(color=HOST_MAP[HOST])
+    return HOST_COMM
+
+
+def get_host_dev_comm(dev_id=None):
+    """
+    get an MPI communicator for all ranks sharing a specific device on a specific host
+    """
+    HOST = socket.gethostname(), dev_id
+    unique_hosts = COMM.gather(HOST)
+    HOST_MAP = None
+    if COMM.rank==0:
+        HOST_MAP = {HOST: i for i,HOST in enumerate(set(unique_hosts))}
+    HOST_MAP = COMM.bcast(HOST_MAP)
+    HOST_COMM = COMM.Split(color=HOST_MAP[HOST])
+    return HOST_COMM
+
+
 def print0(*args, **kwargs):
     if COMM.rank==0:
         print("MPI-ROOT:", *args, **kwargs)
@@ -247,6 +275,51 @@ def print_profile(stats, timed_methods=None):
             printR("%5d%14.2f%9.2f%s" % (l, timespent[i_l]*unit*1e3, frac_t, line))
 
 
+def bcast_large(v, sz=None, verbose=False, comm=None):
+    """
+    reduce /broadcast large numpy arrays
+    :param v: numpy array with lots of elements e.g. np.random.random((700,700,700))
+    :param sz: reduce v this many elements at a time
+    :param verbose: print statements, to see what slow step is
+    :param comm: mpi communicator
+    :return: broadcast array
+    """
+    if comm is None:
+        comm = COMM  # default is global comm
+    v_sh = nchunk = nv = None
+    if sz is None:
+        sz = 32**3
+    if comm.rank==0:
+        v_sh = v.shape
+        v = v.ravel()
+        nchunk = int(np.ceil(len(v) / sz))
+        nv = len(v)
+
+    nv = comm.bcast(nv)
+    v_sh = comm.bcast(v_sh)
+    nchunk = comm.bcast(nchunk)
+    v_slices = []
+
+    for i_chunk, i_rng in enumerate(np.array_split(np.arange(nv), nchunk)):
+        if verbose:
+            print0f("reduce slice %d / %d" %(i_chunk+1, nchunk), end="\r")
+
+        start = i_rng[0]
+        stop = i_rng[-1]+1
+        v_slc = None
+        if comm.rank==0:
+            v_slc = np.array(v[start:stop])
+        comm.barrier()
+        v_slc = comm.bcast(v_slc)
+        comm.barrier()
+        v_slices.append(v_slc)
+    if verbose:
+        print0f("")
+    v_bcast = np.hstack(v_slices)
+    v_bcast = v_bcast.reshape(v_sh)
+    return v_bcast
+
+
 def reduce_large(v, sz=None, broadcast=True, verbose=False, buffers=False):
     """
     reduce /broadcast large numpy arrays
@@ -291,6 +364,8 @@ def reduce_large(v, sz=None, broadcast=True, verbose=False, buffers=False):
         if broadcast:
             v_slc = COMM.bcast(v_slc)
         v_slices.append(v_slc)
+    if verbose:
+        print0f("")
     v_red = None
     if not np.any([slc is None for slc in v_slices]):
         v_red = np.hstack(v_slices)
@@ -362,6 +437,7 @@ class EMC:
 
         self.ave_signal_level=ave_signal_level
         self.L = L  # lerpy instance
+        self.L.rank = COMM.rank
         self.L.set_sym_ops(self.ucell_p, self.symbol)
         self.shots = shots
         self.max_scale = 1e6
@@ -604,6 +680,9 @@ class EMC:
         iter_times = []
         while self.i_emc < num_iter:
             t = time.time()
+            print_cpu_mem_usage(self.LOGGER)
+            print_cpu_mem_usage()
+            print_gpu_usage_across_ranks(self.L)
 
             self.update_scale_factors = self.i_emc > 4 and (self.i_emc % 2 == 1) and self.refine_scale_factors
             self.update_density = not self.update_scale_factors
@@ -616,8 +695,11 @@ class EMC:
                 self.P_dr = self.get_P_dr(log_R_dr)
                 self.shot_P_dr.append(self.P_dr)
                 self.add_records()
+                self.LOGGER.debug("Done with shot %d / %d Pdr" % (self.i_shot+1, self.nshots))
+            self.LOGGER.debug("Done with P_dr step")
 
             if self.update_scale_factors:
+                self.LOGGER.debug("Beginning scale update step")
                 self.print("**Updating scale factors**")
                 updater = emc_updaters.ScaleUpdater(self)
                 if self.scale_update_method == 'analytical':
@@ -632,6 +714,7 @@ class EMC:
                 t = time.time()-t
                 iter_times.append(t)
                 self.ave_time_per_iter = np.mean(iter_times)
+                self.LOGGER.debug("Done with scale update step")
                 continue
 
             if self.density_update_method == "analytical":
@@ -641,12 +724,15 @@ class EMC:
                 self.insert_multi_rankers()
                 self.reduce_density()
             elif self.density_update_method in ["line_search", "lbfgs"]:
+                self.LOGGER.debug("Beginning numerical density update step")
                 density_updater = emc_updaters.DensityUpdater(self)
+                self.LOGGER.debug("Instantiated density updater...")
                 den = density_updater.update(how=self.density_update_method, lbfgs_maxiter=self.max_iter)
                 self.set_new_density(den)
             else:
                 raise NotImplementedError("Unknown method %s" % self.density_update_method)
 
+            self.LOGGER.debug("Done with density update step")
             self.count_scale_factors_at_limit()
             self.count_finite_inds_per_shot()
             self.write_to_outdir()

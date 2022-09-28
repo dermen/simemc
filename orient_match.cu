@@ -1,21 +1,106 @@
 
+#include <mpi.h>
+#include <mpi4py/mpi4py.h>
 #include "cuda_trilerp.h"
 #include "emc.cuh"
-
 
 __global__
 void orientMultiply(VEC3*  qVecs, MAT3* rotMats, int numQ,
                     int numRot, bool* out, CUDAREAL hcut,
                     int minPred, MAT3 Bmat);
 
+void copy_umats(MAT3* mats, np::ndarray& Umats, int numRot);
+void set_blocks_threads(gpuOrient& gpu, int numRot);
+
 void free_orientMatch(gpuOrient& gpu){
-    if (gpu.rotMats != NULL)
-    gpuErr(cudaFree(gpu.rotMats));
+    if (gpu.rotMats != NULL && gpu.free_rotMats)
+        gpuErr(cudaFree(gpu.rotMats));
     if(gpu.qVecs != NULL)
-    gpuErr(cudaFree(gpu.qVecs));
+        gpuErr(cudaFree(gpu.qVecs));
     if (gpu.out != NULL)
-    gpuErr(cudaFree(gpu.out));
+        gpuErr(cudaFree(gpu.out));
+    if (gpu.close_rotMats_handle)
+        cudaIpcCloseMemHandle(gpu.rotMats);
 }
+
+void copy_umats(MAT3* mats, np::ndarray& Umats, int numRot){
+    MAT3 Umat; // orientation matrix
+    CUDAREAL * u_ptr = reinterpret_cast<CUDAREAL*>(Umats.get_data());
+    for (int i_rot=0; i_rot < numRot; i_rot ++){
+        int i= i_rot*9;
+        CUDAREAL uxx = *(u_ptr+i);
+        CUDAREAL uxy = *(u_ptr+i+1);
+        CUDAREAL uxz = *(u_ptr+i+2);
+        CUDAREAL uyx = *(u_ptr+i+3);
+        CUDAREAL uyy = *(u_ptr+i+4);
+        CUDAREAL uyz = *(u_ptr+i+5);
+        CUDAREAL uzx = *(u_ptr+i+6);
+        CUDAREAL uzy = *(u_ptr+i+7);
+        CUDAREAL uzz = *(u_ptr+i+8);
+        Umat << uxx, uxy, uxz,
+                uyx, uyy, uyz,
+                uzx, uzy, uzz;
+        mats[i_rot] = Umat.transpose();
+    }
+}
+
+void set_blocks_threads(gpuOrient& gpu, int numRot){
+    // optional size of each device block, else default to 128
+    char* diffBragg_threads = getenv("ORIENT_THREADS_PER_BLOCK");
+    if (diffBragg_threads==NULL)
+        gpu.blockSize=128;
+    else
+        gpu.blockSize=atoi(diffBragg_threads);
+    gpu.numBlocks = (numRot+gpu.blockSize-1)/gpu.blockSize;
+}
+
+void setup_orientMatch_IPC(int dev_id, int maxNumQ, gpuOrient& gpu,
+                       np::ndarray& Umats, int numRot, MPI_Comm COMM){
+
+    int rank, size;
+    MPI_Comm_size(COMM, &size);
+    MPI_Comm_rank(COMM, &rank);
+
+    gpuErr(cudaSetDevice(dev_id));
+    gpu.numRot = numRot;
+    gpu.max_numQ = maxNumQ;
+    gpu.device = dev_id;
+    gpuErr(cudaMallocManaged((void **)&gpu.out, numRot*sizeof(bool)));
+    gpuErr(cudaMallocManaged((void **)&gpu.qVecs, maxNumQ*sizeof(VEC3)));
+
+    cudaIpcMemHandle_t rotMats_memHand[1];
+    if (rank==0){
+        gpuErr(cudaMalloc((void ** )&gpu.rotMats, sizeof(MAT3) * numRot));
+        gpuErr(cudaIpcGetMemHandle((cudaIpcMemHandle_t *) &rotMats_memHand[0], (void *)gpu.rotMats));
+        MAT3 * temp = new MAT3[numRot];
+        copy_umats(temp, Umats, numRot);
+        gpuErr(cudaMemcpy(gpu.rotMats, temp, sizeof(MAT3) * numRot, cudaMemcpyHostToDevice));
+        delete temp;
+    }
+
+    //  Broadcast the MPI handle
+    int hand_size[1];
+    if (rank==0)
+        hand_size[0]= sizeof(rotMats_memHand[0]);
+    MPI_Bcast(&hand_size[0], 1, MPI_INT, 0, COMM);
+
+    // create the char container for memHandler broadcast
+    char memHand_C[hand_size[0]];
+    if (rank==0)
+        memcpy(&memHand_C, &rotMats_memHand[0], hand_size[0]);
+    MPI_Bcast(&memHand_C, hand_size[0], MPI_BYTE, 0, COMM);
+    if (rank >0)
+        memcpy(&rotMats_memHand[0], &memHand_C, hand_size[0]);
+
+    if (rank >0 )
+        gpuErr(cudaIpcOpenMemHandle((void **) &gpu.rotMats, rotMats_memHand[0], cudaIpcMemLazyEnablePeerAccess));
+
+    gpu.free_rotMats = (rank==0) ;
+    gpu.close_rotMats_handle = (rank >0) ;
+
+    set_blocks_threads(gpu, numRot);
+}
+
 
 void setup_orientMatch(int dev_id, int maxNumQ, gpuOrient& gpu,
                        np::ndarray& Umats, bool alloc ){
@@ -28,35 +113,9 @@ void setup_orientMatch(int dev_id, int maxNumQ, gpuOrient& gpu,
         gpuErr(cudaMallocManaged((void **)&gpu.rotMats, numRot*sizeof(MAT3)));
         gpuErr(cudaMallocManaged((void **)&gpu.out, numRot*sizeof(bool)));
         gpuErr(cudaMallocManaged((void **)&gpu.qVecs, maxNumQ*sizeof(VEC3)));
-
-        MAT3 Umat; // orientation matrix
-        CUDAREAL * u_ptr = reinterpret_cast<CUDAREAL*>(Umats.get_data());
-        for (int i_rot=0; i_rot < numRot; i_rot ++){
-            int i= i_rot*9;
-            CUDAREAL uxx = *(u_ptr+i);
-            CUDAREAL uxy = *(u_ptr+i+1);
-            CUDAREAL uxz = *(u_ptr+i+2);
-            CUDAREAL uyx = *(u_ptr+i+3);
-            CUDAREAL uyy = *(u_ptr+i+4);
-            CUDAREAL uyz = *(u_ptr+i+5);
-            CUDAREAL uzx = *(u_ptr+i+6);
-            CUDAREAL uzy = *(u_ptr+i+7);
-            CUDAREAL uzz = *(u_ptr+i+8);
-            Umat << uxx, uxy, uxz,
-                    uyx, uyy, uyz,
-                    uzx, uzy, uzz;
-            gpu.rotMats[i_rot] = Umat.transpose();
-        }
+        copy_umats(gpu.rotMats, Umats, numRot);
     }
-
-    // optional size of each device block, else default to 128
-    char* diffBragg_threads = getenv("ORIENT_THREADS_PER_BLOCK");
-    if (diffBragg_threads==NULL)
-        gpu.blockSize=128;
-    else
-        gpu.blockSize=atoi(diffBragg_threads);
-    gpu.numBlocks = (numRot+gpu.blockSize-1)/gpu.blockSize;
-
+    set_blocks_threads(gpu, numRot);
 }
 
 
@@ -105,7 +164,7 @@ void orientPeaks(gpuOrient& gpu, np::ndarray& qvecs, CUDAREAL hcut,
         (gpu.qVecs, gpu.rotMats, numQ, gpu.numRot,
          gpu.out, hcut, minPred, Binv);
 
-    error_msg(cudaGetLastError(), "after kernel call");
+    error_msg(cudaGetLastError(), "after kernel call", gpu.mpi_rank);
     cudaDeviceSynchronize();
     gettimeofday(&t2, 0);
     time = (1000000.0*(t2.tv_sec-t1.tv_sec) + t2.tv_usec-t1.tv_usec)/1000.0;

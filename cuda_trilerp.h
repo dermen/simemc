@@ -8,6 +8,7 @@ typedef Eigen::Matrix<CUDAREAL,3,1> VEC3;
 typedef Eigen::Matrix<CUDAREAL,3,3> MAT3;
 typedef std::vector<VEC3,Eigen::aligned_allocator<VEC3> > eigVec3_vec;
 #include <iostream>
+#include <mpi.h>
 #include <boost/python/numpy.hpp>
 #include <stdio.h>
 #include <sys/time.h>
@@ -16,6 +17,7 @@ namespace bp = boost::python;
 namespace np = boost::python::numpy;
 
 struct lerpy {
+  int mpi_rank=-1; // MPI rank, has to be set manually from python
   int num_sym_op = 0; // number of symmetry operators
   MAT3* rotMatsSym=NULL; // symmetry operators
   MAT3* rotMats=NULL; // orientation grid operators
@@ -80,7 +82,10 @@ void free_lerpy(lerpy& gpu);
 
 
 struct gpuOrient {
-
+//  flags for the cleanup method to know whether to close te handle or free mem (mem only allocated on one rank)
+    bool close_rotMats_handle = false;
+    bool free_rotMats = true;
+    int mpi_rank=-1; // TODO add a setter for this in emc_ext
     MAT3* rotMats=NULL;
     VEC3* qVecs=NULL;
     //double* qVecs=NULL;
@@ -99,6 +104,8 @@ void orientPeaks(gpuOrient& gpu,
                  int minpred, bool verbose);
 void setup_orientMatch(int dev_id, int maxNumQ, gpuOrient& gpu,
                        np::ndarray& Umats, bool alloc);
+void setup_orientMatch_IPC(int dev_id, int maxNumQ, gpuOrient& gpu,
+                       np::ndarray& Umats, int numRot, MPI_Comm COMM);
 void free_orientMatch(gpuOrient& gpu);
 
 

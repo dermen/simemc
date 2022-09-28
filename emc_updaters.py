@@ -12,6 +12,7 @@ class Updater:
 
     def __init__(self, emc):
         self.LOGGER = logging.getLogger(utils.LOGNAME)
+        self.LOGGER.debug("Instantiating updater base class")
         self.emc = emc
         self.f = None
         self.g = None  # gradient of refinement parameters
@@ -45,20 +46,29 @@ class DensityUpdater(Updater):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.LOGGER.debug("making temp density")
         temp = np.random.random(self.emc.L.dens_sh)
         # TODO update for arbitrary UCELL
         self.relp_mask=None
         if COMM.rank==0:
+            self.LOGGER.debug("Whole punching W for relp mask")
             _, self.relp_mask = utils.whole_punch_W(temp,
                 self.emc.L.dens_dim, self.emc.L.max_q, 1, ucell_p=self.emc.ucell_p, symbol=self.emc.symbol)
+            self.LOGGER.debug("getting voxel resolution")
             vox_res = utils.voxel_resolution(self.emc.L.dens_dim,
                 self.emc.L.max_q)
             highRes_limit = 1./self.emc.L.max_q
             vox_inbounds = vox_res >= highRes_limit # TODO generalize
+            self.LOGGER.debug("applying resolution cutoff to relp mask")
             self.relp_mask = np.logical_and(self.relp_mask, vox_inbounds)
             self.relp_mask = self.relp_mask.ravel()
-        self.relp_mask = COMM.bcast(self.relp_mask)
+        self.LOGGER.debug("Broadcasting relp mask")
+        self.relp_mask = mpi_utils.bcast_large(self.relp_mask)
+        self.LOGGER.debug("Copying relp mask to device")
+        mpi_utils.print_gpu_usage_across_ranks(self.emc.L)
         self.emc.L.copy_relp_mask_to_device(self.relp_mask)
+        self.LOGGER.debug("Done Copying relp mask to device")
+        COMM.barrier()
         self.min_prob = 1e-5
 
     def update(self, how="line_search", lbfgs_maxiter=60):
@@ -68,6 +78,7 @@ class DensityUpdater(Updater):
         """
         dens_start = self.emc.L.densities()
 
+        self.LOGGER.debug("density start assert")
         assert np.all(dens_start >= 0)
 
         is_zero = dens_start == 0
@@ -77,6 +88,7 @@ class DensityUpdater(Updater):
             dens_start[is_zero] = min_pos_val
 
         #xstart = np.log(dens_start[self.relp_mask])
+        self.LOGGER.debug("Reparameterizing density")
         theta = dens_start[self.relp_mask]
         #self.emc.ensure_same(theta)  # ensure all ranks have same starging density
         xstart = np.sqrt((theta + 1)**2 -1)
@@ -92,6 +104,7 @@ class DensityUpdater(Updater):
             xopt = xstart + alpha*pk
 
         elif how == "lbfgs":
+            self.LOGGER.debug("Beginning density optimization process")
             out = minimize(self, xstart, method="L-BFGS-B", jac=self.jac, callback=None,
                            options={"maxiter": lbfgs_maxiter})
             xopt = out.x
@@ -134,13 +147,19 @@ class DensityUpdater(Updater):
             self.emc.print(print_s, end="\r", flush=True)
             P_dr = emc.shot_P_dr[i_shot]
             is_finite_prob = np.array(P_dr) >= self.min_prob
-            
+
+            self.LOGGER.debug("Copying image data  iter%d (%d / %d)" % (self.iter_num+1, i_shot+1, emc.nshots))
             emc.L.copy_image_data(emc.shots[i_shot], emc.shot_mask, emc.shot_background[i_shot])
-            
+            self.LOGGER.debug("Done Copying image data shot  iter%d (%d / %d)" % (self.iter_num+1, i_shot+1, emc.nshots))
+
             finite_rot_inds = emc.prob_rots[i_shot][is_finite_prob]  # TODO : verify type is np.ndarray and avoid the extra call to np.array
-            finite_P_dr = P_dr[is_finite_prob] 
+            finite_P_dr = P_dr[is_finite_prob]
+            self.LOGGER.debug("Dens deriv iter%d (%d / %d)" % (self.iter_num+1, i_shot+1, emc.nshots))
             shot_grad = emc.L.dens_deriv(finite_rot_inds, finite_P_dr, verbose=False, shot_scale_factor=emc.shot_scales[i_shot])
+            self.LOGGER.debug("Done Dens deriv iter%d (%d / %d)" % (self.iter_num+1, i_shot+1, emc.nshots))
+
             log_Rdr = np.array(emc.L.get_out())
+            self.LOGGER.debug("Done get log Rdr iter%d (%d / %d)" % (self.iter_num+1, i_shot+1, emc.nshots))
 
             grad += shot_grad[self.relp_mask]
             functional += (finite_P_dr*log_Rdr).sum()

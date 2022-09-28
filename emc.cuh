@@ -12,9 +12,12 @@ static void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
     }
 }
 
-static void error_msg(cudaError_t err, const char* msg){
+static void error_msg(cudaError_t err, const char* msg, int rank){
     if (err != cudaSuccess){
-        printf("%s: CUDA error message: %s\n", msg, cudaGetErrorString(err));
+        if (rank >=0)
+            printf("RANK %d;%s recvd CUDA error message: %s\n", rank, msg, cudaGetErrorString(err));
+        else
+            printf("%s recvd CUDA error message: %s\n", msg, cudaGetErrorString(err));
         exit(err);
     }
 }

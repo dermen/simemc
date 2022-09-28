@@ -85,6 +85,21 @@ class _():
     #    Oinv = np.linalg.inv(O)
     #    self._copy_sym_info(rot_mats, trans_vecs, O, Oinv)
 
+    def allocate_orientations_IPC(self, dev_id, rotMats, maxNumQ, numRot, COMM):
+        """
+
+        :param dev_id:
+        :param rotMats:
+        :param maxNumQ:
+        :param numRot:
+        :param COMM:
+        :return:
+        """
+        if rotMats.shape!=():
+            assert numRot == rotMats.size / 9
+            rotMats = self.check_arrays(rotMats)
+        self._allocate_orientations_IPC(dev_id, rotMats, maxNumQ, numRot, COMM)
+
     def allocate_orientations(self, dev_id, rotMats, maxNumQ):
         """
 
