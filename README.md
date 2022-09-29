@@ -8,7 +8,7 @@ diffraction simulations and EMC
 * [sympy](https://www.sympy.org/en/index.html)
 * [pytest-mpi](https://pypi.org/project/pytest-mpi/) (optional)
 * [kern line profiler](https://github.com/rkern/line_profiler.git)
-* [CUB](https://nvlabs.github.io/cub/) (for doing block reduction in CUDA, see the example `build_trilerp.sh` script)
+* [CUB](https://nvlabs.github.io/cub/) (for doing block reduction in CUDA, see the example `build_mpi_trilerp.sh` script)
 * Possibly some other python dependencies, run the tests and install any missing dependencies using PIP
 
 ## Building
@@ -45,11 +45,11 @@ source CCTBXROOT/build/conda_setpaths.sh
 libtbx.pip install pytest-mpi line_profiler sympy
 ```
 
-6) Build the `simemc` extension module from the root of the simemc repository (copy the `build_trilerp.sh` example script, and edit it accordingly)
+6) Build the `simemc` extension module from the root of the simemc repository (copy the `build_mpi_trilerp.sh` example script, and edit it accordingly) . Note, the `build_trilerp*` scripts are deprecated and should not be used. See `build_mpi_trilerp_pm.sh` for an example build script to use on perlmutter. 
 
 ```
 cd simemc
-./build_trilperp.sh
+./build_mpi_trilperp.sh
 ```
 
 7) Softlink `simemc` to the cctbx modules folder

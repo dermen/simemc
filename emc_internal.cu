@@ -201,7 +201,6 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
 
     gpuErr(cudaSetDevice(gpu.device));
     gpuErr(cudaMallocManaged((void **)&gpu.rotMats, gpu.numRot*sizeof(MAT3)));
-    //gpuErr(cudaMalloc((void ** )&gpu.rotMats, sizeof(MAT3) * gpu.numRot));
     gpuErr(cudaMallocManaged((void **)&gpu.densities, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.densities_gradient, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.out, gpu.maxNumQ*sizeof(CUDAREAL)));
@@ -213,28 +212,7 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
     gpuErr(cudaMallocManaged((void **)&gpu.mask, gpu.numDataPixels*sizeof(bool)));
     gpuErr(cudaMallocManaged((void **)&gpu.background, gpu.numDataPixels*sizeof(CUDAREAL)));
 
-    MAT3 Umat; // orientation matrix
-    //MAT3 * temp = new MAT3[gpu.numRot];
-    CUDAREAL* Umats_ptr = reinterpret_cast<CUDAREAL*>(Umats.get_data());
-    for (int i_rot=0; i_rot < gpu.numRot; i_rot ++){
-        int i= i_rot*9;
-        CUDAREAL uxx = *(Umats_ptr+i);
-        CUDAREAL uxy = *(Umats_ptr+i+1);
-        CUDAREAL uxz = *(Umats_ptr+i+2);
-        CUDAREAL uyx = *(Umats_ptr+i+3);
-        CUDAREAL uyy = *(Umats_ptr+i+4);
-        CUDAREAL uyz = *(Umats_ptr+i+5);
-        CUDAREAL uzx = *(Umats_ptr+i+6);
-        CUDAREAL uzy = *(Umats_ptr+i+7);
-        CUDAREAL uzz = *(Umats_ptr+i+8);
-        Umat << uxx, uxy, uxz,
-                uyx, uyy, uyz,
-                uzx, uzy, uzz;
-        gpu.rotMats[i_rot] = Umat.transpose();
-        //temp[i_rot] = Umat.transpose();
-    }
-    //gpuErr(cudaMemcpy(gpu.rotMats, temp, sizeof(MAT3) * gpu.numRot, cudaMemcpyHostToDevice));
-    //delete temp;
+    copy_umats(gpu.rotMats, Umats, gpu.numRot);
 
     CUDAREAL* qvec_ptr = reinterpret_cast<CUDAREAL*>(qvectors.get_data());
     for (int i_q = 0; i_q < gpu.numQ; i_q++) {

@@ -14,7 +14,7 @@ def test(ndev=1):
     """
     This method tests the cuda IPC protocol implemented in the probable_orients class
 
-    The IPC is specifically for when multiple processes share a single GPU
+    The IPC use-case here is specifically for when multiple processes share a single GPU
 
     The idea is that, if the number of rotation matrices is large, we should only
     allocate space for it once, and then share that memory with other processes
@@ -45,7 +45,7 @@ def test(ndev=1):
     # run the IPC protocol, memory only allocated once per GPU
     O.allocate_orientations_IPC(dev_id, rotMats, max_q, num_rot_mats, DEVICE_COMM)
     O.Bmatrix = Bmat
-    prob_rot_IPC = O.orient_peaks(qvecs, 0.1, 3, True)
+    prob_rot_IPC = O.orient_peaks(qvecs, 0.1, 3, False)
     O.free_device()
 
     # run the non-IPC protocol, memory allocated once per process running on a GPU (bad if rotMats is large)
@@ -53,7 +53,7 @@ def test(ndev=1):
     O = probable_orients()
     O.allocate_orientations(dev_id, rotMats, max_q)
     O.Bmatrix = Bmat
-    prob_rot = O.orient_peaks(qvecs, 0.1, 3, True)
+    prob_rot = O.orient_peaks(qvecs, 0.1, 3, False)
 
     assert len(prob_rot)==len(prob_rot_IPC)
     assert np.allclose(prob_rot, prob_rot_IPC)
