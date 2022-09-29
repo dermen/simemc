@@ -1,15 +1,13 @@
 
 #include <mpi.h>
-#include <mpi4py/mpi4py.h>
-#include "cuda_trilerp.h"
-#include "emc.cuh"
+#include "emc_ext.h"
+#include "general.cuh"
 
 __global__
 void orientMultiply(VEC3*  qVecs, MAT3* rotMats, int numQ,
                     int numRot, bool* out, CUDAREAL hcut,
                     int minPred, MAT3 Bmat);
 
-void copy_umats(MAT3* mats, np::ndarray& Umats, int numRot);
 void set_blocks_threads(gpuOrient& gpu, int numRot);
 
 void free_orientMatch(gpuOrient& gpu){
@@ -23,26 +21,6 @@ void free_orientMatch(gpuOrient& gpu){
         cudaIpcCloseMemHandle(gpu.rotMats);
 }
 
-void copy_umats(MAT3* mats, np::ndarray& Umats, int numRot){
-    MAT3 Umat; // orientation matrix
-    CUDAREAL * u_ptr = reinterpret_cast<CUDAREAL*>(Umats.get_data());
-    for (int i_rot=0; i_rot < numRot; i_rot ++){
-        int i= i_rot*9;
-        CUDAREAL uxx = *(u_ptr+i);
-        CUDAREAL uxy = *(u_ptr+i+1);
-        CUDAREAL uxz = *(u_ptr+i+2);
-        CUDAREAL uyx = *(u_ptr+i+3);
-        CUDAREAL uyy = *(u_ptr+i+4);
-        CUDAREAL uyz = *(u_ptr+i+5);
-        CUDAREAL uzx = *(u_ptr+i+6);
-        CUDAREAL uzy = *(u_ptr+i+7);
-        CUDAREAL uzz = *(u_ptr+i+8);
-        Umat << uxx, uxy, uxz,
-                uyx, uyy, uyz,
-                uzx, uzy, uzz;
-        mats[i_rot] = Umat.transpose();
-    }
-}
 
 void set_blocks_threads(gpuOrient& gpu, int numRot){
     // optional size of each device block, else default to 128
@@ -164,7 +142,7 @@ void orientPeaks(gpuOrient& gpu, np::ndarray& qvecs, CUDAREAL hcut,
         (gpu.qVecs, gpu.rotMats, numQ, gpu.numRot,
          gpu.out, hcut, minPred, Binv);
 
-    error_msg(cudaGetLastError(), "after kernel call", gpu.mpi_rank);
+    error_msg(cudaGetLastError(), gpu.mpi_rank);
     cudaDeviceSynchronize();
     gettimeofday(&t2, 0);
     time = (1000000.0*(t2.tv_sec-t1.tv_sec) + t2.tv_usec-t1.tv_usec)/1000.0;

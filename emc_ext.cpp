@@ -9,7 +9,7 @@
 #include <iostream>
 #include <mpi.h>
 #include <mpi4py/mpi4py.h>
-#include "cuda_trilerp.h"
+#include "emc_ext.h"
 #define BOOST_LIB_NAME "boost_numpy"
 #include <boost/config/auto_link.hpp>
 namespace bp=boost::python;
@@ -56,7 +56,7 @@ class lerpyExt{
     }
 
     inline size_t _get_gpu_mem(){
-        return get_gpu_mem(gpu);
+        return get_gpu_mem();
     }
 
     inline int get_dev_id(){

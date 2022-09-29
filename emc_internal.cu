@@ -1,7 +1,7 @@
 
 #include <cub/cub.cuh>
-#include "cuda_trilerp.h"
-#include "emc.cuh"
+#include "emc_ext.h"
+#include "general.cuh"
 
 __device__ __inline__ unsigned int get_densities_index(int i,int j,int k, int nx, int ny, int nz);
 
@@ -59,7 +59,7 @@ __global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
 
 
 void do_after_kernel(int rank){
-    error_msg(cudaGetLastError(), "after kernel call", rank);
+    error_msg(cudaGetLastError(),  rank);
     cudaDeviceSynchronize();
 }
 
@@ -429,16 +429,6 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         time = (1000000.0 * (t2.tv_sec - t1.tv_sec) + t2.tv_usec - t1.tv_usec) / 1000.0;
         printf("Post-kernel time=%f msec\n", time);
     }
-}
-/*
-  return free gpu memory in bytes for allocated device (gpu.device)
-*/
-size_t get_gpu_mem(lerpy& gpu) {
-   size_t free, total;
-   cudaMemGetInfo( &free, &total );
-   //printf("GPU %d memory: free=%zd, total=%zd, \n", gpu.device,free , total );
-   //double gpu_mem_mb = double(free)/1024/1024;
-   return free;
 }
 
 void free_lerpy(lerpy& gpu){

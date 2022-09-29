@@ -3,15 +3,16 @@
 
 #include <Eigen/Dense>
 #include<Eigen/StdVector>
-typedef double CUDAREAL;
-typedef Eigen::Matrix<CUDAREAL,3,1> VEC3;
-typedef Eigen::Matrix<CUDAREAL,3,3> MAT3;
-typedef std::vector<VEC3,Eigen::aligned_allocator<VEC3> > eigVec3_vec;
 #include <iostream>
 #include <mpi.h>
 #include <boost/python/numpy.hpp>
 #include <stdio.h>
 #include <sys/time.h>
+
+typedef double CUDAREAL;
+typedef Eigen::Matrix<CUDAREAL,3,1> VEC3;
+typedef Eigen::Matrix<CUDAREAL,3,3> MAT3;
+typedef std::vector<VEC3,Eigen::aligned_allocator<VEC3> > eigVec3_vec;
 
 namespace bp = boost::python;
 namespace np = boost::python::numpy;
@@ -68,15 +69,13 @@ void set_threads_blocks(lerpy& gpu);  // sets the blocksize
 void do_after_kernel();
 void sym_ops_to_dev(lerpy& gpu, np::ndarray& rot_mats);
 void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent);
-size_t get_gpu_mem(lerpy& gpu) ;
+
 
 // fills the gpu.out array with interpolated values, 1 for each qvec
 void do_a_lerp(lerpy& gpu,
                std::vector<int>& rot_inds,
                bool verbose, int task);
-
 void toggle_insert_mode(lerpy& gpu);
-
 void free_lerpy(lerpy& gpu);
 
 
@@ -107,6 +106,12 @@ void setup_orientMatch(int dev_id, int maxNumQ, gpuOrient& gpu,
 void setup_orientMatch_IPC(int dev_id, int maxNumQ, gpuOrient& gpu,
                        np::ndarray& Umats, int numRot, MPI_Comm COMM);
 void free_orientMatch(gpuOrient& gpu);
+
+/*
+The following methods are defined in general.cuh
+*/
+size_t get_gpu_mem();
+void copy_umats(MAT3* mats, np::ndarray& Umats, int numRot);
 
 
 #endif
