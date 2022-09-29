@@ -78,7 +78,7 @@ void setup_orientMatch_IPC(int dev_id, int maxNumQ, gpuOrient& gpu,
         delete temp;
     }
 
-    //  Broadcast the MPI handle
+    //  Broadcast the IPC handle
     int hand_size[1];
     if (rank==0)
         hand_size[0]= sizeof(rotMats_memHand[0]);
@@ -113,8 +113,8 @@ void setup_orientMatch(int dev_id, int maxNumQ, gpuOrient& gpu,
         gpuErr(cudaMallocManaged((void **)&gpu.rotMats, numRot*sizeof(MAT3)));
         gpuErr(cudaMallocManaged((void **)&gpu.out, numRot*sizeof(bool)));
         gpuErr(cudaMallocManaged((void **)&gpu.qVecs, maxNumQ*sizeof(VEC3)));
-        copy_umats(gpu.rotMats, Umats, numRot);
     }
+    copy_umats(gpu.rotMats, Umats, numRot);
     set_blocks_threads(gpu, numRot);
 }
 

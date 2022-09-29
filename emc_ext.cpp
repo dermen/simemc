@@ -470,7 +470,7 @@ BOOST_PYTHON_MODULE(emc){
         .def ("print_rotMat", &probaOr::print_rotMat, "show elements of allocated rotMat i_rot")
         .def ("get_probable_orients", &probaOr::listOrients, "returns a list of rotation matrix indices")
         .add_property("Bmatrix",
-                       make_function(&probaOr::get_B,rbv()),mpi_utils.bcast_large(
+                       make_function(&probaOr::get_B,rbv()),
                        make_function(&probaOr::set_B,dcp()),
                        "the Bmatrix (dxtbx Crystal.get_B() format)")
         .add_property("size_of_cudareal",
