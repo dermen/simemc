@@ -23,7 +23,7 @@ static void error_msg(cudaError_t err, int rank){
     }
 }
 
-void broadcast_ipc_handle(cudaIpcMemHandle_t rotMats_memHand, CUDAREAL* rotMats, MPI_Comm COMM);
+void broadcast_ipc_handle(cudaIpcMemHandle_t& rotMats_memHand, MAT3*& rotMats, MPI_Comm& COMM);
 
 
 #endif

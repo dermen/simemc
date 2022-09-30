@@ -46,32 +46,18 @@ void setup_orientMatch_IPC(int dev_id, int maxNumQ, gpuOrient& gpu,
     gpuErr(cudaMallocManaged((void **)&gpu.out, numRot*sizeof(bool)));
     gpuErr(cudaMallocManaged((void **)&gpu.qVecs, maxNumQ*sizeof(VEC3)));
 
-    cudaIpcMemHandle_t rotMats_memHand[1];
+    cudaIpcMemHandle_t rotMats_memHand;//[1];
     if (rank==0){
         gpuErr(cudaMalloc((void ** )&gpu.rotMats, sizeof(MAT3) * numRot));
-        gpuErr(cudaIpcGetMemHandle((cudaIpcMemHandle_t *) &rotMats_memHand[0], (void *)gpu.rotMats));
+        gpuErr(cudaIpcGetMemHandle((cudaIpcMemHandle_t *) &rotMats_memHand, (void *)gpu.rotMats));
         MAT3 * temp = new MAT3[numRot];
         copy_umats(temp, Umats, numRot);
         gpuErr(cudaMemcpy(gpu.rotMats, temp, sizeof(MAT3) * numRot, cudaMemcpyHostToDevice));
         delete temp;
     }
 
-    //  Broadcast the IPC handle
-    int hand_size[1];
-    if (rank==0)
-        hand_size[0]= sizeof(rotMats_memHand[0]);
-    MPI_Bcast(&hand_size[0], 1, MPI_INT, 0, COMM);
-
-    // create the char container for memHandler broadcast
-    char memHand_C[hand_size[0]];
-    if (rank==0)
-        memcpy(&memHand_C, &rotMats_memHand[0], hand_size[0]);
-    MPI_Bcast(&memHand_C, hand_size[0], MPI_BYTE, 0, COMM);
-    if (rank >0)
-        memcpy(&rotMats_memHand[0], &memHand_C, hand_size[0]);
-
-    if (rank >0 )
-        gpuErr(cudaIpcOpenMemHandle((void **) &gpu.rotMats, rotMats_memHand[0], cudaIpcMemLazyEnablePeerAccess));
+    // broadcast and copy the memoryhandle to gpu.rotMats on other processes
+    broadcast_ipc_handle(rotMats_memHand, gpu.rotMats, COMM);
 
     gpu.free_rotMats = (rank==0) ;
     gpu.close_rotMats_handle = (rank >0) ;

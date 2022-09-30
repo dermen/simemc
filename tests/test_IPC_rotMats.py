@@ -66,6 +66,6 @@ if __name__=="__main__":
     import sys
     try:
         ndev = int(sys.argv[1])
-    except ImportError:
+    except IndexError:
         ndev = 1
     test(ndev)

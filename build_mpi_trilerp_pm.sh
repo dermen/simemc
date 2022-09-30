@@ -22,7 +22,6 @@ export MPI_INC="-I/opt/cray/pe/mpich/8.1.17/ofi/gnu/9.1/include -I/opt/cray/pe/l
 export MPI4PY_INC="-I/global/cfs/cdirs/lcls/dermen/lyso/alcc-recipes/cctbx/opt/mamba/envs/psana_env/lib/python3.8/site-packages/mpi4py/include"
 export MPIFLAG=""
 
-export MPI_LINK='-Xcompiler="-Wl,-rpath,/usr/common/software/sles15_cgpu/openmpi/4.0.3/gcc/lib,--enable-new-dtags" -L/usr/common/software/sles15_cgpu/openmpi/4.0.3/gcc/lib -lmpi'
 
 
 nvcc -c general.cu -I$CUB -I$CPRE/include -I$CPRE/include/python3.8 \
@@ -52,7 +51,7 @@ nvcc -c emc_ext.cpp -I$CUB -I$CPRE/include -I$CPRE/include/python3.8  \
 CC -shared emc_ext.o emc_internal.o orient_match.o general.o \
   -L$CPRE/lib -L$CPRE/lib/python3.8/config-3.8-x86_64-linux-gnu/ \
   -L$CUDA_HOME/lib64 -lpython3.8 -lboost_python38  \
-  -lboost_numpy38 -lcudart \
+  -lboost_numpy38 -lcudart -lmpi \
   -o emc.so
 
 # NOTE: import with python:  "from simemc.emc import lerpy"

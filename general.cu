@@ -34,8 +34,15 @@ void copy_umats(MAT3* mats, np::ndarray& Umats, int numRot){
     }
 }
 
-
-void broadcast_ipc_handle(cudaIpcMemHandle_t rotMats_memHand, CUDAREAL* rotMats, MPI_Comm COMM){
+/*
+When muliple processes share a device, use this to map the
+orientation matrix memory allocated by the root process
+rotMats_memHand: cuda memory handle which instructs other processes
+                how to read the memory allocated by the root process
+rotMats: device pointer (MAT3, defined in emc_ext.h)
+COMM: communicator for ranks sharing a single physical device (see mpi_utils.py get_host_dev_comm)
+*/
+void broadcast_ipc_handle(cudaIpcMemHandle_t& rotMats_memHand, MAT3*& rotMats, MPI_Comm& COMM){
     int rank;
     MPI_Comm_rank(COMM, &rank);
 
