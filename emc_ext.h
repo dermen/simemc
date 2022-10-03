@@ -108,10 +108,10 @@ void setup_orientMatch_IPC(int dev_id, int maxNumQ, gpuOrient& gpu,
 void free_orientMatch(gpuOrient& gpu);
 
 /*
-The following methods are defined in general.cuh
+The following methods are defined in general.cu
 */
 size_t get_gpu_mem();
-void copy_umats(MAT3* mats, np::ndarray& Umats, int numRot);
+void copy_umats(MAT3*& mats, np::ndarray& Umats, int numRot);
 
 
 #endif

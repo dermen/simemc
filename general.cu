@@ -13,7 +13,7 @@ size_t get_gpu_mem() {
 }
 
 
-void copy_umats(MAT3* mats, np::ndarray& Umats, int numRot){
+void copy_umats(MAT3*& mats, np::ndarray& Umats, int numRot){
     MAT3 Umat; // orientation matrix
     CUDAREAL * u_ptr = reinterpret_cast<CUDAREAL*>(Umats.get_data());
     for (int i_rot=0; i_rot < numRot; i_rot ++){

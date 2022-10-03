@@ -1060,12 +1060,39 @@ def get_prob_rots_per_shot(O, R, hcut, min_pred,
 
 def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=None,
                  max_num_strong_spots=1000, hcut=0.1, min_pred=3, verbose=True,
-                detector=None,beam=None, hcut_incr=None):
+                detector=None,beam=None, hcut_incr=None, device_comm=None):
+    """
+
+    :param dev_id: gpu device ID
+    :param list_of_refl_tables: list of dials.flex.array_family reflection tables
+    :param rotation_samples: array of roation matrices
+    :param Bmat_reference: unit cell matrix (nominal),. dxtbx.model.Crystal get_B() method returns this
+    :param max_num_strong_spots: max number of strong spots expected (in the refl tables)
+    :param hcut: controls slection of probable orients. higher is greedy
+    :param min_pred: controls selection of probably orients. lower is greedy
+    :param verbose: verbosity flag
+    :param detector: dxtbx detector
+    :param beam: dxtbx beam
+    :param hcut_incr: if hcut is too small to flag probable orientations, iteratively increase it by this much until probablt orientations are flagged
+    :param device_comm: if not None, use for interprocess communication on gpus to save memory (when more than 1 rank share a GPU)
+    :return:
+    """
     if probable_orients is None:
         print("probable_orients failed to import")
         return
     O = probable_orients()
-    O.allocate_orientations(dev_id, rotation_samples.ravel(), max_num_strong_spots)
+    if device_comm is not None:
+        num_rots = None
+        if device_comm.rank==0:
+            num_rots = len(rotation_samples)
+            rotation_samples = rotation_samples.ravel()
+        else:
+            rotation_samples = np.empty([])
+        num_rots = device_comm.bcast(num_rots)
+        O.allocate_orientations_IPC(dev_id, rotation_samples, max_num_strong_spots,
+                                    num_rots, device_comm)
+    else:
+        O.allocate_orientations(dev_id, rotation_samples.ravel(), max_num_strong_spots)
     if Bmat_reference is None:
         O.Bmatrix = sim_const.CRYSTAL.get_B()
     else:
@@ -1078,7 +1105,7 @@ def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=N
         if verbose:
             print("%d probable rots on shot %d / %d with %d strongs (%f sec)"
                    % ( len(prob_rot),i_img+1, len(list_of_refl_tables) , len(R), time.time()-t), flush=True )
-    O.free_device()
+    #O.free_device()
     return prob_rots_per_shot
 
 

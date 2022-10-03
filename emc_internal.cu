@@ -76,24 +76,7 @@ void sym_ops_to_dev(lerpy& gpu, np::ndarray& rot_mats){
     }
 
     // copy the rot mats to the device
-    MAT3 mat_temp;
-    CUDAREAL* rot_mats_ptr = reinterpret_cast<CUDAREAL*>(rot_mats.get_data());
-    for (int i_sym=0; i_sym < gpu.num_sym_op; i_sym ++){
-        int i= i_sym*9;
-        CUDAREAL rxx = *(rot_mats_ptr+i);
-        CUDAREAL rxy = *(rot_mats_ptr+i+1);
-        CUDAREAL rxz = *(rot_mats_ptr+i+2);
-        CUDAREAL ryx = *(rot_mats_ptr+i+3);
-        CUDAREAL ryy = *(rot_mats_ptr+i+4);
-        CUDAREAL ryz = *(rot_mats_ptr+i+5);
-        CUDAREAL rzx = *(rot_mats_ptr+i+6);
-        CUDAREAL rzy = *(rot_mats_ptr+i+7);
-        CUDAREAL rzz = *(rot_mats_ptr+i+8);
-        mat_temp << rxx, rxy, rxz,
-                    ryx, ryy, ryz,
-                    rzx, rzy, rzz;
-        gpu.rotMatsSym[i_sym] = mat_temp.transpose();
-    }
+    copy_umats(gpu.rotMatsSym, rot_mats, num_sym_op);
 }
 
 
@@ -117,8 +100,9 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
     // chunk the density
     int n_chunk = gpu.numDens / gpu.numDataPixels + 1;
 
-    // here we store the current values of gpu.data and gpu.qVecs, as we will be hijacking those arrays for symmetrization
+    //// here we store the current values of gpu.data and gpu.qVecs, as we will be hijacking those arrays for symmetrization
     eigVec3_vec temp_qvec;
+    temp_qvec.reserve(gpu.numDataPixels);
     std::vector<CUDAREAL> temp_data;
     std::vector<bool> temp_mask;
     // check that nuymDataPixles is same as numQ;
@@ -192,6 +176,7 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
                         np::ndarray& qvectors){
+
     gpu.numRot = Umats.shape(0)/9;
     gpu.numQ = qvectors.shape(0)/3;
     // TODO global verbose flag

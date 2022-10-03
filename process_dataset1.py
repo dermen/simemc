@@ -106,10 +106,20 @@ correction /= correction.mean()
 for i_img in range(len(this_ranks_imgs)):
     this_ranks_imgs[i_img] *= correction
 
+DEV_COMM = mpi_utils.get_host_dev_comm(DEV_ID)
+print("Got device communicator")
+#if DEV_COMM.rank==0:
 rots, wts = utils.load_quat_file(args.quat)
+#else:
+#    rots = np.empty([])
+#    wts = np.empty([])
+mpi_utils.printRf("loaded rot mats")
 
-if args.useCrystals and np.any([C is not None for C in this_ranks_crystals]):
+if args.useCrystals:#  and np.any([C is not None for C in this_ranks_crystals]):
+    print0("setting extra crystal umats as rot mats for EMC")
     extra_rots = [np.reshape(C.get_U(), (3,3)) if C is not None else None for C in this_ranks_crystals]
+    mpi_utils.printRf("number of extra rots=%d" % len(extra_rots))
+    print0("Gathering extra rots")
     extra_rots = COMM.gather(extra_rots)
     all_req = []
     if COMM.rank==0:
@@ -117,6 +127,7 @@ if args.useCrystals and np.any([C is not None for C in this_ranks_crystals]):
         extra_rot_ind = rots.shape[0]
         for i_rank, more_rots in enumerate(extra_rots):
             inds = []  # inds is either None, or the index of the crystal rotation matrix in the grid
+            print0("%d more rots=%d" % (i_rank, len(more_rots)))
             for i_rot, Umat in enumerate(more_rots):
                 if Umat is None:
                     inds.append(None)
@@ -125,19 +136,25 @@ if args.useCrystals and np.any([C is not None for C in this_ranks_crystals]):
                     inds.append(extra_rot_ind)
                     extra_rot_ind += 1
 
+            print("Sending to rank %d" % i_rank)
             req = COMM.isend(inds, dest=i_rank, tag=i_rank)
             all_req.append(req)
     else:
         extra_rots_not_none = None
 
+    print0("broadcasting extra rots")
     extra_rots_not_none = COMM.bcast(extra_rots_not_none)
 
+    print0("receiving requests")
     this_ranks_gt_inds = COMM.recv(source=0, tag=COMM.rank)
     for req in all_req:
         req.wait()
 
+    print0("Sent all rot mat indices")
+    #if DEV_COMM.rank==0:
     rots = np.append(rots, extra_rots_not_none, axis=0)
     wts = np.append(wts, np.ones(len(extra_rots_not_none)) * np.mean(wts))
+    print0("appended extra rot mats")
 
 num_with_less_than_3 = 0
 for i,R in enumerate(this_ranks_refls):
@@ -157,30 +174,30 @@ num_with_less_than_3 = COMM.reduce(num_with_less_than_3)
 if COMM.rank==0:
     print("Number of shots with fewer than 3 refls within the  max_q cutoff=%d" %num_with_less_than_3)
 
-if TEST_UCELLS:
-    ave_ucell1 = 68.48, 68.48, 104.38, 90,90,90
-    ave_ucell2 = 68.17, 68.17, 108.19, 90,90,90
-    all_prob_rot = []
-    for uc in ave_ucell1, ave_ucell2: 
-        ucell_man = db_utils.manager_from_params(uc)
-        Brecip = ucell_man.B_recipspace
-        this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
-                                                 Bmat_reference=Brecip, hcut=args.hcut, min_pred=args.minPred,
-                                                verbose=COMM.rank==0, detector=DET,beam=BEAM)
-        all_prob_rot.append( this_ranks_prob_rot)
-
-    preferred_ucell = np.argmax(list(zip([len(p) for p in all_prob_rot[0]], [len(p) for p in all_prob_rot[1]])),axis=1)
-    ucell_info = COMM.gather(list(zip(this_ranks_names, preferred_ucell)))
-    if COMM.rank==0:
-        np.save("ucell_info", ucell_info)
-    COMM.barrier()
-    exit()
-
-else:        
-    this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
-            Bmat_reference=Brecip, hcut=args.hcut, min_pred=args.minPred,
-            verbose=COMM.rank==0, detector=DET,beam=BEAM, hcut_incr=0.0025)
-# TODO: if useCrystals, assert known orientations are present in this_ranks_prob_rot
+#if TEST_UCELLS:
+#    ave_ucell1 = 68.48, 68.48, 104.38, 90,90,90
+#    ave_ucell2 = 68.17, 68.17, 108.19, 90,90,90
+#    all_prob_rot = []
+#    for uc in ave_ucell1, ave_ucell2:
+#        ucell_man = db_utils.manager_from_params(uc)
+#        Brecip = ucell_man.B_recipspace
+#        this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
+#                                                 Bmat_reference=Brecip, hcut=args.hcut, min_pred=args.minPred,
+#                                                verbose=COMM.rank==0, detector=DET,beam=BEAM)
+#        all_prob_rot.append( this_ranks_prob_rot)
+#
+#    preferred_ucell = np.argmax(list(zip([len(p) for p in all_prob_rot[0]], [len(p) for p in all_prob_rot[1]])),axis=1)
+#    ucell_info = COMM.gather(list(zip(this_ranks_names, preferred_ucell)))
+#    if COMM.rank==0:
+#        np.save("ucell_info", ucell_info)
+#    COMM.barrier()
+#    exit()
+#
+#else:
+this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
+        Bmat_reference=Brecip, hcut=args.hcut, min_pred=args.minPred,
+        verbose=COMM.rank==0, detector=DET,beam=BEAM, hcut_incr=0.0025,
+        device_comm=DEV_COMM)
 
 # for all of the loaded experiments with crystals, lets add the ground truth rotation matrix
 # to the list of probable rotation indices....
@@ -198,12 +215,13 @@ if COMM.rank==0:
     print0("Out of %d experiments with provided crystals, %d did not determine the gt rot ind as probable" %(nwith_gt, nmissing_gt))
 
 # sanity test on gt rot inds
-for gt, C in zip(this_ranks_gt_inds, this_ranks_crystals):
-    if C is None:
-        continue
-    Umat = rots[gt]
-    Umat2 = np.reshape(C.get_U(), (3,3))
-    assert np.allclose(Umat, Umat2)
+if DEV_COMM.rank==0:
+    for gt, C in zip(this_ranks_gt_inds, this_ranks_crystals):
+        if C is None:
+            continue
+        Umat = rots[gt]
+        Umat2 = np.reshape(C.get_U(), (3,3))
+        assert np.allclose(Umat, Umat2)
 
 
 has_no_rots = [len(prob_rots)==0 for prob_rots in this_ranks_prob_rot]
@@ -213,6 +231,10 @@ if COMM.rank==0:
     print0("Shots with 0 prob rots=%d" % n_with_no_rots)
 
 n_prob_rot = [len(prob_rots) for prob_rots in this_ranks_prob_rot]
+all_ranks_max_n_prob = COMM.gather(np.max(n_prob_rot))
+if COMM.rank==0:
+    max_nprob = np.max(all_ranks_max_n_prob)
+    print("Maximum number of probable orientations=%d"% max_nprob)
 
 
 def background_fit(img, R, radProMaker):
@@ -274,6 +296,7 @@ qx,qy,qz = map(lambda x: x.ravel(), qmap)
 qcoords = np.vstack([qx,qy,qz]).T
 
 L = lerpy()
+L.rank = COMM.rank
 L.dens_dim = dens_dim
 L.max_q = max_q
 
@@ -329,8 +352,12 @@ elif args.useCrystals:
     Wstart = utils.errdiv(W, wt)
     print0("Symmetrizing")
     L.update_density(Wstart.ravel())
+    print("Free mem in GB: ", L.get_gpu_mem()/1024**3)
+    print0("applying crystal symm")
     L.symmetrize()
+    print0("applying friedel")
     L.apply_friedel_symmetry()
+    print("Free mem in GB: ", L.get_gpu_mem()/1024**3)
     Wstart = L.densities().reshape(L.dens_sh)
     Wstart[Wstart<0] = 0
 
@@ -338,6 +365,7 @@ else:
     Wstart = utils.get_W_init(dens_dim, max_q, ucell_p=ave_ucell, symbol=symbol)
 
 print0("done")
+exit()
 
 Wstart /= Wstart.max()
 Wstart *= ave_signal_level
