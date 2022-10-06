@@ -18,6 +18,8 @@ namespace bp = boost::python;
 namespace np = boost::python::numpy;
 
 struct lerpy {
+  bool close_rotMats_handle = false;
+  bool free_rotMats = true;
   int mpi_rank=-1; // MPI rank, has to be set manually from python
   int num_sym_op = 0; // number of symmetry operators
   MAT3* rotMatsSym=NULL; // symmetry operators
@@ -60,7 +62,7 @@ struct lerpy {
 void relp_mask_to_device(lerpy& gpu, np::ndarray& relp_mask);
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
-                         np::ndarray& qvectors);
+                         np::ndarray& qvectors, bool use_IPC);
 
 void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_mask, np::ndarray& shot_background);
 void densities_to_device(lerpy& gpu, np::ndarray& new_densities);

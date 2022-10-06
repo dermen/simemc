@@ -4,7 +4,6 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 import time
 from scipy.stats import pearsonr, linregress
-from scipy.stats import spearmanr
 import pytest
 
 from reborn.misc.interpolate import trilinear_interpolation
@@ -37,6 +36,7 @@ def test_equation_two_density_deriv():
 
 @pytest.mark.mpi_skip()
 def test_equation_two_density_deriv_highRes():
+    # FIXME: I noticed this fail once, randomly.. Very weird...
     main(finite_diff=2, highRes=1)
 
 
@@ -159,6 +159,7 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
             nfail = 0
             I1d = I.ravel()
             for random_voxel in random_voxels:
+                #random_voxel = 71068807  # at one point, this voxel lead to ValueError in linregress
                 found_linear_region =False
                 errors = []
                 dh = []
@@ -185,7 +186,16 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
                     if len(errors) >= 3:
                         err = errors[-3:]
                         hh = dh[-3:]
-                        l = linregress(err,hh)
+                        l = linregress(err, hh)
+                        #try:
+                        #    l = linregress(err, hh)
+                        #except ValueError:
+                        #    if not np.allclose(err[0], err):  # FIXME: why does this sometimes happen????
+                        #        raise
+                        #    found_linear_region = False
+                        #    assert np.all(e < 0.01 * I1d[random_voxel] for e in err)
+                        #    continue
+
                         if l.slope > 0 and l.rvalue > 0.999 and not found_linear_region:
                             found_linear_region=True
                             # we will do 1 more iteration once inside the linear region to ensure it remains linear
@@ -198,7 +208,7 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
                         else:
                             # if we arent in the linear region, assert all errors are small
                             assert np.all(e < 0.01 * I1d[random_voxel] for e in err)
-                        
+
                 if not found_linear_region:
                     print("FAILED!!!!!!")
                     nfail += 1
@@ -258,6 +268,24 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
     print("OK!")
 
 
+
+#FIXME why would repeated calls to the equation_two kernel reslt in same values ?
+"""
+RANDOM VOXEL: 71068807, deriv_Qdr=0.017246, I=8.619641
+convert type
+FINITE DIFF SCALING:  0.04309820469632885 0.00046423742221669324
+convert type
+FINITE DIFF SCALING:  0.0861964093926577 0.0003038497838055303 
+convert type
+FINITE DIFF SCALING:  0.1723928187853154 0.0003038497838055303
+convert type
+FINITE DIFF SCALING:  0.3447856375706308 0.0003038497838055303
+"""
+
+
 if __name__=="__main__":
-    max_rot_inds, finite_diff, highRes = [int(arg) for arg in sys.argv[1:]]
+    try:
+        max_rot_inds, finite_diff, highRes = [int(arg) for arg in sys.argv[1:]]
+    except ValueError:
+        max_rot_inds, finite_diff, highRes = 10,0,0
     main(max_rot_inds, finite_diff, highRes)

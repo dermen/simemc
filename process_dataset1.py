@@ -49,11 +49,10 @@ from simemc.compute_radials import RadPros
 from simemc.emc import lerpy
 
 
-highRes=args.highres
 ndevice = args.ndev
 TEST_UCELLS = False
 
-if highRes:
+if args.highres:
     dens_dim = 511
     max_q = 0.5
 else:
@@ -108,18 +107,16 @@ for i_img in range(len(this_ranks_imgs)):
 
 DEV_COMM = mpi_utils.get_host_dev_comm(DEV_ID)
 print("Got device communicator")
-#if DEV_COMM.rank==0:
-rots, wts = utils.load_quat_file(args.quat)
-#else:
-#    rots = np.empty([])
-#    wts = np.empty([])
+if DEV_COMM.rank==0:
+    rots, wts = utils.load_quat_file(args.quat)
+else:
+    rots = np.empty([])
+    # wts = np.empty([])
+
 mpi_utils.printRf("loaded rot mats")
 
 if args.useCrystals:#  and np.any([C is not None for C in this_ranks_crystals]):
-    print0("setting extra crystal umats as rot mats for EMC")
     extra_rots = [np.reshape(C.get_U(), (3,3)) if C is not None else None for C in this_ranks_crystals]
-    mpi_utils.printRf("number of extra rots=%d" % len(extra_rots))
-    print0("Gathering extra rots")
     extra_rots = COMM.gather(extra_rots)
     all_req = []
     if COMM.rank==0:
@@ -127,7 +124,6 @@ if args.useCrystals:#  and np.any([C is not None for C in this_ranks_crystals]):
         extra_rot_ind = rots.shape[0]
         for i_rank, more_rots in enumerate(extra_rots):
             inds = []  # inds is either None, or the index of the crystal rotation matrix in the grid
-            print0("%d more rots=%d" % (i_rank, len(more_rots)))
             for i_rot, Umat in enumerate(more_rots):
                 if Umat is None:
                     inds.append(None)
@@ -136,7 +132,6 @@ if args.useCrystals:#  and np.any([C is not None for C in this_ranks_crystals]):
                     inds.append(extra_rot_ind)
                     extra_rot_ind += 1
 
-            print("Sending to rank %d" % i_rank)
             req = COMM.isend(inds, dest=i_rank, tag=i_rank)
             all_req.append(req)
     else:
@@ -151,9 +146,9 @@ if args.useCrystals:#  and np.any([C is not None for C in this_ranks_crystals]):
         req.wait()
 
     print0("Sent all rot mat indices")
-    #if DEV_COMM.rank==0:
-    rots = np.append(rots, extra_rots_not_none, axis=0)
-    wts = np.append(wts, np.ones(len(extra_rots_not_none)) * np.mean(wts))
+    if DEV_COMM.rank==0:
+        rots = np.append(rots, extra_rots_not_none, axis=0)
+        wts = np.append(wts, np.ones(len(extra_rots_not_none)) * np.mean(wts))
     print0("appended extra rot mats")
 
 num_with_less_than_3 = 0
@@ -364,8 +359,6 @@ elif args.useCrystals:
 else:
     Wstart = utils.get_W_init(dens_dim, max_q, ucell_p=ave_ucell, symbol=symbol)
 
-print0("done")
-exit()
 
 Wstart /= Wstart.max()
 Wstart *= ave_signal_level

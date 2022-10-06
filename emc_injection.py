@@ -3,6 +3,7 @@ import boost_adaptbx.boost.python as bp
 import numpy as np
 
 from simemc import emc
+from simemc import mpi_utils
 from cctbx import crystal as cctbx_crystal
 from scitbx.matrix import sqr
 
@@ -179,7 +180,7 @@ class _():
         sym_rot_mats = np.array(sym_rot_mats, dtype=self.array_type).ravel()
         self._copy_sym_info(sym_rot_mats)
 
-    def allocate_lerpy(self, dev_id, rotMats, densities, maxNumQ, corners, deltas, qvecs, maxNumRotInds, numDataPix):
+    def allocate_lerpy(self, dev_id, rotMats, densities, maxNumQ, corners, deltas, qvecs, maxNumRotInds, numDataPix, use_IPC=True):
         """
         :param dev_id:
         :param _rotMats:
@@ -190,13 +191,16 @@ class _():
         :param qvecs:
         :param maxNumRotInds:
         :param numDataPix:
+        :param use_IPC: uses cuda interprocess communication to limit memory usage when sharing GPUs across multiple processes
         :return:
         """
+        # TODO: add the method to verify IPC is enabled
         rotMats = self.check_arrays(rotMats)
         densities = self.check_arrays(densities)
-        #qvecs = self.check_arrays(qvecs)
         self.qvecs = self.check_arrays(qvecs)
-        self._allocate_lerpy(dev_id, rotMats, densities, maxNumQ, tuple(corners), tuple(deltas), self.qvecs, maxNumRotInds, numDataPix)
+
+        self._allocate_lerpy(dev_id, rotMats, densities, maxNumQ, tuple(corners), tuple(deltas),
+                             self.qvecs, maxNumRotInds, numDataPix, use_IPC)
 
     def trilinear_interpolation(self, rot_idx, verbose=False):
         return self._trilinear_interpolation(int(rot_idx), verbose)

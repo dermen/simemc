@@ -1,5 +1,6 @@
 
 #include <cub/cub.cuh>
+#include <mpi.h>
 #include "emc_ext.h"
 #include "general.cuh"
 
@@ -175,17 +176,34 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
 }
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
-                        np::ndarray& qvectors){
+                        np::ndarray& qvectors, bool use_IPC){
 
-    gpu.numRot = Umats.shape(0)/9;
     gpu.numQ = qvectors.shape(0)/3;
     // TODO global verbose flag
-    //printf("Number of Qvectors=%d\n", gpu.numQ);
     gpu.numDens = densities.shape(0);
-   // TODO asserts on len of corner and delta (must be 3)
+
+    //// TODO asserts on len of corner and delta (must be 3)
+    MPI_Comm device_comm;
+    int dev_rank=-1;
+
+    if (use_IPC){
+        device_comm = get_host_dev_comm(gpu.device);
+        MPI_Comm_rank(device_comm, &dev_rank);
+        if (dev_rank==0)
+            gpu.numRot = Umats.shape(0)/9;
+        MPI_Bcast(&gpu.numRot, 1, MPI_INT, 0, device_comm);
+    }
+    else
+        gpu.numRot = Umats.shape(0)/9;
 
     gpuErr(cudaSetDevice(gpu.device));
-    gpuErr(cudaMallocManaged((void **)&gpu.rotMats, gpu.numRot*sizeof(MAT3)));
+    cudaIpcMemHandle_t rotMats_memHand;
+    if (dev_rank==0 && use_IPC)
+        get_mem_handle(rotMats_memHand, gpu.rotMats, Umats, gpu.numRot);
+
+    if (!use_IPC)
+        gpuErr(cudaMallocManaged((void **)&gpu.rotMats, gpu.numRot*sizeof(MAT3)));
+
     gpuErr(cudaMallocManaged((void **)&gpu.densities, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.densities_gradient, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.out, gpu.maxNumQ*sizeof(CUDAREAL)));
@@ -197,7 +215,15 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
     gpuErr(cudaMallocManaged((void **)&gpu.mask, gpu.numDataPixels*sizeof(bool)));
     gpuErr(cudaMallocManaged((void **)&gpu.background, gpu.numDataPixels*sizeof(CUDAREAL)));
 
-    copy_umats(gpu.rotMats, Umats, gpu.numRot);
+    // broadcast and copy the memoryhandle to gpu.rotMats on other processes
+    if (use_IPC){
+        broadcast_ipc_handle(rotMats_memHand, gpu.rotMats, device_comm);
+        gpu.free_rotMats = (dev_rank==0) ;
+        gpu.close_rotMats_handle = (dev_rank >0) ;
+    }
+    else{
+        copy_umats(gpu.rotMats, Umats, gpu.numRot);
+    }
 
     CUDAREAL* qvec_ptr = reinterpret_cast<CUDAREAL*>(qvectors.get_data());
     for (int i_q = 0; i_q < gpu.numQ; i_q++) {
@@ -305,9 +331,9 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
      * KERNELS
      */
     if (task==0){
-        MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
-        //int offset = gpu.rotInds[0];
-        //cudaMemcpy(&rotMat, gpu.rotMats+offset, sizeof(MAT3), cudaMemcpyDeviceToHost);
+        MAT3 rotMat;
+        int offset = gpu.rotInds[0];
+        cudaMemcpy(&rotMat, gpu.rotMats+offset, sizeof(MAT3), cudaMemcpyDeviceToHost);
         trilinear_interpolation_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
                 (gpu.densities, gpu.qVecs, gpu.out,
                  rotMat, gpu.numQ,
@@ -358,10 +384,9 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                 );
     }
     else if (task==2)  {
-        if (verbose)printf("Trilinear insertion!\n");
-        MAT3 rotMat = gpu.rotMats[gpu.rotInds[0]];
-        //int offset = gpu.rotInds[0];
-        //cudaMemcpy(&rotMat, gpu.rotMats+offset, sizeof(MAT3), cudaMemcpyDeviceToHost);
+        MAT3 rotMat;
+        int offset = gpu.rotInds[0];
+        cudaMemcpy(&rotMat, gpu.rotMats+offset, sizeof(MAT3), cudaMemcpyDeviceToHost);
 //      NOTE: here gpu.data are the insert values
         trilinear_insertion_rotate_on_GPU<<<gpu.numBlocks, gpu.blockSize>>>
                 (gpu.densities, gpu.wts, gpu.data, gpu.mask, gpu.tomogram_wt, gpu.qVecs,
@@ -402,7 +427,7 @@ void free_lerpy(lerpy& gpu){
         gpuErr(cudaFree(gpu.rotInds));
     if (gpu.Pdr!= NULL)
         gpuErr(cudaFree(gpu.Pdr));
-    if (gpu.rotMats!= NULL)
+    if (gpu.rotMats!= NULL && gpu.free_rotMats)
         gpuErr(cudaFree(gpu.rotMats));
     if (gpu.data!= NULL)
         gpuErr(cudaFree(gpu.data));
@@ -422,6 +447,8 @@ void free_lerpy(lerpy& gpu){
         gpuErr(cudaFree(gpu.densities_gradient));
     if (gpu.wts!= NULL)
         gpuErr(cudaFree(gpu.wts));
+    if (gpu.close_rotMats_handle)
+        gpuErr(cudaIpcCloseMemHandle(gpu.rotMats));
     gpu.is_allocated = false;
 }
 

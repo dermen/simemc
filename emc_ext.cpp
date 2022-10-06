@@ -74,7 +74,7 @@ class lerpyExt{
 
     inline void alloc(int device_id, np::ndarray& rotations, np::ndarray& densities, int maxNumQ,
                       bp::tuple corner, bp::tuple delta, np::ndarray& qvecs, int maxNumRotInds,
-                      int numDataPix){
+                      int numDataPix, bool use_IPC){
         int num_rot=rotations.shape(0)/9;
         gpu.device = device_id;
         gpu.numDataPixels = numDataPix;
@@ -87,7 +87,7 @@ class lerpyExt{
         gpu.delta[0] = bp::extract<double>(delta[0]);
         gpu.delta[1] = bp::extract<double>(delta[1]);
         gpu.delta[2] = bp::extract<double>(delta[2]);
-        prepare_for_lerping( gpu, rotations, densities, qvecs);
+        prepare_for_lerping( gpu, rotations, densities, qvecs, use_IPC);
     }
 
     inline int get_max_num_rots(){

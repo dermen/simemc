@@ -18,7 +18,7 @@ void free_orientMatch(gpuOrient& gpu){
     if (gpu.out != NULL)
         gpuErr(cudaFree(gpu.out));
     if (gpu.close_rotMats_handle)
-        cudaIpcCloseMemHandle(gpu.rotMats);
+        gpuErr(cudaIpcCloseMemHandle(gpu.rotMats));
 }
 
 
@@ -48,14 +48,8 @@ void setup_orientMatch_IPC(int dev_id, int maxNumQ, gpuOrient& gpu,
 
     cudaIpcMemHandle_t rotMats_memHand;//[1];
     if (rank==0){
-        gpuErr(cudaMalloc((void ** )&gpu.rotMats, sizeof(MAT3) * numRot));
-        gpuErr(cudaIpcGetMemHandle((cudaIpcMemHandle_t *) &rotMats_memHand, (void *)gpu.rotMats));
-        MAT3 * temp = new MAT3[numRot];
-        copy_umats(temp, Umats, numRot);
-        gpuErr(cudaMemcpy(gpu.rotMats, temp, sizeof(MAT3) * numRot, cudaMemcpyHostToDevice));
-        delete temp;
+        get_mem_handle(rotMats_memHand, gpu.rotMats, Umats, numRot);
     }
-
     // broadcast and copy the memoryhandle to gpu.rotMats on other processes
     broadcast_ipc_handle(rotMats_memHand, gpu.rotMats, COMM);
 
