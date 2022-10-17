@@ -92,10 +92,10 @@ def _test_conventions(use_hist_method=True, highRes=False):
     L = lerpy()
     L.dens_dim=dens_dim
     L.max_q=max_q
-    L.allocate_lerpy(gpu_device, rotMats, W, maxNumQ,
+    L.allocate_lerpy(gpu_device, rotMats, maxNumQ,
                      tuple(corner), tuple(deltas), qcoords,
                      maxRotInds, maxNumQ)
-
+    L.update_density(W)
     all_Wr_simemc = []
     all_log_Rdr = []
     for i_rot in range(maxRotInds):

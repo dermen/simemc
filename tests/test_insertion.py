@@ -40,12 +40,13 @@ def _test(highRes=False):
 
     qx,qy,qz = map(lambda x: x.ravel(), utils.calc_qmap(DET, BEAM))
 
-    qcoords = np.vstack( (qx,qy,qz)).T
+    qcoords = np.vstack((qx,qy,qz)).T
     assert len(qcoords) == npix
     L.allocate_lerpy(
-        dev_id, rotMats, W, npix,
+        dev_id, rotMats, npix,
         c,d, qcoords,
         rotMats.shape[0], npix)
+    L.update_density(W)
 
     assert np.allclose(L.densities(), W.ravel())
 

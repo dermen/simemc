@@ -3,7 +3,6 @@ import boost_adaptbx.boost.python as bp
 import numpy as np
 
 from simemc import emc
-from simemc import mpi_utils
 from cctbx import crystal as cctbx_crystal
 from scitbx.matrix import sqr
 
@@ -127,6 +126,11 @@ class _():
         return probable_rot_inds
 
 
+#################
+#               #
+#    LERPY!     #
+#               #
+#################
 @bp.inject_into(emc.lerpy)
 @add_type_methods
 class _():
@@ -144,6 +148,20 @@ class _():
     @property
     def dens_sh(self):
         return self.dens_dim , self.dens_dim, self.dens_dim
+
+    def mpi_set_starting_densities(self, Wstart, comm):
+        """
+        :param Wstart: if rank>0, let start be None
+        :param comm: mpi world communicator
+        :return:
+        """
+        if Wstart is None:
+            Wstart = np.empty(0)
+        else:
+            assert Wstart.size == self.dens_dim**3
+            self.check_arrays(Wstart)
+
+        self._mpi_set_starting_density(Wstart, comm)
 
     def symmetrize(self):
         """Symmetrize the density(be sure to call set_sym_ops prior to calling this method!)"""
@@ -180,11 +198,10 @@ class _():
         sym_rot_mats = np.array(sym_rot_mats, dtype=self.array_type).ravel()
         self._copy_sym_info(sym_rot_mats)
 
-    def allocate_lerpy(self, dev_id, rotMats, densities, maxNumQ, corners, deltas, qvecs, maxNumRotInds, numDataPix, use_IPC=True):
+    def allocate_lerpy(self, dev_id, rotMats, maxNumQ, corners, deltas, qvecs, maxNumRotInds, numDataPix, use_IPC=True):
         """
         :param dev_id:
         :param _rotMats:
-        :param densities:
         :param maxNumQ:
         :param corners:
         :param deltas:
@@ -196,10 +213,9 @@ class _():
         """
         # TODO: add the method to verify IPC is enabled
         rotMats = self.check_arrays(rotMats)
-        densities = self.check_arrays(densities)
         self.qvecs = self.check_arrays(qvecs)
 
-        self._allocate_lerpy(dev_id, rotMats, densities, maxNumQ, tuple(corners), tuple(deltas),
+        self._allocate_lerpy(dev_id, rotMats, maxNumQ, tuple(corners), tuple(deltas),
                              self.qvecs, maxNumRotInds, numDataPix, use_IPC)
 
     def trilinear_interpolation(self, rot_idx, verbose=False):

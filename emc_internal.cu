@@ -175,12 +175,12 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
     }
 }
 
-void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
+void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
                         np::ndarray& qvectors, bool use_IPC){
 
     gpu.numQ = qvectors.shape(0)/3;
     // TODO global verbose flag
-    gpu.numDens = densities.shape(0);
+    gpu.numDens = gpu.densDim*gpu.densDim*gpu.densDim;
 
     //// TODO asserts on len of corner and delta (must be 3)
     MPI_Comm device_comm;
@@ -235,9 +235,10 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
         gpu.qVecs[i_q] = Q;
     }
 
-    CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(densities.get_data());
+    //CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(densities.get_data());
     for (int i=0; i < gpu.numDens; i++){
-        gpu.densities[i] = *(dens_ptr+i);
+        //gpu.densities[i] = *(dens_ptr+i);
+        gpu.densities[i] = 0;
     }
 
     gpu.is_allocated = true;

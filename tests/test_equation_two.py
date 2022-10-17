@@ -98,9 +98,10 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
     L.dens_dim=dens_dim
     L.max_q=max_q
     gpu_dev=0
-    L.allocate_lerpy(gpu_dev, rotMats, I, maxNumQ,
+    L.allocate_lerpy(gpu_dev, rotMats, maxNumQ,
                      tuple(c), tuple(d), qcoords,
                      maxRotInds, N)
+    L.update_density(I)
     talloc = time.time()-talloc
     print("Took %.4f sec to allocate device (this only ever happens once per EMC computation)" % talloc)
 

@@ -50,8 +50,7 @@ def main(dens_dim, max_q):
     L.dens_dim=dens_dim
     L.max_q=max_q
     corner,deltas = utils.corners_and_deltas(dens_shape, L.xmin, L.xmax)
-    Winit = np.zeros(dens_shape)
-    L.allocate_lerpy(gpu_device, rotMats, Winit, maxNumQ,
+    L.allocate_lerpy(gpu_device, rotMats, maxNumQ,
                      tuple(corner), tuple(deltas), qcoords,
                      maxRotInds, Npix)
     L.toggle_insert()

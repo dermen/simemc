@@ -302,7 +302,7 @@ def bcast_large(v, sz=None, verbose=False, comm=None):
 
     for i_chunk, i_rng in enumerate(np.array_split(np.arange(nv), nchunk)):
         if verbose:
-            print0f("reduce slice %d / %d" %(i_chunk+1, nchunk), end="\r")
+            print0f("bcast slice %d / %d" %(i_chunk+1, nchunk), end="\r")
 
         start = i_rng[0]
         stop = i_rng[-1]+1
@@ -318,6 +318,46 @@ def bcast_large(v, sz=None, verbose=False, comm=None):
     v_bcast = np.hstack(v_slices)
     v_bcast = v_bcast.reshape(v_sh)
     return v_bcast
+
+
+def reduce_large_3d(v, verbose=False, buffers=False):
+    """
+    reduce /broadcast large numpy arrays
+    :param v: numpy array with lots of elements e.g. np.random.random((700,700,700))
+    :param verbose: print statements, to see what slow step is
+    :param buffers: depending on system and size of array, buffers will speed things up
+        NOTE: buffers has given inconsistent results in some settings.. see MPI.Reduce method emphasis on capital R
+    :return: reduced array. return value is None for ranks>0
+    """
+    v_sh = v.shape
+    if v.dtype==np.float64:
+        dt = MPI.DOUBLE
+    elif v.dtype==np.float32:
+        dt = MPI.FLOAT
+    else:
+        assert v.dtype==int
+        dt = MPI.INT
+    v_slices = []
+    for i in range(v.shape[0]):
+        v_slc_rank = v[i]
+        if verbose:
+            print0f("reduce slice %d / %d" %(i+1, v.shape[0]), end="\r")
+        COMM.barrier()
+        if buffers:
+            v_slc = np.empty_like(v_slc_rank, v.dtype)
+            COMM.Reduce([v_slc_rank,dt], [v_slc, dt])
+        #if broadcast:
+        #    sh = None if COMM.rank>0 else v_slc.shape
+        #    sh = COMM.bcast(sh)
+        #    v_slc = COMM.bcast(v_slc.ravel()).reshape(sh)
+        #    #COMM.Bcast([v_slc, dt])
+        v_slices.append(v_slc)
+    if verbose:
+        print0f("")
+    v_red = None
+    if not np.any([slc is None for slc in v_slices]):
+        v_red = np.array(v_slices)
+    return v_red
 
 
 def reduce_large(v, sz=None, broadcast=True, verbose=False, buffers=False):
@@ -349,7 +389,7 @@ def reduce_large(v, sz=None, broadcast=True, verbose=False, buffers=False):
 
     for i_chunk, i_rng in enumerate(np.array_split(np.arange(len(v)), nchunk)):
         if verbose:
-            print0f("reduce slice %d / %d" %(i_chunk+1, nchunk), end="\r")
+            print0f("reduce slice %d / %d" % (i_chunk+1, nchunk), end="\r")
 
         start = i_rng[0]
         stop = i_rng[-1]+1
@@ -357,7 +397,7 @@ def reduce_large(v, sz=None, broadcast=True, verbose=False, buffers=False):
         COMM.barrier()
 
         if buffers:
-            v_slc = np.empty_like(v_slc_rank)
+            v_slc = np.empty_like(v_slc_rank, v.dtype)
             COMM.Reduce([v_slc_rank,dt], [v_slc, dt])
         else:
             v_slc = COMM.reduce(v_slc_rank)

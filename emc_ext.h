@@ -61,7 +61,7 @@ struct lerpy {
 
 void relp_mask_to_device(lerpy& gpu, np::ndarray& relp_mask);
 
-void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats, np::ndarray& densities,
+void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
                          np::ndarray& qvectors, bool use_IPC);
 
 void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_mask, np::ndarray& shot_background);

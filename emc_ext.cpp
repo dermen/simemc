@@ -72,7 +72,7 @@ class lerpyExt{
         symmetrize_density(gpu, q_vecs);
     }
 
-    inline void alloc(int device_id, np::ndarray& rotations, np::ndarray& densities, int maxNumQ,
+    inline void alloc(int device_id, np::ndarray& rotations, int maxNumQ,
                       bp::tuple corner, bp::tuple delta, np::ndarray& qvecs, int maxNumRotInds,
                       int numDataPix, bool use_IPC){
         int num_rot=rotations.shape(0)/9;
@@ -87,7 +87,7 @@ class lerpyExt{
         gpu.delta[0] = bp::extract<double>(delta[0]);
         gpu.delta[1] = bp::extract<double>(delta[1]);
         gpu.delta[2] = bp::extract<double>(delta[2]);
-        prepare_for_lerping( gpu, rotations, densities, qvecs, use_IPC);
+        prepare_for_lerping( gpu, rotations, qvecs, use_IPC);
     }
 
     inline int get_max_num_rots(){
@@ -166,8 +166,94 @@ class lerpyExt{
 
     }
 
+    inline void check_densities_are_set(){
+        if (gpu.densities==NULL){
+            PyErr_SetString(PyExc_TypeError,
+                            "densities has not been allocated\n");
+            bp::throw_error_already_set();
+        }
+    }
+
+    inline MPI_Comm mpi_comm_from_py_obj(bp::object py_comm){
+        PyObject* py_obj = py_comm.ptr();
+        MPI_Comm comm = *PyMPIComm_Get(py_obj);
+        return comm;
+    }
+
+    inline void mpi_set_starting_density(np::ndarray & dens_start, bp::object py_comm){
+        MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
+        int rank;
+        MPI_Comm_rank(comm, &rank);
+        if (rank==0){
+            CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(dens_start.get_data());
+            for (int i=0; i < gpu.numDens; i++)
+                gpu.densities[i] = *(dens_ptr+i);
+        }
+        _bcast_in_chunks(comm, gpu.densities, gpu.numDens);
+    }
+
+    inline void bcast_densities(bp::object py_comm){
+        MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
+        _bcast_in_chunks(comm, gpu.densities, gpu.numDens);
+    }
+
+    inline void bcast_wts(bp::object py_comm){
+        MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
+        _bcast_in_chunks(comm, gpu.wts, gpu.numDens);
+    }
+
+    inline void _bcast_in_chunks(MPI_Comm comm, CUDAREAL *vec, int N){
+        int rank;
+        MPI_Comm_rank(comm, &rank);
+        int sz=16*1024*1024; // TODO: make variable chunk size
+        int start=0;
+        while (start < N){
+            int count = sz;
+            if (start + count >=N ){
+                count = N-start;
+            }
+            MPI_Bcast(&vec[start], count, MPI_DOUBLE, 0, comm);
+            start += count;
+        }
+    }
+
+    inline void _reduce_densities(bp::object py_comm){
+        check_densities_are_set();
+        _reduce_in_chunks(py_comm, gpu.densities, gpu.numDens);
+    }
+
+    inline void _reduce_weights(bp::object py_comm){
+        _reduce_in_chunks(py_comm, gpu.wts, gpu.numDens);
+    }
+
+    inline void _reduce_in_chunks(bp::object py_comm, CUDAREAL* vec, int N){
+
+        PyObject* py_obj = py_comm.ptr();
+        MPI_Comm *comm_p = PyMPIComm_Get(py_obj);
+        int rank;
+        int sz=16*1024*1024;
+        MPI_Comm_rank(*comm_p, &rank);
+        std::vector<CUDAREAL> temp;
+        if (rank==0)
+            temp.resize(N);
+        int start=0;
+        while (start < N){
+            int count = sz;
+            if (start + count >=N ){
+                count = N-start;
+            }
+            MPI_Reduce(&vec[start], temp.data()+start, count, MPI_DOUBLE, MPI_SUM, 0, *comm_p);
+            start += count;
+        }
+        if (rank==0){
+            for (int i=0; i <N; i++)
+                vec[i] = temp[i];
+        }
+    }
+
     inline  np::ndarray get_densities(){
-        if (gpu.densities==NULL){ 
+        check_densities_are_set();
+        if (gpu.densities==NULL){
             PyErr_SetString(PyExc_TypeError,
                             "densities has not been allocated\n");
             bp::throw_error_already_set();
@@ -413,6 +499,14 @@ BOOST_PYTHON_MODULE(emc){
               &lerpyExt::get_densities,
               "get the densities")
 
+        .def("reduce_densities",
+              &lerpyExt::_reduce_densities,
+              "reduce the densities using MPI")
+
+        .def("reduce_weights",
+              &lerpyExt::_reduce_weights,
+              "reduce the densities weights using MPI")
+
         .def("densities_gradient",
               &lerpyExt::get_densities_gradient,
               "get the gradient of the logLikelikhood w.r.t. the densities (this just points to the data , one should run equation_two with deriv=2 prior to calling this method, otherwise densities will be meaningless")
@@ -457,6 +551,8 @@ BOOST_PYTHON_MODULE(emc){
         .add_property("dev_id",
                        make_function(&lerpyExt::get_dev_id,rbv()),
                        "return the GPU device ID used to allocate lerpy")
+
+        .def("_mpi_set_starting_density", &lerpyExt::mpi_set_starting_density, "set the starting density, broadcast to other ranks")
         ;
 
     /******************************/

@@ -71,9 +71,10 @@ def _test(highRes=False):
     dev_id=0
     L.allocate_lerpy(dev_id,
                      np.array([np.reshape(C.get_U(),(3,3))]),
-                     W, len(qcoords),
+                     len(qcoords),
                      tuple(corner), tuple(deltas), qcoords,
                      1, len(qcoords))
+    L.update_density(W)
     Wr_simemc = L.trilinear_interpolation(0).reshape(img.shape)
 
     inbounds = utils.qs_inbounds(qcoords, dens_shape, X_MIN, X_MAX).reshape(img.shape)

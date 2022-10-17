@@ -128,7 +128,7 @@ def integrate_W(W, max_q, ucell_p, symbol, method='sum', kernel_iters=2, conn=2,
             i3_slc = slice(i3 - ksz, i3 + ksz + 1, 1)
             peakRegion = W[i1_slc, i2_slc, i3_slc]  # region around one peak, same shape as kernel
 
-            if i_peak % 100==0:
+            if i_peak % 1000==0:
                 print( "integrating %d / %d" %(i_peak+1, len(aidx)))
 
             if method=='fit':

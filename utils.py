@@ -737,11 +737,10 @@ def symmetrize(density, dens_dim, max_q, symbol="P43212",
         num_data_pix = maxNumQ = dens_dim**3
         maxRotInds = len(sym_rot_mats)
         corners, deltas = corners_and_deltas(dens_sh, xmin, xmax)
-        W = np.zeros(dens_sh, L.array_type)
         dev_id = 0
         L.allocate_lerpy(
             dev_id, sym_rot_mats.astype(L.array_type).ravel(),
-            W.ravel(), int(maxNumQ),
+            int(maxNumQ),
             tuple(corners), tuple(deltas), qvecs.ravel(),
             maxRotInds, int(num_data_pix))
 

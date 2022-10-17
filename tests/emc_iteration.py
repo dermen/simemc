@@ -165,9 +165,10 @@ def get_lerpy(dev_id, rotation_samples, qcoords, dens_dim=256, max_q=0.25,
     Winit = Winit.astype(L.array_type)
     qcoords = qcoords.astype(L.array_type)
 
-    L.allocate_lerpy(dev_id, rots.ravel(), Winit.ravel(), 2463*2527,
+    L.allocate_lerpy(dev_id, rots.ravel(), 2463*2527,
                      corner, deltas, qcoords.ravel(),
                      maxRotInds, 2463*2527)
+    L.update_density(Winit.ravel())
     return L
 
 

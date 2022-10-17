@@ -67,9 +67,10 @@ def _test(on_dev=1, friedel=1, centered=0):
 
     dev_id = 0
     L.allocate_lerpy(
-        dev_id, rotMats, W, npix,
+        dev_id, rotMats, npix,
         c,d, qcoords,
         rotMats.shape[0], npix)
+    L.update_density(W)
 
     assert L.max_num_rots == 100  # quick test of the property
 
