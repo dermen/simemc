@@ -147,7 +147,6 @@ MPI_Comm get_host_dev_comm(int dev_id){
     int dev_rank, dev_size;
     MPI_Comm_rank(device_comm, &dev_rank);
     MPI_Comm_size(device_comm, &dev_size);
-    printf("world rank=%d, device rank=%d, device_id = %d\n", world_rank, dev_rank, dev_id);
     return device_comm;
 }
 

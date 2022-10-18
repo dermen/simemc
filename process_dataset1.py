@@ -14,6 +14,7 @@ if COMM.rank==0:
     parser.add_argument("--even", action="store_true", help="read in data from even line numbers in args.input file")
     parser.add_argument("--odd", action="store_true", help="read in data from odd line numbers in args.input file")
     parser.add_argument("--allrefls", action="store_true", help="use all reflection to determine probable orientations. DEfault is to just use those refls out to max_q")
+    # TODO change to dens_dim and max_q arguments!
     parser.add_argument("--highres", action="store_true", help="use the high resolution setting (max_q=0.5, dens_dim=512). Otherwise use low-res (max_q=0.25, dens_dim=256)")
     parser.add_argument("--hcut", default=0.02, type=float, help="distance from prediction to observed spot, used in determining probably orientaitons")
     parser.add_argument("--medFilt", type=int, default=8)
@@ -53,7 +54,7 @@ ndevice = args.ndev
 TEST_UCELLS = False
 
 if args.highres:
-    dens_dim = 511
+    dens_dim = 951
     max_q = 0.5
 else:
     dens_dim=351
@@ -295,7 +296,6 @@ L.rank = COMM.rank
 L.dens_dim = dens_dim
 L.max_q = max_q
 
-Winit = np.zeros(L.dens_sh, np.float32)
 corner, deltas = utils.corners_and_deltas(L.dens_sh, L.xmin, L.xmax)
 maxRotInds = 100000  # TODO make this a property of lerpy, and catch if trying to pass more rot inds
 max_n= max(n_prob_rot)
@@ -305,10 +305,9 @@ if maxRotInds < max_n:
 
 num_pix = MASK.size
 rots = rots.astype(L.array_type)
-Winit = Winit.astype(L.array_type)
 qcoords = qcoords.astype(L.array_type)
 
-L.allocate_lerpy(DEV_ID, rots.ravel(), Winit.ravel(), num_pix,
+L.allocate_lerpy(DEV_ID, rots.ravel(), num_pix,
                  corner, deltas, qcoords.ravel(),
                  maxRotInds, num_pix)
 
@@ -324,8 +323,11 @@ L.toggle_insert()
 
 print0("getting W init")
 
+Wstart = None
+
 if args.restartfile is not None:
-    Wstart = h5py.File(args.restartfile, 'r')["Wprime"][()]
+    if COMM.rank==0:
+        Wstart = h5py.File(args.restartfile, 'r')["Wprime"][()]
 
 elif args.useCrystals:
     # TODO: is it better to start the density as 3D gaussians ?
@@ -335,41 +337,38 @@ elif args.useCrystals:
         print0("inserting %d / %d" % (ii+1,len(this_ranks_imgs)))
         L.trilinear_insertion(gt_rot_idx, img-bg)  # TODO: should we insert the difference ?
 
-    W = L.densities()
-    wt = L.wts()
-    print0("shape of W", W.shape)
-    #W = COMM.bcast(COMM.reduce(W))
-    W = mpi_utils.reduce_large(W, sz=32**3, buffers=True, broadcast=True, verbose=True)
+    L.reduce_densities(COMM)
+    L.reduce_weights(COMM)
 
-    print0("shape of wt", wt.shape)
-    wt = mpi_utils.reduce_large(wt, sz=32**3, buffers=True, broadcast=True, verbose=True)
     print0("dividing")
-    Wstart = utils.errdiv(W, wt)
-    print0("Symmetrizing")
-    L.update_density(Wstart.ravel())
-    print("Free mem in GB: ", L.get_gpu_mem()/1024**3)
-    print0("applying crystal symm")
-    L.symmetrize()
-    print0("applying friedel")
-    L.apply_friedel_symmetry()
-    print("Free mem in GB: ", L.get_gpu_mem()/1024**3)
-    Wstart = L.densities().reshape(L.dens_sh)
-    Wstart[Wstart<0] = 0
+    if COMM.rank==0:
+        W = L.densities()
+        wt = L.wts()
+        Wstart = utils.errdiv(W, wt)
+        print0("Symmetrizing")
+        L.update_density(Wstart.ravel())
+        print0("applying crystal symm")
+        L.symmetrize()
+        print0("applying friedel")
+        L.apply_friedel_symmetry()
+        Wstart = L.densities().reshape(L.dens_sh)
+        Wstart[Wstart<0] = 0
 
 else:
-    Wstart = utils.get_W_init(dens_dim, max_q, ucell_p=ave_ucell, symbol=symbol)
+    if COMM.rank==0:
+        Wstart = utils.get_W_init(dens_dim, max_q, ucell_p=ave_ucell, symbol=symbol)
 
 
-Wstart /= Wstart.max()
-Wstart *= ave_signal_level
+if COMM.rank==0:
+    Wstart /= Wstart.max()
+    Wstart *= ave_signal_level
 
 #if COMM.rank==0:
-#    with h5py.File("temp651.h5", "w") as h:
+#    with h5py.File("temp%d_hr_init.h5"% dens_dim, "w") as h:
 #        h.create_dataset("Wprime", data=Wstart)
 #        h.create_dataset("ucell", data=ave_ucell)
 
-print0("updating starting density")
-L.update_density(Wstart)
+lerpy.mpi_set_starting_densities(Wstart, COMM)
 
 init_shot_scales = np.ones(len(this_ranks_imgs))
 

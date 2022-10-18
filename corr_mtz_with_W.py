@@ -6,16 +6,19 @@ parser.add_argument("W", type=str, nargs="+", help="Witer files")
 parser.add_argument("ref", type=str, default=None, help="can be an MTZ file or a PDB")
 parser.add_argument("--nbin", type=int, default=10)
 parser.add_argument("--toggle", action="store_true")
+parser.add_argument("--spear", action="store_true")
 args = parser.parse_args()
 
 from iotbx.reflection_file_reader import any_reflection_file
 from pylab import *
 from scipy.stats import spearmanr, pearsonr
-from simemc import utils
+from simemc import integration, utils
 
-max_q=0.25
+max_q=0.5
 highRes=1/max_q
 CC = pearsonr
+if  args.spear:
+    CC = spearmanr
 symbol = "P43212"
 ucell_p = 68.48, 68.48, 104.38, 90,90,90
 
@@ -59,7 +62,10 @@ for wname in wnames:
     # TODO store ucell in W
     print(dens_dim, max_q)
     h,I = utils.integrate_W(W, dens_dim, max_q, ucell_p, symbol)
-    ma = utils.integrate_W(W, dens_dim, max_q, ucell_p, symbol, kernel_iters=1, conn=1).as_amplitude_array().resolution_filter(d_min=1/max_q)
+    ma2 = utils.integrate_W(W, dens_dim, max_q, ucell_p, symbol, kernel_iters=2, conn=2).as_amplitude_array().resolution_filter(d_min=1/max_q)
+    ma = integration.integrate_W(W, max_q, ucell_p, symbol, method='sum',kernel_iters=3,conn=1, nj=1).as_amplitude_array().resolution_filter(d_min=1/max_q)
+    print("Fitting to density")
+    #ma = integration.integrate_W(W, max_q, ucell_p, symbol, method='fit').as_amplitude_array().resolution_filter(d_min=1/max_q)
     ma = ma.average_bijvoet_mates()
     I = np.array(I)
     is_pos = I >0
@@ -69,7 +75,8 @@ for wname in wnames:
     I = np.sqrt(I)
     dataMap = {hkl: val for hkl,val in zip(list(map(tuple,h)), I)}
     dataMap = {hkl:val for hkl,val in zip(ma.indices(), ma.data())}
-    F2 = any_reflection_file("small_cxis_merge_mark0/iobs_all.mtz").as_miller_arrays()[0].as_amplitude_array()
+    #F2 = any_reflection_file("small_cxis_merge/iobs_all.mtz").as_miller_arrays()[0].as_amplitude_array()
+    F2 = any_reflection_file("allshotsMerge_mark0/iobs_all.mtz").as_miller_arrays()[0].as_amplitude_array()
     F2map = {h: v for h, v in zip(F2.indices(), F2.data())}
     if hcommon is None:
         hcommon = set(dataMap).intersection(Fref_map, F2map)

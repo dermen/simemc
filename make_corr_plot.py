@@ -66,7 +66,8 @@ for wname in args.W:
     vals = array([dataMap[h] for h in hcommon])
     dspace = array([dspace_map[h] for h in hcommon])
     nbin = 10
-    res_bins = linspace(dspace.min()-1e-6, dspace.max()+1e-6, nbin)
+    dspace_sort = np.sort(dspace)
+    res_bins = [drng[0] for drng in np.array_split(dspace_sort, nbin)] + [dspace.max()]
     res_bin_id = np.digitize(dspace, res_bins)
     corr_at_res = []
     res_bin_centers = (res_bins[1:] + res_bins[:-1])*0.5

@@ -189,20 +189,46 @@ class lerpyExt{
             for (int i=0; i < gpu.numDens; i++)
                 gpu.densities[i] = *(dens_ptr+i);
         }
-        _bcast_in_chunks(comm, gpu.densities, gpu.numDens);
+        _bcast_in_chunks<CUDAREAL>(comm, gpu.densities, gpu.numDens, MPI_CUDAREAL);
     }
 
-    inline void bcast_densities(bp::object py_comm){
+    inline void _update_masked_density(np::ndarray& new_vals){
+    //  TODO assert is_peak_in_density is set, and densities is allocated
+        check_densities_are_set();
+        CUDAREAL* vals_ptr = reinterpret_cast<CUDAREAL*>(new_vals.get_data());
+        int offset=0;
+        for (int i=0; i < gpu.numDens; i++){
+            if (gpu.is_peak_in_density[i]){
+                gpu.densities[i] = *(vals_ptr+offset);
+                offset += 1;
+            }
+        }
+    }
+
+    inline void _bcast_density(bp::object py_comm){
         MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
-        _bcast_in_chunks(comm, gpu.densities, gpu.numDens);
+        _bcast_in_chunks<CUDAREAL>(comm, gpu.densities, gpu.numDens, MPI_CUDAREAL);
     }
 
-    inline void bcast_wts(bp::object py_comm){
+    inline void _bcast_weights(bp::object py_comm){
         MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
-        _bcast_in_chunks(comm, gpu.wts, gpu.numDens);
+        _bcast_in_chunks<CUDAREAL>(comm, gpu.wts, gpu.numDens, MPI_CUDAREAL);
     }
 
-    inline void _bcast_in_chunks(MPI_Comm comm, CUDAREAL *vec, int N){
+    inline void _bcast_density_grad(bp::object py_comm){
+        MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
+        _bcast_in_chunks<CUDAREAL>(comm, gpu.densities_gradient, gpu.numDens, MPI_CUDAREAL);
+    }
+
+    inline void _bcast_relp_mask(bp::object py_comm){
+    //  TODO use IPC for is_peak_in_density
+        if (gpu.is_peak_in_density == NULL)
+            malloc_relp_mask(gpu);
+        MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
+        _bcast_in_chunks<bool>(comm, gpu.is_peak_in_density, gpu.numDens, MPI_C_BOOL);
+    }
+
+    template <typename vec_t> inline void _bcast_in_chunks(MPI_Comm comm, vec_t *vec, int N, MPI_Datatype dt){
         int rank;
         MPI_Comm_rank(comm, &rank);
         int sz=16*1024*1024; // TODO: make variable chunk size
@@ -212,7 +238,7 @@ class lerpyExt{
             if (start + count >=N ){
                 count = N-start;
             }
-            MPI_Bcast(&vec[start], count, MPI_DOUBLE, 0, comm);
+            MPI_Bcast(&vec[start], count, dt, 0, comm);
             start += count;
         }
     }
@@ -223,8 +249,15 @@ class lerpyExt{
     }
 
     inline void _reduce_weights(bp::object py_comm){
+        // TODO verify gpu.wts is not NULL
         _reduce_in_chunks(py_comm, gpu.wts, gpu.numDens);
     }
+
+    inline void _reduce_density_derivs(bp::object py_comm){
+        // TODO verify gpu.densities_gradient is not NULL
+        _reduce_in_chunks(py_comm, gpu.densities_gradient, gpu.numDens);
+    }
+
 
     inline void _reduce_in_chunks(bp::object py_comm, CUDAREAL* vec, int N){
 
@@ -242,7 +275,7 @@ class lerpyExt{
             if (start + count >=N ){
                 count = N-start;
             }
-            MPI_Reduce(&vec[start], temp.data()+start, count, MPI_DOUBLE, MPI_SUM, 0, *comm_p);
+            MPI_Reduce(&vec[start], temp.data()+start, count, MPI_CUDAREAL, MPI_SUM, 0, *comm_p);
             start += count;
         }
         if (rank==0){
@@ -308,7 +341,16 @@ class lerpyExt{
 
     }
 
-    inline void do_dens_deriv(np::ndarray rot_idx, np::ndarray Pdr_vals, bool verbose, CUDAREAL shot_scale){
+    inline void _reset_dens_deriv(){
+        for (int i=0; i< gpu.numDens; i++){
+            gpu.densities_gradient[i] = 0;
+        }
+    }
+
+    inline void do_dens_deriv(np::ndarray rot_idx, np::ndarray Pdr_vals, bool verbose, CUDAREAL shot_scale, bool reset_derivs){
+        bool temp = gpu.alwaysResetDeriv;
+        gpu.alwaysResetDeriv = reset_derivs;
+
         int nrot = rot_idx.shape(0);
         std::vector<int> rot_inds;
 
@@ -319,6 +361,7 @@ class lerpyExt{
         }
         gpu.shot_scale = shot_scale;
         do_a_lerp(gpu, rot_inds, verbose, 5);
+        gpu.alwaysResetDeriv = temp;
     }
 
     inline void print_rotMat(int i_rot){
@@ -553,6 +596,14 @@ BOOST_PYTHON_MODULE(emc){
                        "return the GPU device ID used to allocate lerpy")
 
         .def("_mpi_set_starting_density", &lerpyExt::mpi_set_starting_density, "set the starting density, broadcast to other ranks")
+
+        .def("bcast_densities", &lerpyExt::_bcast_density, "broadcast density from root to other ranks")
+        .def("bcast_wts", &lerpyExt::_bcast_weights, "broadcast weights from root to other ranks")
+        .def("bcast_density_derivs", &lerpyExt::_bcast_density_grad, "broadcast dens gradients from root to other ranks")
+        .def("bcast_relp_mask", &lerpyExt::_bcast_relp_mask, "broadcast relp mask from root to other ranks")
+        .def("reset_density_derivs", &lerpyExt::_reset_dens_deriv, "reset the densities_gradient array to zeros")
+        .def("reduce_density_derivs", &lerpyExt::_reduce_density_derivs, "reduce the densities_gradient (set on rank=0)")
+        .def("update_masked_density", &lerpyExt::_update_masked_density, "receives np::ndarray V and updates masked density. Length of V is number of non masked voxels")
         ;
 
     /******************************/

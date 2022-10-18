@@ -266,11 +266,15 @@ void densities_to_device(lerpy& gpu, np::ndarray& new_densities){
     }
 }
 
+void malloc_relp_mask(lerpy& gpu){
+    gpuErr(cudaMallocManaged((void **)&gpu.is_peak_in_density, gpu.numDens*sizeof(bool)));
+}
+
 void relp_mask_to_device(lerpy& gpu, np::ndarray& relp_mask){
     unsigned int numDens = relp_mask.shape(0);
     // TODO put the assert numDens==gpu.numDens
     if (gpu.is_peak_in_density==NULL){
-        gpuErr(cudaMallocManaged((void **)&gpu.is_peak_in_density, gpu.numDens*sizeof(bool)));
+        malloc_relp_mask(gpu);
     }
     bool* relp_mask_ptr = reinterpret_cast<bool*>(relp_mask.get_data());
     for (int i=0; i < gpu.numDens; i++){
@@ -316,7 +320,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
             gpu.out_equation_two[i] = 0;
         }
     }
-    if(task==4 || task==5){
+    if(task==4 || task==5 && gpu.alwaysResetDeriv){
         for (int i=0; i < gpu.numDens; i++)
             gpu.densities_gradient[i] = 0;
     }

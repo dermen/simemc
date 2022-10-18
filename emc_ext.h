@@ -14,10 +14,13 @@ typedef Eigen::Matrix<CUDAREAL,3,1> VEC3;
 typedef Eigen::Matrix<CUDAREAL,3,3> MAT3;
 typedef std::vector<VEC3,Eigen::aligned_allocator<VEC3> > eigVec3_vec;
 
+#define MPI_CUDAREAL sizeof(CUDAREAL)==sizeof(double) ? MPI_DOUBLE: MPI_FLOAT
+
 namespace bp = boost::python;
 namespace np = boost::python::numpy;
 
 struct lerpy {
+  bool alwaysResetDeriv = true;
   bool close_rotMats_handle = false;
   bool free_rotMats = true;
   int mpi_rank=-1; // MPI rank, has to be set manually from python
@@ -59,6 +62,7 @@ struct lerpy {
   bool is_allocated=false; // whether device arrays have been allocated
 };
 
+void malloc_relp_mask(lerpy& gpu);
 void relp_mask_to_device(lerpy& gpu, np::ndarray& relp_mask);
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,

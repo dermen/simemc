@@ -62,36 +62,40 @@ class DensityUpdater(Updater):
             self.LOGGER.debug("applying resolution cutoff to relp mask")
             self.relp_mask = np.logical_and(self.relp_mask, vox_inbounds)
             self.relp_mask = self.relp_mask.ravel()
-        self.LOGGER.debug("Broadcasting relp mask")
-        self.relp_mask = mpi_utils.bcast_large(self.relp_mask)
-        self.LOGGER.debug("Copying relp mask to device")
-        mpi_utils.print_gpu_usage_across_ranks(self.emc.L)
-        self.emc.L.copy_relp_mask_to_device(self.relp_mask)
+            self.LOGGER.debug("Copying relp mask to device")
+            self.emc.L.copy_relp_mask_to_device(self.relp_mask)
         self.LOGGER.debug("Done Copying relp mask to device")
+        self.LOGGER.debug("Broadcasting relp mask")
+        self.emc.L.bcast_relp_mask()
+        #self.relp_mask = mpi_utils.bcast_large(self.relp_mask)
+        mpi_utils.print_gpu_usage_across_ranks(self.emc.L)
+        #self.emc.L.copy_relp_mask_to_device(self.relp_mask)
         COMM.barrier()
         self.min_prob = 1e-5
 
     def update(self, how="line_search", lbfgs_maxiter=60):
         """
 
-        :return: optimized density
+        :return: optimized density, returns None for rank >0
         """
-        dens_start = self.emc.L.densities()
+        dens_start = xstart = None
+        if COMM.rank==0:
+            dens_start = self.emc.L.densities()
 
-        self.LOGGER.debug("density start assert")
-        assert np.all(dens_start >= 0)
+            self.LOGGER.debug("density start assert")
+            assert np.all(dens_start >= 0)
 
-        is_zero = dens_start == 0
-        if np.any(is_zero):
-            self.LOGGER.debug("WARNING!!!!!!! Density is 0 in some places")
-            min_pos_val = min(1e-7, dens_start[~is_zero].min())
-            dens_start[is_zero] = min_pos_val
+            is_zero = dens_start == 0
+            if np.any(is_zero):
+                self.LOGGER.debug("WARNING!!!!!!! Density is 0 in some places")
+                min_pos_val = min(1e-7, dens_start[~is_zero].min())
+                dens_start[is_zero] = min_pos_val
 
-        #xstart = np.log(dens_start[self.relp_mask])
-        self.LOGGER.debug("Reparameterizing density")
-        theta = dens_start[self.relp_mask]
-        #self.emc.ensure_same(theta)  # ensure all ranks have same starging density
-        xstart = np.sqrt((theta + 1)**2 -1)
+            self.LOGGER.debug("Reparameterizing density")
+            theta = dens_start[self.relp_mask]
+            xstart = np.sqrt((theta + 1)**2 -1)
+
+        mpi_utils.bcast_large(xstart, verbose=True, comm=COMM)
 
         if how=="line_search":
             f, g = self.target(xstart)
@@ -99,43 +103,36 @@ class DensityUpdater(Updater):
             out = line_search(self, myfprime=self.jac, xk=xstart, pk=pk, gfk=g, maxiter=50)
             self.emc.print("")
             self.emc.print("Line search finished", out)
-
             alpha = out[0]
-            xopt = xstart + alpha*pk
+            xopt = lambda: xstart + alpha*pk
 
         elif how == "lbfgs":
             self.LOGGER.debug("Beginning density optimization process")
             out = minimize(self, xstart, method="L-BFGS-B", jac=self.jac, callback=None,
                            options={"maxiter": lbfgs_maxiter})
-            xopt = out.x
             self.LOGGER.debug("Minimization has terminated in %d iterations (final value=%10.7g, msg=%s, success=%s)" % (out.nit,out.fun, out.message, out.success))
             self.emc.print("")
-            #self.emc.ensure_same(xopt)
+            xopt = lambda: out.x
         else:
             raise NotImplementedError("method %s not supported" % how)
-        dens_opt = np.zeros_like(dens_start)
-        with np.errstate(over='raise'):
-            dens_opt[self.relp_mask] = np.sqrt(xopt**2 +1) -1
-        return dens_opt
+
+        if COMM.rank==0:
+            with np.errstate(over='raise'):
+                dens_start[self.relp_mask] = np.sqrt(xopt()**2 +1) -1
+            dens_start[~self.relp_mask] = 0
+        return dens_start
 
     def target(self, x):
         x = COMM.bcast(x)  # for some reason parameter updates were drifting ...
 
         emc = self.emc
 
-        dens = np.zeros(emc.L.dens_dim**3)
-
-        # x is the log of the density
-        # Apply reparameterization to keep density positive
         with np.errstate(over='raise'):
-            #dens[self.relp_mask] = np.exp(x)
             theta = np.sqrt(x**2+1) -1
-            dens[self.relp_mask] = theta
-
-        emc.L.update_density(dens)
+        emc.L.update_masked_density(theta)
+        emc.L.reset_density_derivs()
 
         functional = 0
-        grad = np.zeros(len(x))
 
         mpi_utils.print_gpu_usage_across_ranks(self.emc.L, logger=self.LOGGER)
         mpi_utils.print_cpu_mem_usage(logger=self.LOGGER)
@@ -155,19 +152,18 @@ class DensityUpdater(Updater):
             finite_rot_inds = emc.prob_rots[i_shot][is_finite_prob]  # TODO : verify type is np.ndarray and avoid the extra call to np.array
             finite_P_dr = P_dr[is_finite_prob]
             self.LOGGER.debug("Dens deriv iter%d (%d / %d)" % (self.iter_num+1, i_shot+1, emc.nshots))
-            shot_grad = emc.L.dens_deriv(finite_rot_inds, finite_P_dr, verbose=False, shot_scale_factor=emc.shot_scales[i_shot])
+            emc.L.dens_deriv(finite_rot_inds, finite_P_dr, verbose=False, shot_scale_factor=emc.shot_scales[i_shot], reset_derivs=False, return_grad=False)
             self.LOGGER.debug("Done Dens deriv iter%d (%d / %d)" % (self.iter_num+1, i_shot+1, emc.nshots))
 
             log_Rdr = np.array(emc.L.get_out())
             self.LOGGER.debug("Done get log Rdr iter%d (%d / %d)" % (self.iter_num+1, i_shot+1, emc.nshots))
 
-            grad += shot_grad[self.relp_mask]
             functional += (finite_P_dr*log_Rdr).sum()
 
         self.LOGGER.debug("Done with rank grad/functional (iter %d)" % (self.iter_num+1))
         COMM.barrier()
         self.LOGGER.debug("Reducing grad")
-        grad = mpi_utils.reduce_large(grad,broadcast=True)
+        emc.L.reduce_density_derivs(COMM)
         COMM.barrier()
         self.LOGGER.debug("functional")
         functional = COMM.reduce(functional)
@@ -175,17 +171,18 @@ class DensityUpdater(Updater):
 
         # Because we reparameterized, such that W = exp(x), then grad -> dW/dx *grad = exp(x)*grad = density*grad
         self.LOGGER.debug("Scaling the gradient (iter %d)" % (self.iter_num+1))
-        dtheta_dx = x/np.sqrt(x**2+1)
-        grad_scaled = grad * dtheta_dx
-        #self.emc.print("")
+        grad = None
+        if COMM.rank==0:
+            grad = emc.L.densities_gradient()
+            grad = grad[self.relp_mask]
+            grad *= x/np.sqrt(x**2+1)
+        grad = mpi_utils.bcast_large(grad, verbose=True, comm=COMM)
         emc_s = "Done with emc iter num: %d (F=%f,G=%10.7g,Gs=%10.7g,|x|=%f, |dth_dx|=%f)" % (self.iter_num+1, functional, np.mean(grad), np.mean(grad_scaled), np.linalg.norm(x), np.linalg.norm(dtheta_dx))
-
-        #self.emc.print(emc_s, flush=True)
         self.LOGGER.debug(emc_s)
 
         # running a minimizer, so return the negative loglike and its gradient
         self.iter_num += 1
-        return -functional, -grad_scaled
+        return -functional, -grad
 
 
 class ScaleUpdater(Updater):

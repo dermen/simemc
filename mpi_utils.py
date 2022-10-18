@@ -515,7 +515,6 @@ class EMC:
         else:
             self.img_sh = img_sh
         self.num_data_pix = int(np.product(self.img_sh))
-        self.Wprev = L.densities()
         self.whole_punch = whole_punch
         self.symmetrize = symmetrize
         self.shot_P_dr = []
@@ -533,7 +532,9 @@ class EMC:
         self.update_density = True  # if the specific iteration is updating the density
 
         self.qs_inbounds = utils.qs_inbounds(self.L.qvecs.reshape((-1,3)), self.dens_sh, self.L.xmin, self.L.xmax)
-        self.apply_density_rules()
+        if COMM.rank==0:
+            self.apply_density_rules()
+        self.L.bcast_densities(COMM)
 
         for i,s in enumerate(self.shots):
             shot_mask_in_bounds = self.shot_mask[self.qs_inbounds]
@@ -633,42 +634,24 @@ class EMC:
         self.print("Waiting for other ranks to catch up before reducing")
         COMM.barrier()
         self.print("Reducing density")
-        den = self.L.densities()
-        wts = self.L.wts()
-
-        #rank_den = self.L.densities()
-        #rank_wts = self.L.wts()
-        #self.print("den reduce (max/min)=", rank_den.max(), rank_den.min())
-        #den = np.empty_like(rank_den)
-        #wts = np.empty_like(rank_wts)
-        #dt = MPI.DOUBLE if self.L.array_type==np.float64 else MPI.FLOAT
-        #COMM.Reduce([rank_den, dt],[den, dt])
-        #COMM.Bcast([den, dt])
-        den = COMM.bcast(COMM.reduce(den))
+        self.L.reduce_densities()
         self.print("wts reduce")
-        #COMM.Reduce([rank_wts, dt],[wts, dt])
-        #COMM.Bcast([wts, dt])
-        wts = COMM.bcast(COMM.reduce(wts))
-        den = utils.errdiv(den, wts)
-        self.set_new_density(den)
+        self.L.reduce_wts()
 
-    def ensure_same(self, den):
-        req = COMM.isend(den, dest=0, tag=COMM.rank)
+        self.LOGGER.debug("Update density (i_emc=%d)" %self.i_emc)
+        den = None
         if COMM.rank==0:
-            for i_rank in range(COMM.size):
-                other_rank_den = COMM.recv(source=i_rank, tag=i_rank)
-                assert np.allclose(den, other_rank_den)
-        req.wait()
+            den = utils.errdiv(self.L.densities(), self.L.wts())
+            self.L.update_densities(den)
+            self.apply_density_rules()
+        self.L.bcast_densities(COMM)
+
 
     def set_new_density(self, den):
-        #self.ensure_same(den)
-        self.LOGGER.debug("Update density (i_emc=%d)" %self.i_emc)
-        self.L.update_density(den.ravel())
-        self.apply_density_rules()
+        pass
 
     def apply_density_rules(self):
         if self.symmetrize:
-            # TODO optionally do this on one rank?
             self.print("Applying crystal symmetry")
             self.LOGGER.debug("Applying crystal symmetry (i_emc=%d)" % self.i_emc)
             self.L.symmetrize()
@@ -676,6 +659,7 @@ class EMC:
             self.LOGGER.debug("Applying friedel symmetry (i_emc=%d)" % self.i_emc)
             self.L.symmetrize()
             self.L.apply_friedel_symmetry()
+
 
         if self.whole_punch:
             self.print("reshape density")
@@ -690,7 +674,6 @@ class EMC:
 
     def prep_for_insertion(self):
         self.L.toggle_insert()
-        self.Wprev = self.L.densities()
 
     def count_scale_factors_at_limit(self):
         num_at_min = np.allclose(self.shot_scales, 0)
@@ -769,6 +752,12 @@ class EMC:
                 self.LOGGER.debug("Instantiated density updater...")
                 den = density_updater.update(how=self.density_update_method, lbfgs_maxiter=self.max_iter)
                 self.set_new_density(den)
+                self.LOGGER.debug("Update density (i_emc=%d)" % self.i_emc)
+                if COMM.rank==0:
+                    assert den is not None
+                    self.L.update_density(den.ravel())
+                    self.apply_density_rules()
+                self.L.bcast_densities(COMM)
             else:
                 raise NotImplementedError("Unknown method %s" % self.density_update_method)
 
@@ -854,6 +843,7 @@ class EMC:
         self.save_prob_rots_npz()
 
     def save_h5(self, density_file):
+        # TODO: do this in c++ to avoid calling L.densities()
         den = self.L.densities()
         with h5py.File(density_file, "w") as out_h5:
             NBINS = self.L.dens_dim
@@ -966,3 +956,15 @@ def print_cpu_mem_usage(logger=None):
                 else:
                     print("host %s has used %.2f GB of memory" % (host, peak_mem))
                 break
+
+
+def ensure_same(den):
+    """
+    :param den:  numpy ndarray
+    """
+    req = COMM.isend(den, dest=0, tag=COMM.rank)
+    if COMM.rank==0:
+        for i_rank in range(COMM.size):
+            other_rank_den = COMM.recv(source=i_rank, tag=i_rank)
+            assert np.allclose(den, other_rank_den)
+    req.wait()
