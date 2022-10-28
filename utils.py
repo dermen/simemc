@@ -80,7 +80,8 @@ def voxel_resolution(dens_dim, max_q):
     QCENT = (QBINS[:-1] +QBINS[1:])*.5
     qX,qY,qZ = np.meshgrid(*([QCENT]*3), indexing='ij')
     qmag =np.sqrt( qX**2 + qY**2 + qZ**2)
-    dspace = 1/qmag
+    with np.errstate(divide='ignore'):
+        dspace = 1/qmag
     return dspace
 
 def get_primitive_vectors(ucell_p, symbol):

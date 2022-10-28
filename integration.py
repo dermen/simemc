@@ -132,10 +132,14 @@ def integrate_W(W, max_q, ucell_p, symbol, method='sum', kernel_iters=2, conn=2,
                 print( "integrating %d / %d" %(i_peak+1, len(aidx)))
 
             if method=='fit':
-                integrated_val, fit_out, fit_peak = fit_peak_to_density(peakRegion)
-                if not fit_out.success:
-                    integrated_val = peakRegion[kernel].sum()
-                    nfit_fail+= 1
+                try:
+                    integrated_val, fit_out, fit_peak = fit_peak_to_density(peakRegion)
+                    if not fit_out.success:
+                        integrated_val = 0
+                        nfit_fail += 1
+                except:
+                    integrated_val = 0
+                    nfit_fail += 1
 
             else: # method=="sum":
                 integrated_val = peakRegion[kernel].sum()
