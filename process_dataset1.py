@@ -3,7 +3,7 @@ from mpi4py import MPI
 COMM = MPI.COMM_WORLD
 
 from argparse import ArgumentParser
-if COMM.rank==0:
+if COMM.rank == 0:
     parser = ArgumentParser()
     parser.add_argument("input", type=str, help="exp ref file (see utils.make_exp_ref_spec_file)")
     parser.add_argument("mask", type=str, help="path to a dials mask (pickle) file")
@@ -11,6 +11,7 @@ if COMM.rank==0:
     parser.add_argument("quat", type=str, help="path to the quaternion file (see simemc/quatgrid/README)")
     parser.add_argument("outdir", help="name of output folder", type=str)
     parser.add_argument("--ndev", type=int, default=1)
+    parser.add_argument("--wholePunch", type=int, default=1)
     parser.add_argument("--even", action="store_true", help="read in data from even line numbers in args.input file")
     parser.add_argument("--odd", action="store_true", help="read in data from odd line numbers in args.input file")
     parser.add_argument("--allrefls", action="store_true", help="use all reflection to determine probable orientations. DEfault is to just use those refls out to max_q")
@@ -54,7 +55,7 @@ ndevice = args.ndev
 TEST_UCELLS = False
 
 if args.highres:
-    dens_dim = 951
+    dens_dim = 751
     max_q = 0.5
 else:
     dens_dim=351
@@ -368,7 +369,8 @@ if COMM.rank==0:
 #        h.create_dataset("Wprime", data=Wstart)
 #        h.create_dataset("ucell", data=ave_ucell)
 
-lerpy.mpi_set_starting_densities(Wstart, COMM)
+# this method sets Wstart on rank0 and broadcasts to other ranks
+L.mpi_set_starting_densities(Wstart, COMM)
 
 init_shot_scales = np.ones(len(this_ranks_imgs))
 
@@ -387,6 +389,7 @@ emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
                     min_p=1e-5,
                     outdir=args.outdir,
                     beta=1,
+                    whole_punch=args.wholePunch,
                     shot_scales=init_shot_scales,
                     refine_scale_factors=True,
                     ave_signal_level=ave_signal_level,

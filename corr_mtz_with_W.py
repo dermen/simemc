@@ -12,7 +12,7 @@ args = parser.parse_args()
 from iotbx.reflection_file_reader import any_reflection_file
 from pylab import *
 from scipy.stats import spearmanr, pearsonr
-from simemc import integration, utils
+from simemc import integration
 
 max_q=0.5
 highRes=1/max_q
@@ -61,21 +61,10 @@ for wname in wnames:
         W = np.load(wname)[()].reshape([dens_dim]*3)
     # TODO store ucell in W
     print(dens_dim, max_q)
-    h,I = utils.integrate_W(W, dens_dim, max_q, ucell_p, symbol)
-    ma2 = utils.integrate_W(W, dens_dim, max_q, ucell_p, symbol, kernel_iters=2, conn=2).as_amplitude_array().resolution_filter(d_min=1/max_q)
-    ma = integration.integrate_W(W, max_q, ucell_p, symbol, method='sum',kernel_iters=3,conn=1, nj=1).as_amplitude_array().resolution_filter(d_min=1/max_q)
+    ma = integration.integrate_W(W, max_q, ucell_p, symbol, method='sum',kernel_iters=2,conn=2, nj=1).as_amplitude_array().resolution_filter(d_min=1/max_q)
     print("Fitting to density")
-    #ma = integration.integrate_W(W, max_q, ucell_p, symbol, method='fit').as_amplitude_array().resolution_filter(d_min=1/max_q)
     ma = ma.average_bijvoet_mates()
-    I = np.array(I)
-    is_pos = I >0
-    I = I[is_pos]
-    h = np.array(h)[is_pos]
-    #assert np.all(I > 0)
-    I = np.sqrt(I)
-    dataMap = {hkl: val for hkl,val in zip(list(map(tuple,h)), I)}
     dataMap = {hkl:val for hkl,val in zip(ma.indices(), ma.data())}
-    #F2 = any_reflection_file("small_cxis_merge/iobs_all.mtz").as_miller_arrays()[0].as_amplitude_array()
     F2 = any_reflection_file("allshotsMerge_mark0/iobs_all.mtz").as_miller_arrays()[0].as_amplitude_array()
     F2map = {h: v for h, v in zip(F2.indices(), F2.data())}
     if hcommon is None:
@@ -149,6 +138,4 @@ if len(wnames) > 1:
     xlabel("resolution ($\AA$)", fontsize=13)
     ylabel("EMC iteraton")
 
-
 show()
-

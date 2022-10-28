@@ -52,8 +52,11 @@ class DensityUpdater(Updater):
         self.relp_mask=None
         if COMM.rank==0:
             self.LOGGER.debug("Whole punching W for relp mask")
+            wid = self.emc.whole_punch
+            if wid is None:
+                wid = 1
             _, self.relp_mask = utils.whole_punch_W(temp,
-                self.emc.L.dens_dim, self.emc.L.max_q, 1, ucell_p=self.emc.ucell_p, symbol=self.emc.symbol)
+                self.emc.L.dens_dim, self.emc.L.max_q, wid, ucell_p=self.emc.ucell_p, symbol=self.emc.symbol)
             self.LOGGER.debug("getting voxel resolution")
             vox_res = utils.voxel_resolution(self.emc.L.dens_dim,
                 self.emc.L.max_q)
@@ -66,7 +69,8 @@ class DensityUpdater(Updater):
             self.emc.L.copy_relp_mask_to_device(self.relp_mask)
         self.LOGGER.debug("Done Copying relp mask to device")
         self.LOGGER.debug("Broadcasting relp mask")
-        self.emc.L.bcast_relp_mask()
+        self.emc.L.bcast_relp_mask(COMM)
+        self.LOGGER.debug("Done Broadcasting relp mask")
         #self.relp_mask = mpi_utils.bcast_large(self.relp_mask)
         mpi_utils.print_gpu_usage_across_ranks(self.emc.L)
         #self.emc.L.copy_relp_mask_to_device(self.relp_mask)
@@ -95,7 +99,7 @@ class DensityUpdater(Updater):
             theta = dens_start[self.relp_mask]
             xstart = np.sqrt((theta + 1)**2 -1)
 
-        mpi_utils.bcast_large(xstart, verbose=True, comm=COMM)
+        xstart = mpi_utils.bcast_large(xstart, verbose=True, comm=COMM)
 
         if how=="line_search":
             f, g = self.target(xstart)
@@ -123,13 +127,13 @@ class DensityUpdater(Updater):
         return dens_start
 
     def target(self, x):
-        x = COMM.bcast(x)  # for some reason parameter updates were drifting ...
-
+        #x = mpi_utils.bcast_large(x, verbose=True, comm=COMM) #COMM.bcast(x)  # for some reason parameter updates were drifting ...
         emc = self.emc
-
-        with np.errstate(over='raise'):
-            theta = np.sqrt(x**2+1) -1
-        emc.L.update_masked_density(theta)
+        if COMM.rank==0:
+            with np.errstate(over='raise'):
+                theta = np.sqrt(x**2+1) -1
+            emc.L.update_masked_density(theta)
+        emc.L.bcast_densities(COMM)
         emc.L.reset_density_derivs()
 
         functional = 0
@@ -176,8 +180,10 @@ class DensityUpdater(Updater):
             grad = emc.L.densities_gradient()
             grad = grad[self.relp_mask]
             grad *= x/np.sqrt(x**2+1)
+        self.LOGGER.debug("Bcasting the Scaled gradient (iter %d)" % (self.iter_num+1))
         grad = mpi_utils.bcast_large(grad, verbose=True, comm=COMM)
-        emc_s = "Done with emc iter num: %d (F=%f,G=%10.7g,Gs=%10.7g,|x|=%f, |dth_dx|=%f)" % (self.iter_num+1, functional, np.mean(grad), np.mean(grad_scaled), np.linalg.norm(x), np.linalg.norm(dtheta_dx))
+        emc_s = "Done with emc iter num: %d (F=%f,G=%10.7g, |x|=%f)" \
+                % (self.iter_num+1, functional, np.mean(grad),  np.linalg.norm(x))
         self.LOGGER.debug(emc_s)
 
         # running a minimizer, so return the negative loglike and its gradient

@@ -198,7 +198,8 @@ class _():
         sym_rot_mats = np.array(sym_rot_mats, dtype=self.array_type).ravel()
         self._copy_sym_info(sym_rot_mats)
 
-    def allocate_lerpy(self, dev_id, rotMats, maxNumQ, corners, deltas, qvecs, maxNumRotInds, numDataPix, use_IPC=True):
+    def allocate_lerpy(self, dev_id, rotMats, maxNumQ, corners, deltas, qvecs,
+                       maxNumRotInds, numDataPix, use_IPC=True):
         """
         :param dev_id:
         :param _rotMats:
