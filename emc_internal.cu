@@ -6,6 +6,8 @@
 
 __device__ __inline__ unsigned int get_densities_index(int i,int j,int k, int nx, int ny, int nz);
 
+__global__ void normalize_density(CUDAREAL* densities, CUDAREAL* wts, int N);
+
 __global__ void trilinear_interpolation_rotate_on_GPU(const CUDAREAL* __restrict__ densities,
                                         VEC3*vectors, CUDAREAL* out, MAT3 rotMat,
                                         int num_qvec,
@@ -120,9 +122,8 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
 
     // copy the density to a host array
     std::vector<CUDAREAL> current_density;
-    for (int i=0; i < gpu.numDens; i++){
-        current_density.push_back(gpu.densities[i]);
-    }
+    current_density.resize(gpu.numDens);
+    from_dev_memcpy(gpu.densities, current_density.data(), gpu.numDens);
 
     // reset the density and wts to 0
     toggle_insert_mode(gpu);
@@ -165,13 +166,20 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
         gpu.mask[i] = temp_mask[i];
     }
 
-    // normalize the new density:
-    for (int i=0; i < gpu.numDens; i++){
-        CUDAREAL wt = gpu.wts[i];
+    // normalize the new density
+    normalize_density<<<gpu.numBlocks, gpu.blockSize >>> (gpu.densities, gpu.wts, gpu.numDens);
+    do_after_kernel(gpu.mpi_rank);
+}
+
+__global__ void normalize_density(CUDAREAL* densities, CUDAREAL* wts, int N){
+    unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int thread_stride = blockDim.x * gridDim.x;
+    for (int i=tid; tid < N; i+= thread_stride){
+        CUDAREAL wt = wts[i];
         if (wt > 0)
-            gpu.densities[i] = gpu.densities[i] / wt;
+            densities[i] = densities[i] / wt;
         else
-            gpu.densities[i] = 0; // note: the density should already by 0 if wt=0
+            densities[i] = 0; // note: the density should already by 0 if wt=0
     }
 }
 
@@ -204,11 +212,9 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
     if (!use_IPC)
         gpuErr(cudaMallocManaged((void **)&gpu.rotMats, gpu.numRot*sizeof(MAT3)));
 
-    //gpuErr(cudaMallocManaged((void **)&gpu.densities, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMalloc((void ** )&gpu.densities, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMemset(gpu.densities, 0, gpu.numDens*sizeof(CUDAREAL)));
-
-    gpuErr(cudaMallocManaged((void **)&gpu.densities_gradient, gpu.numDens*sizeof(CUDAREAL)));
+    gpuErr(cudaMalloc((void ** )&gpu.densities_gradient, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.out, gpu.maxNumQ*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.out_equation_two, gpu.maxNumRotInds*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.qVecs, gpu.maxNumQ*sizeof(VEC3)));
@@ -238,12 +244,6 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
         gpu.qVecs[i_q] = Q;
     }
 
-    //CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(densities.get_data());
-    //for (int i=0; i < gpu.numDens; i++){
-    //    //gpu.densities[i] = *(dens_ptr+i);
-    //    gpu.densities[i] = 0;
-    //}
-
     gpu.is_allocated = true;
 
 }
@@ -261,24 +261,22 @@ void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_m
     }
 }
 
-void dens_to_dev_memcpy(lerpy& gpu, CUDAREAL* host_dens){
-    gpuErr(cudaMemcpy(gpu.densities, host_dens, sizeof(CUDAREAL) * gpu.numDens, cudaMemcpyHostToDevice));
+void to_dev_memcpy(CUDAREAL*& dev_ptr, CUDAREAL* host_ptr, int N){
+    gpuErr(cudaMemcpy(dev_ptr, host_ptr, sizeof(CUDAREAL) * N, cudaMemcpyHostToDevice));
 }
 
-void dens_from_dev_memcpy(lerpy& gpu, CUDAREAL* host_dens){
-    gpuErr(cudaMemcpy(host_dens, gpu.densities, sizeof(CUDAREAL) * gpu.numDens, cudaMemcpyDeviceToHost));
+void from_dev_memcpy(CUDAREAL*& dev_ptr, CUDAREAL* host_ptr, int N){
+    gpuErr(cudaMemcpy(host_ptr, dev_ptr, sizeof(CUDAREAL) * N, cudaMemcpyDeviceToHost));
 }
 
 void densities_to_device(lerpy& gpu, np::ndarray& new_densities){
     unsigned int numDens = new_densities.shape(0);
     CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(new_densities.get_data());
-    for (int i=0; i < gpu.numDens; i++){
-        gpu.densities[i] = *(dens_ptr+i);
-    }
+    to_dev_memcpy(gpu.densities, dens_ptr, gpu.numDens);
 }
 
 void malloc_relp_mask(lerpy& gpu){
-    gpuErr(cudaMallocManaged((void **)&gpu.is_peak_in_density, gpu.numDens*sizeof(bool)));
+    gpuErr(cudaMalloc((void ** )&gpu.is_peak_in_density, gpu.numDens*sizeof(bool)));
 }
 
 void relp_mask_to_device(lerpy& gpu, np::ndarray& relp_mask){
@@ -288,19 +286,14 @@ void relp_mask_to_device(lerpy& gpu, np::ndarray& relp_mask){
         malloc_relp_mask(gpu);
     }
     bool* relp_mask_ptr = reinterpret_cast<bool*>(relp_mask.get_data());
-    for (int i=0; i < gpu.numDens; i++){
-        gpu.is_peak_in_density[i] = *(relp_mask_ptr+i);
-    }
+    gpuErr(cudaMemcpy(gpu.is_peak_in_density, relp_mask_ptr, sizeof(bool) * gpu.numDens, cudaMemcpyHostToDevice));
 }
 
 void toggle_insert_mode(lerpy& gpu){
     if (gpu.wts==NULL){
-        gpuErr(cudaMallocManaged((void **)&gpu.wts, gpu.numDens*sizeof(CUDAREAL)));
+        gpuErr(cudaMalloc((void ** )&gpu.wts, gpu.numDens*sizeof(CUDAREAL)));
     }
-
-    for (int i=0; i < gpu.numDens; i++){
-        gpu.wts[i]=0;
-    }
+    gpuErr(cudaMemset(gpu.wts, 0, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMemset(gpu.densities, 0, gpu.numDens*sizeof(CUDAREAL)));
 
 }
@@ -333,8 +326,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         }
     }
     if(task==4 || task==5 && gpu.alwaysResetDeriv){
-        for (int i=0; i < gpu.numDens; i++)
-            gpu.densities_gradient[i] = 0;
+        gpuErr(cudaMemset(gpu.densities_gradient, 0, gpu.numDens*sizeof(CUDAREAL)));
     }
     if (verbose) {
         gettimeofday(&t2, 0);
@@ -384,10 +376,12 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
             gpu.Pdr[i] = gpu.Pdr_host[i];
         if (gpu.is_peak_in_density==NULL){
             printf("WARNING! NO RELP MASK ALLOCATED: use copy_relp_mask method\n");
-            gpuErr(cudaMallocManaged((void **)&gpu.is_peak_in_density, gpu.numDens*sizeof(bool)));
-            for(int i=0; i < gpu.numDens;i++) {
-                gpu.is_peak_in_density[i] = true;
-            }
+            malloc_relp_mask(gpu);
+            bool* temp = new bool[gpu.numDens];
+            for(int i=0; i < gpu.numDens;i++)
+                temp[i] = true;
+            gpuErr(cudaMemcpy(gpu.is_peak_in_density, temp, sizeof(bool) * gpu.numDens, cudaMemcpyHostToDevice));
+            delete temp;
         }
 
         dens_deriv<<<gpu.numBlocks, gpu.blockSize>>>

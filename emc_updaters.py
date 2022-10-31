@@ -127,7 +127,6 @@ class DensityUpdater(Updater):
         return dens_start
 
     def target(self, x):
-        #x = mpi_utils.bcast_large(x, verbose=True, comm=COMM) #COMM.bcast(x)  # for some reason parameter updates were drifting ...
         emc = self.emc
         if COMM.rank==0:
             with np.errstate(over='raise'):

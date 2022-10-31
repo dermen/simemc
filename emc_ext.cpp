@@ -186,9 +186,7 @@ class lerpyExt{
         MPI_Comm_rank(comm, &rank);
         if (rank==0){
             CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(dens_start.get_data());
-            dens_to_dev_memcpy(gpu, dens_ptr);
-            //for (int i=0; i < gpu.numDens; i++)
-            //    gpu.densities[i] = *(dens_ptr+i);
+            to_dev_memcpy(gpu.densities, dens_ptr, gpu.numDens);
         }
         _bcast_in_chunks<CUDAREAL>(comm, gpu.densities, gpu.numDens, MPI_CUDAREAL);
     }
@@ -280,7 +278,7 @@ class lerpyExt{
             start += count;
         }
         if (rank==0){
-            dens_to_dev_memcpy(gpu, temp.data() );
+            to_dev_memcpy(vec, temp.data(), gpu.numDens );
         }
     }
 
@@ -291,14 +289,7 @@ class lerpyExt{
                             "densities has not been allocated\n");
             bp::throw_error_already_set();
         }
-        bp::tuple shape = bp::make_tuple(gpu.numDens);
-        bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
-        np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
-        //np::ndarray output = np::from_data(&gpu.densities[0], dt, shape, stride, bp::object());
-        np::ndarray output = np::zeros( shape, dt);
-        CUDAREAL* out_ptr = reinterpret_cast<CUDAREAL*>(output.get_data());
-        dens_from_dev_memcpy(gpu, out_ptr);
-        return output.copy();
+        return dev_to_ndarray(gpu.densities, gpu.numDens);
     }
 
     inline  np::ndarray get_densities_gradient(){
@@ -307,11 +298,7 @@ class lerpyExt{
                             "densities_gradient has not been allocated\n");
             bp::throw_error_already_set();
         }
-        bp::tuple shape = bp::make_tuple(gpu.numDens);
-        bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
-        np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
-        np::ndarray output = np::from_data(&gpu.densities_gradient[0], dt, shape, stride, bp::object());
-        return output.copy();
+        return dev_to_ndarray(gpu.densities_gradient, gpu.numDens);
     }
 
     inline np::ndarray get_wts(){
@@ -320,13 +307,19 @@ class lerpyExt{
                             "wts has not been allocated\n");
             bp::throw_error_already_set();
         }
-        bp::tuple shape = bp::make_tuple(gpu.numDens);
+        return dev_to_ndarray(gpu.wts, gpu.numDens);
+    }
+
+    inline np::ndarray dev_to_ndarray(CUDAREAL* dev_ptr, int N){
+        bp::tuple shape = bp::make_tuple(N);
         bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
         np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
-        np::ndarray output = np::from_data(&gpu.wts[0], dt, shape, stride, bp::object());
+        np::ndarray output = np::zeros(shape,dt);
+        CUDAREAL* out_ptr = reinterpret_cast<CUDAREAL*>(output.get_data());
+        from_dev_memcpy(dev_ptr, out_ptr, gpu.numDens);
         return output.copy();
     }
-    
+
     inline void do_equation_two(np::ndarray rot_idx, bool verbose, CUDAREAL shot_scale, const int deriv){
         int nrot = rot_idx.shape(0);
         std::vector<int> rot_inds;
