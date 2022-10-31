@@ -81,6 +81,8 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent);
 void do_a_lerp(lerpy& gpu,
                std::vector<int>& rot_inds,
                bool verbose, int task);
+void dens_to_dev_memcpy(lerpy& gpu, CUDAREAL* host_dens);
+void dens_from_dev_memcpy(lerpy& gpu, CUDAREAL* host_dens);
 void toggle_insert_mode(lerpy& gpu);
 void free_lerpy(lerpy& gpu);
 

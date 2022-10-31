@@ -26,29 +26,29 @@ export MPIFLAG=""
 
 nvcc -c general.cu -I$CUB -I$CPRE/include -I$CPRE/include/python3.8 \
   -I$CCTBX_MOD/eigen $MPI4PY_INC $MPI_INC --compiler-options=-lstdc++,-fPIC,-O3,$MPIFLAG \
-   --expt-relaxed-constexpr $NVCCFLAGS  -o general.o
+   --expt-relaxed-constexpr $NVCCFLAGS  -o general2.o
 
 nvcc -c emc_internal.cu -I$CUB -I$CPRE/include -I$CPRE/include/python3.8 \
   -I$CCTBX_MOD/eigen $MPI4PY_INC $MPI_INC -L$CPRE/lib \
   -lboost_python38 -lboost_system -lboost_numpy38  \
   --compiler-options=-lstdc++,-fPIC,-O3,$MPIFLAG --expt-relaxed-constexpr $NVCCFLAGS \
-  -o emc_internal.o
+  -o emc_internal2.o
 
 
 nvcc -c orient_match.cu -I$CPRE/include -I$CPRE/include/python3.8 \
   -I$CCTBX_MOD/eigen $MPI4PY_INC $MPI_INC -L$CPRE/lib \
   -lboost_python38 -lboost_system -lboost_numpy38  \
   --compiler-options=-lstdc++,-fPIC,-O3,$MPIFLAG --expt-relaxed-constexpr $NVCCFLAGS \
-  -o orient_match.o
+  -o orient_match2.o
 
 nvcc -c emc_ext.cpp -I$CUB -I$CPRE/include -I$CPRE/include/python3.8  \
   -I$CCTBX_MOD/eigen $MPI4PY_INC $MPI_INC -L$CPRE/lib \
   -lboost_python38 -lboost_system  -lboost_numpy38 \
   --compiler-options=-lstdc++,-fPIC,-O3,$MPIFLAG --expt-relaxed-constexpr \
-  -o emc_ext.o
+  -o emc_ext2.o
 
 # build the shared library using the CC compiler wrapper (for perlmutter only)
-CC -shared emc_ext.o emc_internal.o orient_match.o general.o \
+CC -shared emc_ext2.o emc_internal2.o orient_match2.o general2.o \
   -L$CPRE/lib \
   -L$CUDA_HOME/lib64 -lboost_python38  \
   -lboost_numpy38 -lcudart -lmpi \

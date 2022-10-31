@@ -186,8 +186,9 @@ class lerpyExt{
         MPI_Comm_rank(comm, &rank);
         if (rank==0){
             CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(dens_start.get_data());
-            for (int i=0; i < gpu.numDens; i++)
-                gpu.densities[i] = *(dens_ptr+i);
+            dens_to_dev_memcpy(gpu, dens_ptr);
+            //for (int i=0; i < gpu.numDens; i++)
+            //    gpu.densities[i] = *(dens_ptr+i);
         }
         _bcast_in_chunks<CUDAREAL>(comm, gpu.densities, gpu.numDens, MPI_CUDAREAL);
     }
@@ -279,8 +280,7 @@ class lerpyExt{
             start += count;
         }
         if (rank==0){
-            for (int i=0; i <N; i++)
-                vec[i] = temp[i];
+            dens_to_dev_memcpy(gpu, temp.data() );
         }
     }
 
@@ -294,7 +294,10 @@ class lerpyExt{
         bp::tuple shape = bp::make_tuple(gpu.numDens);
         bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
         np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
-        np::ndarray output = np::from_data(&gpu.densities[0], dt, shape, stride, bp::object());
+        //np::ndarray output = np::from_data(&gpu.densities[0], dt, shape, stride, bp::object());
+        np::ndarray output = np::zeros( shape, dt);
+        CUDAREAL* out_ptr = reinterpret_cast<CUDAREAL*>(output.get_data());
+        dens_from_dev_memcpy(gpu, out_ptr);
         return output.copy();
     }
 

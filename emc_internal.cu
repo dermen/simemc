@@ -204,7 +204,10 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
     if (!use_IPC)
         gpuErr(cudaMallocManaged((void **)&gpu.rotMats, gpu.numRot*sizeof(MAT3)));
 
-    gpuErr(cudaMallocManaged((void **)&gpu.densities, gpu.numDens*sizeof(CUDAREAL)));
+    //gpuErr(cudaMallocManaged((void **)&gpu.densities, gpu.numDens*sizeof(CUDAREAL)));
+    gpuErr(cudaMalloc((void ** )&gpu.densities, gpu.numDens*sizeof(CUDAREAL)));
+    gpuErr(cudaMemset(gpu.densities, 0, gpu.numDens*sizeof(CUDAREAL)));
+
     gpuErr(cudaMallocManaged((void **)&gpu.densities_gradient, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.out, gpu.maxNumQ*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.out_equation_two, gpu.maxNumRotInds*sizeof(CUDAREAL)));
@@ -236,10 +239,10 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
     }
 
     //CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(densities.get_data());
-    for (int i=0; i < gpu.numDens; i++){
-        //gpu.densities[i] = *(dens_ptr+i);
-        gpu.densities[i] = 0;
-    }
+    //for (int i=0; i < gpu.numDens; i++){
+    //    //gpu.densities[i] = *(dens_ptr+i);
+    //    gpu.densities[i] = 0;
+    //}
 
     gpu.is_allocated = true;
 
@@ -256,6 +259,14 @@ void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_m
         gpu.mask[i] = *(mask_ptr + i);
         gpu.background[i] = *(background_ptr + i);
     }
+}
+
+void dens_to_dev_memcpy(lerpy& gpu, CUDAREAL* host_dens){
+    gpuErr(cudaMemcpy(gpu.densities, host_dens, sizeof(CUDAREAL) * gpu.numDens, cudaMemcpyHostToDevice));
+}
+
+void dens_from_dev_memcpy(lerpy& gpu, CUDAREAL* host_dens){
+    gpuErr(cudaMemcpy(host_dens, gpu.densities, sizeof(CUDAREAL) * gpu.numDens, cudaMemcpyDeviceToHost));
 }
 
 void densities_to_device(lerpy& gpu, np::ndarray& new_densities){
@@ -289,8 +300,9 @@ void toggle_insert_mode(lerpy& gpu){
 
     for (int i=0; i < gpu.numDens; i++){
         gpu.wts[i]=0;
-        gpu.densities[i]=0;
     }
+    gpuErr(cudaMemset(gpu.densities, 0, gpu.numDens*sizeof(CUDAREAL)));
+
 }
 
 
