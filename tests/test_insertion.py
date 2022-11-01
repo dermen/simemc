@@ -120,6 +120,7 @@ def _test(highRes=False):
         L.copy_image_data(vals1)
         L.copy_image_data(vals2)
         assert np.all(vals1*2==vals2)
+        L.free()
     except ImportError:
         pass
 

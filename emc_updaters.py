@@ -71,9 +71,7 @@ class DensityUpdater(Updater):
         self.LOGGER.debug("Broadcasting relp mask")
         self.emc.L.bcast_relp_mask(COMM)
         self.LOGGER.debug("Done Broadcasting relp mask")
-        #self.relp_mask = mpi_utils.bcast_large(self.relp_mask)
         mpi_utils.print_gpu_usage_across_ranks(self.emc.L)
-        #self.emc.L.copy_relp_mask_to_device(self.relp_mask)
         COMM.barrier()
         self.min_prob = 1e-5
 

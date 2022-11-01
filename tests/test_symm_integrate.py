@@ -97,9 +97,12 @@ def _test(on_dev=1, friedel=1, centered=0):
         # and integrate once again
         print("symmetrize density using LERPY")
         L.set_sym_ops(ucell, sym)
+        print("Symmetrize")
         L.symmetrize()
         if friedel:
+            print("Apply friedel")
             L.apply_friedel_symmetry()
+        print("reshape")
         Wsym = L.densities().reshape(L.dens_sh)
     else:
         print("symmetrize density using utils")
@@ -119,6 +122,7 @@ def _test(on_dev=1, friedel=1, centered=0):
     pear = pearsonr(a,b)[0]
     print("pearson", pear)
     assert pear > 0.99
+    L.free()
     print("OK")
 
 

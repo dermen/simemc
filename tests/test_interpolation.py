@@ -80,6 +80,7 @@ def _test(highRes=False):
     inbounds = utils.qs_inbounds(qcoords, dens_shape, X_MIN, X_MAX).reshape(img.shape)
     #assert pearsonr(Wr_reborn[inbounds], Wr_simemc[inbounds])[0] >.999
     assert pearsonr(Wr_line[inbounds], Wr_simemc[inbounds])[0] >.999
+    L.free()
 
     print("OK!")
 

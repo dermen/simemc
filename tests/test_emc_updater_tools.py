@@ -45,7 +45,6 @@ def _test():
     if COMM.rank==0:
         L.copy_relp_mask_to_device(relp_mask)
     L.bcast_relp_mask(COMM)
-
     L.update_density(dens)
     L.bcast_densities(COMM)  # overrides density on ranks>1
 

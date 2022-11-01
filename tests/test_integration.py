@@ -85,6 +85,7 @@ def main(dens_dim, max_q):
     cc = pearsonr(vals1, vals2)[0]
     print("%d integrated refls show CC=%.3f with density" % (len(vals1), cc))
     assert cc > 0.9
+    L.free()
     print("OK")
 
 if __name__=="__main__":

@@ -15,18 +15,22 @@ from simemc.emc import probable_orients, lerpy
 
 @pytest.mark.mpi_skip()
 def test_conventions_reborn_insert_highRes():
+    print("lk")
     _test_conventions(False, True)
 
 @pytest.mark.mpi_skip()
 def test_conventions_reborn_insert_lowRes():
+    print("lk")
     _test_conventions(False, False)
 
 @pytest.mark.mpi_skip()
 def test_conventions_hist_insert_lowRes():
+    print("lk")
     _test_conventions(True, False)
 
 @pytest.mark.mpi_skip()
 def test_conventions_hist_insert_highRes():
+    print("lk")
     _test_conventions(True, True)
 
 
@@ -82,9 +86,6 @@ def _test_conventions(use_hist_method=True, highRes=False):
 
         W = utils.errdiv(densities, weights)
 
-
-
-
     rotMats = Rotation.random(num_rot_mats).as_matrix()
     rot_idx = 1
     rotMats[rot_idx] = Umat
@@ -116,6 +117,7 @@ def _test_conventions(use_hist_method=True, highRes=False):
     inds = np.arange(maxRotInds).astype(np.int32)
     print("Compute equation two for all orientations")
     L.equation_two(inds)
+    L.free()
     log_Rdr = L.get_out()
     Pdr = utils.compute_P_dr_from_log_R_dr(log_Rdr)
     # the first rotation matrix is the ground truth:

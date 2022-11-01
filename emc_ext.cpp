@@ -194,14 +194,7 @@ class lerpyExt{
     inline void _update_masked_density(np::ndarray& new_vals){
     //  TODO assert is_peak_in_density is set, and densities is allocated
         check_densities_are_set();
-        CUDAREAL* vals_ptr = reinterpret_cast<CUDAREAL*>(new_vals.get_data());
-        int offset=0;
-        for (int i=0; i < gpu.numDens; i++){
-            if (gpu.is_peak_in_density[i]){
-                gpu.densities[i] = *(vals_ptr+offset);
-                offset += 1;
-            }
-        }
+        update_masked_density_gpu(gpu, new_vals);
     }
 
     inline void _bcast_density(bp::object py_comm){
@@ -224,7 +217,11 @@ class lerpyExt{
         if (gpu.is_peak_in_density == NULL)
             malloc_relp_mask(gpu);
         MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
+        MPI_Bcast(&gpu.num_unmasked, 1, MPI_INT, 0, comm);
+        if (gpu.unmasked_inds==NULL)
+            malloc_unmasked_inds(gpu);
         _bcast_in_chunks<bool>(comm, gpu.is_peak_in_density, gpu.numDens, MPI_C_BOOL);
+        _bcast_in_chunks<int>(comm, gpu.unmasked_inds, gpu.num_unmasked, MPI_INT);
     }
 
     template <typename vec_t> inline void _bcast_in_chunks(MPI_Comm comm, vec_t *vec, int N, MPI_Datatype dt){
@@ -278,7 +275,8 @@ class lerpyExt{
             start += count;
         }
         if (rank==0){
-            to_dev_memcpy(vec, temp.data(), gpu.numDens );
+            CUDAREAL* temp_ptr = &temp[0];
+            to_dev_memcpy(vec, temp_ptr, N );
         }
     }
 
@@ -311,13 +309,17 @@ class lerpyExt{
     }
 
     inline np::ndarray dev_to_ndarray(CUDAREAL* dev_ptr, int N){
+        //CUDAREAL* temp = new CUDAREAL[N];
+        //from_dev_memcpy(dev_ptr, temp, N);
         bp::tuple shape = bp::make_tuple(N);
         bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
         np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
         np::ndarray output = np::zeros(shape,dt);
         CUDAREAL* out_ptr = reinterpret_cast<CUDAREAL*>(output.get_data());
-        from_dev_memcpy(dev_ptr, out_ptr, gpu.numDens);
-        return output.copy();
+        //np::ndarray output = np::from_data(temp, dt, shape, stride, bp::object()).copy();
+        from_dev_memcpy(dev_ptr, out_ptr, N);
+        //delete temp;
+        return output;
     }
 
     inline void do_equation_two(np::ndarray rot_idx, bool verbose, CUDAREAL shot_scale, const int deriv){
@@ -338,9 +340,7 @@ class lerpyExt{
     }
 
     inline void _reset_dens_deriv(){
-        for (int i=0; i< gpu.numDens; i++){
-            gpu.densities_gradient[i] = 0;
-        }
+        reset_dens_deriv(gpu);
     }
 
     inline void do_dens_deriv(np::ndarray rot_idx, np::ndarray Pdr_vals, bool verbose, CUDAREAL shot_scale, bool reset_derivs){

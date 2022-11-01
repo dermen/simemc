@@ -47,6 +47,7 @@ def _test():
     if COMM.rank==0:
         Wstart = np.random.random((n,n,n))
     # this should copy Wstart to gpu.densities on rank=0 and them broadcast to all other ranks
+    mpi_utils.print0("Mpi set starting densities")
     L.mpi_set_starting_densities(Wstart, COMM)
 
     # copy Wstart to all other ranks, and verify gpu.densities was set properly by mpi_set_starting_densities

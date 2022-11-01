@@ -20,6 +20,9 @@ namespace bp = boost::python;
 namespace np = boost::python::numpy;
 
 struct lerpy {
+  int* unmasked_inds=NULL;
+  CUDAREAL* unmasked_vals=NULL;
+  int num_unmasked=-1;
   bool alwaysResetDeriv = true;
   bool close_rotMats_handle = false;
   bool free_rotMats = true;
@@ -64,6 +67,7 @@ struct lerpy {
 
 void malloc_relp_mask(lerpy& gpu);
 void relp_mask_to_device(lerpy& gpu, np::ndarray& relp_mask);
+void malloc_unmasked_inds(lerpy& gpu);
 
 void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
                          np::ndarray& qvectors, bool use_IPC);
@@ -81,11 +85,12 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent);
 void do_a_lerp(lerpy& gpu,
                std::vector<int>& rot_inds,
                bool verbose, int task);
-void to_dev_memcpy(CUDAREAL*& dev_ptr, CUDAREAL* host_ptr, int N);
-void from_dev_memcpy(CUDAREAL*& dev_ptr, CUDAREAL* host_ptr, int N);
+void to_dev_memcpy( CUDAREAL* dev_ptr,  CUDAREAL* host_ptr, int N);
+void from_dev_memcpy( CUDAREAL* dev_ptr,  CUDAREAL* host_ptr, int N);
+void reset_dens_deriv(lerpy& gpu);
 void toggle_insert_mode(lerpy& gpu);
 void free_lerpy(lerpy& gpu);
-
+void update_masked_density_gpu(lerpy& gpu, np::ndarray& new_vals);
 
 
 struct gpuOrient {
