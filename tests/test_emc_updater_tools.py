@@ -12,10 +12,14 @@ import pytest
 
 @pytest.mark.mpi(min_size=2)
 def test():
-    _test()
+    main()
+
+@pytest.mark.mpi(min_size=2)
+def test_sparse():
+    main(sparse=True)
 
 
-def _test():
+def main(sparse=False):
     dens_dim=151
     max_q=0.25
     L = lerpy()
@@ -34,18 +38,25 @@ def _test():
 
     qx,qy,qz = map(lambda x: x.ravel(), utils.calc_qmap(DET, BEAM))
 
+    dens = np.random.random(L.dens_dim**3)
+    relp_mask = None
+    if COMM.rank==0:
+        relp_mask = np.random.randint(0,2,dens.shape).astype(bool)
+    relp_mask = COMM.bcast(relp_mask)
+
     qcoords = np.vstack((qx,qy,qz)).T
     assert len(qcoords) == npix
     L.allocate_lerpy(
         dev_id, rotMats.ravel(), npix,
         c,d, qcoords.ravel(),
-        rotMats.shape[0], npix)
-    dens = np.random.random(L.dens_dim**3)
-    relp_mask = np.random.randint(0,2,dens.shape).astype(bool)
+        rotMats.shape[0], npix, peak_mask=relp_mask if sparse else None)
     if COMM.rank==0:
         L.copy_relp_mask_to_device(relp_mask)
     L.bcast_relp_mask(COMM)
-    L.update_density(dens)
+    if sparse:
+        L.update_density(dens.ravel()[relp_mask.ravel()])
+    else:
+        L.update_density(dens)
     L.bcast_densities(COMM)  # overrides density on ranks>1
 
     new_vals = None
@@ -53,7 +64,10 @@ def _test():
         new_vals = np.ones(relp_mask.sum())
     new_vals = COMM.bcast(new_vals)
 
-    L.update_masked_density(new_vals)
+    if sparse:
+        L.update_density(new_vals)
+    else:
+        L.update_masked_density(new_vals)
 
     mpi_utils.ensure_same(L.densities())
 
@@ -89,4 +103,6 @@ def _test():
 
 
 if __name__=="__main__":
-    test()
+    import sys
+    sparse = int(sys.argv[1])
+    main(sparse)

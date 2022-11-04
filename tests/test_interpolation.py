@@ -3,7 +3,7 @@ import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 from scipy.stats import pearsonr
 
-#from reborn.misc.interpolate import trilinear_interpolation, trilinear_insertion
+from reborn.misc.interpolate import trilinear_interpolation, trilinear_insertion
 from simemc import utils, sim_const, sim_utils
 from simemc.emc import lerpy
 import pytest
@@ -15,10 +15,14 @@ def test():
     _test()
 
 @pytest.mark.mpi_skip()
+def test_sparse():
+    _test(sparse=True)
+
+@pytest.mark.mpi_skip()
 def test_highRes():
     _test(True)
 
-def _test(highRes=False):
+def _test(highRes=False, sparse=False):
 
     # simulate
     np.random.seed(0)
@@ -49,6 +53,11 @@ def _test(highRes=False):
     qbins = np.linspace(-max_q, max_q, dens_dim+1)
     W = utils.insert_slice(img.ravel(), qcoords_rot, qbins)
 
+    _,peak_mask = utils.whole_punch_W(W, dens_dim, max_q, width=1)
+
+    if sparse:
+        W*= peak_mask
+
     # lengthscale parameters of the density array
     dens_shape = dens_dim, dens_dim, dens_dim
     X_MIN, X_MAX = utils.get_xmin_xmax(max_q, dens_dim) 
@@ -60,9 +69,9 @@ def _test(highRes=False):
     #rgi_near = RegularGridInterpolator((qs, qs, qs), W, method='nearest', fill_value=0,bounds_error=False)
 
     Wr_line = rgi_line(qcoords_rot).reshape(img.shape)
-    #Wr_reborn = trilinear_interpolation(np.ascontiguousarray(W), np.ascontiguousarray(qcoords_rot),
-    #                                  x_min=X_MIN,
-    #                                  x_max=X_MAX).reshape(img.shape)
+    Wr_reborn = trilinear_interpolation(np.ascontiguousarray(W), np.ascontiguousarray(qcoords_rot),
+                                      x_min=X_MIN,
+                                      x_max=X_MAX).reshape(img.shape)
 
     # now try with the CUDA interpolator
     L = lerpy()
@@ -73,13 +82,22 @@ def _test(highRes=False):
                      np.array([np.reshape(C.get_U(),(3,3))]),
                      len(qcoords),
                      tuple(corner), tuple(deltas), qcoords,
-                     1, len(qcoords))
-    L.update_density(W)
+                     1, len(qcoords),
+                     peak_mask=peak_mask if sparse else None)
+    if sparse:
+        L.update_density(W[peak_mask])
+    else:
+        L.update_density(W)
     Wr_simemc = L.trilinear_interpolation(0).reshape(img.shape)
+
+    print("mean of scipy slice=%f" % Wr_line.mean())
+    print("mean of simemc slice=%f" % Wr_simemc.mean())
+    print("mean of reborn slice=%f" % Wr_reborn.mean())
 
     inbounds = utils.qs_inbounds(qcoords, dens_shape, X_MIN, X_MAX).reshape(img.shape)
     #assert pearsonr(Wr_reborn[inbounds], Wr_simemc[inbounds])[0] >.999
     assert pearsonr(Wr_line[inbounds], Wr_simemc[inbounds])[0] >.999
+    assert pearsonr(Wr_reborn[inbounds], Wr_simemc[inbounds])[0] >.999
     L.free()
 
     print("OK!")
@@ -87,5 +105,5 @@ def _test(highRes=False):
 
 if __name__=="__main__":
     import sys
-    highRes = int(sys.argv[1])
-    _test(highRes)
+    highRes, sparse = map(int, sys.argv[1:3])
+    _test(highRes, sparse)

@@ -158,7 +158,7 @@ class _():
         if Wstart is None:
             Wstart = np.empty(0)
         else:
-            assert Wstart.size == self.dens_dim**3
+            #assert Wstart.size == self.dens_dim**3
             self.check_arrays(Wstart)
 
         self._mpi_set_starting_density(Wstart, comm)
@@ -199,7 +199,7 @@ class _():
         self._copy_sym_info(sym_rot_mats)
 
     def allocate_lerpy(self, dev_id, rotMats, maxNumQ, corners, deltas, qvecs,
-                       maxNumRotInds, numDataPix, use_IPC=True):
+                       maxNumRotInds, numDataPix, use_IPC=True, peak_mask=None):
         """
         :param dev_id:
         :param _rotMats:
@@ -210,23 +210,36 @@ class _():
         :param maxNumRotInds:
         :param numDataPix:
         :param use_IPC: uses cuda interprocess communication to limit memory usage when sharing GPUs across multiple processes
+        :param peakMask:
         :return:
         """
         # TODO: add the method to verify IPC is enabled
         rotMats = self.check_arrays(rotMats)
         self.qvecs = self.check_arrays(qvecs)
 
+        if peak_mask is not None:
+            peak_mask = self.check_arrays(peak_mask, bool)
+            self.set_sparse_lookup(peak_mask)
         self._allocate_lerpy(dev_id, rotMats, maxNumQ, tuple(corners), tuple(deltas),
                              self.qvecs, maxNumRotInds, numDataPix, use_IPC)
 
     def trilinear_interpolation(self, rot_idx, verbose=False):
         return self._trilinear_interpolation(int(rot_idx), verbose)
 
-    def apply_friedel_symmetry(self):
+    def apply_friedel_symmetry(self, peak_mask=None):
         """note, only use this if the density has been normalized by the weights"""
-        d = self.densities().reshape(self.dens_sh)
-        d = 0.5*(d +np.flip(d))
-        self.update_density(d.ravel())
+        if peak_mask is None:
+            d = self.densities().reshape(self.dens_sh)
+            d = 0.5*(d +np.flip(d))
+            self.update_density(d.ravel())
+        else:
+            nvox = self.dens_dim**3
+            assert peak_mask.size==nvox
+            d = np.zeros(nvox)
+            d[peak_mask.ravel()] = self.densities()
+            d = d.reshape(self.dens_sh)
+            d = 0.5*(d +np.flip(d))
+            self.update_density(d.ravel()[peak_mask.ravel()])
 
     def trilinear_insertion(self, rot_idx, vals, mask=None, verbose=False, tomo_wt=1, bg=None):
         """

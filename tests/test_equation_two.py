@@ -17,13 +17,20 @@ def test_equation_two():
     main()
 
 @pytest.mark.mpi_skip()
+def test_equation_two_sparse():
+    main(sparse=True)
+
+@pytest.mark.mpi_skip()
 def test_equation_two_highRes():
     main(highRes=1)
-
 
 @pytest.mark.mpi_skip()
 def test_equation_two_scale_deriv():
     main(finite_diff=1)
+
+@pytest.mark.mpi_skip()
+def test_equation_two_scale_deriv_sparse():
+    main(finite_diff=1, sparse=True)
 
 @pytest.mark.mpi_skip()
 def test_equation_two_scale_deriv_highRes():
@@ -35,12 +42,16 @@ def test_equation_two_density_deriv():
     main(finite_diff=2)
 
 @pytest.mark.mpi_skip()
+def test_equation_two_density_deriv_sparse():
+    main(finite_diff=2, sparse=True)
+
+@pytest.mark.mpi_skip()
 def test_equation_two_density_deriv_highRes():
     # FIXME: I noticed this fail once, randomly.. Very weird...
     main(finite_diff=2, highRes=1)
 
 
-def main(maxRotInds=10, finite_diff=0, highRes=False):
+def main(maxRotInds=10, finite_diff=0, highRes=False, sparse=False):
     """
 
     :param maxRotInds: how many random orientations to test
@@ -81,13 +92,13 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
     qmags = np.linalg.norm(qcoords, axis=1)
     inbounds = np.logical_and(qmags > qmin, qmags < qmax)
 
-    I = np.random.uniform(1e-1, 10, (dens_dim, dens_dim, dens_dim))
-    print("Density shape:", I.shape)
+    W = np.random.uniform(1e-1, 10, (dens_dim, dens_dim, dens_dim))
+    print("Density shape:", W.shape)
     qbins = np.linspace(-max_q, max_q, dens_dim+1)
     rotMats = Rotation.random(400000, random_state=0).as_matrix()
     rotMats[0] = Umat
 
-    dens_sh = I.shape
+    dens_sh = W.shape
     qcent = (qbins[:-1] + qbins[1:])*.5
     xmin = qcent[0], qcent[0], qcent[0]
     xmax = qcent[-1], qcent[-1], qcent[-1]
@@ -98,10 +109,17 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
     L.dens_dim=dens_dim
     L.max_q=max_q
     gpu_dev=0
+    _, peak_mask = utils.whole_punch_W(W, L.dens_dim, max_q, width=1)
+    if sparse:
+        W*=peak_mask
     L.allocate_lerpy(gpu_dev, rotMats, maxNumQ,
                      tuple(c), tuple(d), qcoords,
-                     maxRotInds, N)
-    L.update_density(I)
+                     maxRotInds, N,
+                     peak_mask=peak_mask if sparse else None)
+    if sparse:
+        L.update_density(W[peak_mask])
+    else:
+        L.update_density(W)
     talloc = time.time()-talloc
     print("Took %.4f sec to allocate device (this only ever happens once per EMC computation)" % talloc)
 
@@ -147,6 +165,10 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
             Pdr_vals = np.array(Pdr_vals)
             Qdr = (Pdr_vals*Rgpu).sum()
             deriv_Qdr = L.dens_deriv(inds, Pdr_vals, verbose=True, shot_scale_factor=1)
+            if sparse:
+                temp = np.zeros(W.size)
+                temp[peak_mask.ravel()] = deriv_Qdr
+                deriv_Qdr = temp
 
             # calling the dens_deriv method also results in computing the log_Rdr values
             # here we test that they are the same as computed by the equation_two method
@@ -158,18 +180,21 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
             fail_vox = []
 
             nfail = 0
-            I1d = I.ravel()
+            W1d = W.ravel()
             for random_voxel in random_voxels:
                 #random_voxel = 71068807  # at one point, this voxel lead to ValueError in linregress
                 found_linear_region =False
                 errors = []
                 dh = []
-                print("\nRANDOM VOXEL: %d, deriv_Qdr=%f, I=%f" % (random_voxel, deriv_Qdr[random_voxel], I1d[random_voxel]))
+                print("\nRANDOM VOXEL: %d, deriv_Qdr=%f, W=%f" % (random_voxel, deriv_Qdr[random_voxel], W1d[random_voxel]))
                 for i_h in range(30):
-                    delta_h = 2**i_h * 0.005 * I1d[random_voxel]
-                    density_shifted = I1d.copy()
+                    delta_h = 2**i_h * 0.005 * W1d[random_voxel]
+                    density_shifted = W1d.copy()
                     density_shifted[random_voxel] += delta_h
-                    L.update_density(density_shifted.ravel())
+                    if sparse:
+                        L.update_density(density_shifted.ravel()[peak_mask.ravel()])
+                    else:
+                        L.update_density(density_shifted.ravel())
                     L.equation_two(inds, verbose=False, shot_scale_factor=1)
                     Rgpu_shifted = np.array(L.get_out())
                     Pdr_vals_shifted = np.array(utils.compute_P_dr_from_log_R_dr(Rgpu_shifted))
@@ -208,7 +233,7 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
                             
                         else:
                             # if we arent in the linear region, assert all errors are small
-                            assert np.all(e < 0.01 * I1d[random_voxel] for e in err)
+                            assert np.all(e < 0.01 * W1d[random_voxel] for e in err)
 
                 if not found_linear_region:
                     print("FAILED!!!!!!")
@@ -235,21 +260,25 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
     epsilon=1e-6 # this should match whats in the CUDA kernel EMC_equation_two , TODO: make epsilon an attribute of emc_ext ?
     for i_rot in range(maxRotInds):
         qcoords_rot = np.dot(qcoords, rotMats[i_rot])
-        W = trilinear_interpolation(I, qcoords_rot, x_min=xmin, x_max=xmax)
+        W_rt = trilinear_interpolation(W, qcoords_rot, x_min=xmin, x_max=xmax)
         tt = time.time()
         kji = np.floor((qcoords_rot - c) / d)
-        bad = np.logical_or(kji < 0, kji > I.shape[0]-2)
+        bad = np.logical_or(kji < 0, kji > W.shape[0]-2)
         good = ~np.any(bad, axis=1)
-        sel = np.logical_and( inbounds, np.logical_and(good, W > 0))
+        model = W_rt+background
+        sel = np.logical_and( inbounds, np.logical_and(good, model > -epsilon))
         twaste += time.time()-tt
-        Wsel = W[sel]
-        r = np.sum(data1[sel]*np.log(background[sel] + Wsel+epsilon)-Wsel - background[sel])
+        with np.errstate(invalid='ignore', divide='ignore'):
+            r = (data1 * np.log(model+epsilon) - model)[sel].sum()
         Rcpu.append(r)
         Wr = L.trilinear_interpolation(i_rot)
-        r2 = np.sum(data1*np.log1p(background + Wr+epsilon) - Wr - background)
-        Rcpu2.append(r2)  # TODO whats important about Rcpu2 ?
+        model2 = Wr+background
+        with np.errstate(invalid='ignore', divide='ignore'):
+            r2 = (data1*np.log(model2+epsilon) - model2)[sel].sum()
+        Rcpu2.append(r2)
     t = time.time()-t - twaste
     print("CPU:",np.round(Rcpu[:3],3), "(%.3f sec)" % t)
+    print("CPU2:",np.round(Rcpu2[:3],3), "(%.3f sec)" % t)
     try:
         assert np.allclose( Rgpu, Rcpu)
         print("Results are identical!")
@@ -269,7 +298,6 @@ def main(maxRotInds=10, finite_diff=0, highRes=False):
     print("OK!")
 
 
-
 #FIXME why would repeated calls to the equation_two kernel reslt in same values ?
 """
 RANDOM VOXEL: 71068807, deriv_Qdr=0.017246, I=8.619641
@@ -286,7 +314,7 @@ FINITE DIFF SCALING:  0.3447856375706308 0.0003038497838055303
 
 if __name__=="__main__":
     try:
-        max_rot_inds, finite_diff, highRes = [int(arg) for arg in sys.argv[1:]]
+        max_rot_inds, finite_diff, highRes, sparse = [int(arg) for arg in sys.argv[1:]]
     except ValueError:
-        max_rot_inds, finite_diff, highRes = 10,0,0
-    main(max_rot_inds, finite_diff, highRes)
+        max_rot_inds, finite_diff, highRes,sparse = 10,0,0,1
+    main(max_rot_inds, finite_diff, highRes, sparse)

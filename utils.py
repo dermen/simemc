@@ -246,7 +246,7 @@ def integrate_W(W, dens_dim, max_q, ucell_p=None, symbol=None, order=None, kerne
             #from IPython import embed;embed()
 
             integrated_val = peakRegion[kernel].sum()
-            data.append(integrated_val)
+            data.append(np.float64(integrated_val))
             hkls.append((int(h), int(k), int(l)))
 
         p1_ucell = get_p1_ucell(ucell_p, symbol)

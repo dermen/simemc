@@ -50,6 +50,7 @@ def test_large_reduce():
     v_all5 = reduce_large_3d(v, verbose=True, buffers=True)
     v_all5 = bcast_large(v_all5, verbose=True, comm=COMM)
     assert v_all5.sum() == v.size*COMM.size
+    print("OK")
 
 
 if __name__=="__main__":

@@ -13,10 +13,14 @@ import pytest
 
 @pytest.mark.mpi(min_size=2)
 def test():
-    _test()
+    main()
+
+@pytest.mark.mpi(min_size=2)
+def test_sparse():
+    main(sparse=True)
 
 
-def _test():
+def main(sparse=False):
     dens_dim=551
     max_q=0.5
     L = lerpy()
@@ -38,14 +42,20 @@ def _test():
 
     qcoords = np.vstack((qx,qy,qz)).T
     assert len(qcoords) == npix
-    L.allocate_lerpy(
-        dev_id, rotMats, npix,
-        c,d, qcoords,
-        rotMats.shape[0], npix)
-
     Wstart = None
     if COMM.rank==0:
         Wstart = np.random.random((n,n,n))
+
+    _,peak_mask = utils.whole_punch_W(np.random.random((n,n,n)), dens_dim, max_q)
+    if sparse and COMM.rank==0:
+        Wstart = Wstart[peak_mask]
+
+    L.allocate_lerpy(
+        dev_id, rotMats, npix,
+        c,d, qcoords,
+        rotMats.shape[0], npix,
+        peak_mask=peak_mask if sparse else None)
+
     # this should copy Wstart to gpu.densities on rank=0 and them broadcast to all other ranks
     mpi_utils.print0("Mpi set starting densities")
     L.mpi_set_starting_densities(Wstart, COMM)
@@ -62,11 +72,17 @@ def _test():
 
     L.trilinear_insertion(0, vals)
 
-    W = L.densities()
-    wts = L.wts()
 
-    W = W.reshape(L.dens_sh)
-    wts = wts.reshape(L.dens_sh)
+    if sparse:
+        W = np.zeros(L.dens_dim**3)
+        wts = np.zeros(L.dens_dim**3)
+        W[peak_mask.ravel()] = L.densities()
+        wts[peak_mask.ravel()] = L.wts()
+        W = W.reshape(L.dens_sh)
+        wts = wts.reshape(L.dens_sh)
+    else:
+        W = L.densities().reshape(L.dens_sh)
+        wts = L.wts().reshape(L.dens_sh)
     t = time.time()
     Wred_external = mpi_utils.reduce_large_3d(W, verbose=True, buffers=True)
     wtsred_external = mpi_utils.reduce_large_3d(wts, verbose=True, buffers=True)
@@ -76,8 +92,14 @@ def _test():
     L.reduce_densities(COMM)
     L.reduce_weights(COMM)
     tint = time.time()-t
-    Wred_internal = L.densities()
-    wtsred_internal = L.densities()
+    if sparse:
+        Wred_internal = np.zeros(L.dens_dim**3)
+        wtsred_internal = np.zeros_like(Wred_internal)
+        Wred_internal[peak_mask.ravel()] = L.densities()
+        wtsred_internal[peak_mask.ravel()] = L.wts()
+    else:
+        Wred_internal = L.densities()
+        wtsred_internal = L.wts()
     if COMM.rank==0:
         Wred_external = Wred_external.ravel()
         wtsred_external = wtsred_external.ravel()
@@ -92,4 +114,6 @@ def _test():
 
 
 if __name__=="__main__":
-    test()
+    import sys
+    sparse = int(sys.argv[1])
+    main(sparse)

@@ -12,10 +12,14 @@ def test():
     _test()
 
 @pytest.mark.mpi_skip()
+def test_sparse():
+    _test(sparse=True)
+
+@pytest.mark.mpi_skip()
 def test_highRes():
     _test(True)
 
-def _test(highRes=False):
+def _test(highRes=False, sparse=False):
     if highRes:
         dens_dim=512
         max_q=0.5
@@ -34,6 +38,10 @@ def _test(highRes=False):
     X_MAX = L.xmax
     c,d = utils.corners_and_deltas(W.shape, X_MIN, X_MAX)
 
+    _,peak_mask = utils.whole_punch_W(W, dens_dim, max_q, width=2)
+    if sparse:
+        W*=peak_mask
+
     fdim,sdim = DET[0].get_image_size()
     img_sh = len(DET), sdim, fdim
     npix = int(np.product(img_sh))
@@ -45,10 +53,17 @@ def _test(highRes=False):
     L.allocate_lerpy(
         dev_id, rotMats, npix,
         c,d, qcoords,
-        rotMats.shape[0], npix)
-    L.update_density(W)
+        rotMats.shape[0], npix,
+        peak_mask=peak_mask if sparse else None)
+    if sparse:
+        L.update_density(W[peak_mask])
+    else:
+        L.update_density(W)
 
-    assert np.allclose(L.densities(), W.ravel())
+    if sparse:
+        assert np.allclose(L.densities(), W[peak_mask].ravel())
+    else:
+        assert np.allclose(L.densities(), W.ravel())
 
     try:
         wts = L.wts()
@@ -62,19 +77,20 @@ def _test(highRes=False):
     vals = np.ones(img_sh)
 
     L.trilinear_insertion(0, vals)
-    W1  = L.densities()
+    W1 = L.densities()
     wts1 = L.wts()
 
     L.trilinear_insertion(0, vals)
-    W2  = L.densities()
+    W2  = L.densities()  # note if sparse, this will be the reduced density vector
     wts2 = L.wts()
     assert np.allclose(W1*2, W2)
     assert np.allclose(wts1*2, wts2)
 
     W2 = utils.errdiv(W2, wts2)
     L.update_density(W2)
-    W_rt = L.trilinear_interpolation(0)
-    assert np.allclose(W_rt, 1)
+    W_rt_simemc = L.trilinear_interpolation(0)
+    if not sparse:
+        assert np.allclose(W_rt_simemc, 1)
     try:
         from reborn.misc.interpolate import trilinear_insertion, trilinear_interpolation
 
@@ -106,20 +122,23 @@ def _test(highRes=False):
 
         assert np.allclose( W_rt, 1)
 
+        if sparse:
+            W3 = np.zeros((n,n,n))
+            W3[peak_mask] = W2
+        else:
+            W3 = W2.reshape((n,n,n))
         W_rt_from_GPUdensity = trilinear_interpolation(
-            W2.reshape((n,n,n)).astype(np.float64), qcoords_rot[is_inbounds],
+            W3.astype(np.float64), qcoords_rot[is_inbounds],
             x_min=X_MIN, x_max=X_MAX)
-        assert np.allclose( W_rt_from_GPUdensity, 1)
+        if sparse:
+            assert np.allclose(W_rt_from_GPUdensity, W_rt_simemc)
+        else:
+            assert np.allclose( W_rt_from_GPUdensity, 1)
 
         L.toggle_insert()
         assert np.allclose(L.densities(), 0)
         assert np.allclose(L.wts(), 0)
 
-        vals1 = np.ones(img_sh)
-        vals2 = np.ones(img_sh)*2
-        L.copy_image_data(vals1)
-        L.copy_image_data(vals2)
-        assert np.all(vals1*2==vals2)
         L.free()
     except ImportError:
         pass
@@ -129,5 +148,5 @@ def _test(highRes=False):
 
 if __name__=="__main__":
     import sys
-    highRes = int(sys.argv[1])
-    _test(highRes)
+    highRes,sparse = map(int,sys.argv[1:3])
+    _test(highRes, sparse)

@@ -80,13 +80,13 @@ class lerpyExt{
         gpu.numDataPixels = numDataPix;
         gpu.maxNumQ = maxNumQ;
         gpu.maxNumRotInds = maxNumRotInds;
-        gpu.corner[0] = bp::extract<double>(corner[0]);
-        gpu.corner[1] = bp::extract<double>(corner[1]);
-        gpu.corner[2] = bp::extract<double>(corner[2]);
+        gpu.corner[0] = bp::extract<CUDAREAL>(corner[0]);
+        gpu.corner[1] = bp::extract<CUDAREAL>(corner[1]);
+        gpu.corner[2] = bp::extract<CUDAREAL>(corner[2]);
 
-        gpu.delta[0] = bp::extract<double>(delta[0]);
-        gpu.delta[1] = bp::extract<double>(delta[1]);
-        gpu.delta[2] = bp::extract<double>(delta[2]);
+        gpu.delta[0] = bp::extract<CUDAREAL>(delta[0]);
+        gpu.delta[1] = bp::extract<CUDAREAL>(delta[1]);
+        gpu.delta[2] = bp::extract<CUDAREAL>(delta[2]);
         prepare_for_lerping( gpu, rotations, qvecs, use_IPC);
     }
 
@@ -239,6 +239,10 @@ class lerpyExt{
         }
     }
 
+    inline void _set_sparse_lookup(np::ndarray& peak_mask){
+        set_sparse_lookup(gpu, peak_mask);
+    }
+
     inline void _reduce_densities(bp::object py_comm){
         check_densities_are_set();
         _reduce_in_chunks(py_comm, gpu.densities, gpu.numDens);
@@ -278,6 +282,22 @@ class lerpyExt{
             CUDAREAL* temp_ptr = &temp[0];
             to_dev_memcpy(vec, temp_ptr, N );
         }
+    }
+
+    inline  np::ndarray get_sparse_lookup(){
+        if (gpu.sparse_lookup==NULL){
+            PyErr_SetString(PyExc_TypeError,
+                            "sparse_lookup not been allocated\n");
+            bp::throw_error_already_set();
+        }
+        int N = gpu.densDim*gpu.densDim*gpu.densDim;
+        bp::tuple shape = bp::make_tuple(N);
+        bp::tuple stride = bp::make_tuple(sizeof(int));
+        np::dtype dt = np::dtype::get_builtin<int>();
+        np::ndarray output = np::zeros(shape,dt);
+        int* out_ptr = reinterpret_cast<int*>(output.get_data());
+        from_dev_memcpy_int(gpu.sparse_lookup, out_ptr, N);
+        return output;
     }
 
     inline  np::ndarray get_densities(){
@@ -501,7 +521,7 @@ BOOST_PYTHON_MODULE(emc){
         //.def("free_device", &lerpyExt::free, "free any allocated GPU memory")
         .def ("print_rotMat", &lerpyExt::print_rotMat, "show elements of allocated rotMat i_rot")
         .def ("get_out", &lerpyExt::get_out, "return the output array.")
-        
+
         .def ("toggle_insert", &lerpyExt::toggle_insert, "Prepare for trilinear insertions.")
 
         .def("_trilinear_interpolation",
@@ -537,6 +557,9 @@ BOOST_PYTHON_MODULE(emc){
         .def("densities",
               &lerpyExt::get_densities,
               "get the densities")
+        .def("sparse_lookup",
+              &lerpyExt::get_sparse_lookup,
+              "get the sparse lookup table (ndarray 1-D , size=number of voxels, -1 means masked voxel, other values are position of voxel in sparse density vector)")
 
         .def("reduce_densities",
               &lerpyExt::_reduce_densities,
@@ -575,7 +598,7 @@ BOOST_PYTHON_MODULE(emc){
         .add_property("rank",
                        make_function(&lerpyExt::get_rank,rbv()),
                        make_function(&lerpyExt::set_rank,dcp()),
-                       "set the mpi rank from python (its used in varuous printf statements)")
+                       "set the mpi rank from python (its used in various printf statements)")
 
         .add_property("max_num_rots",
                        make_function(&lerpyExt::get_max_num_rots,rbv()),
@@ -600,6 +623,7 @@ BOOST_PYTHON_MODULE(emc){
         .def("reset_density_derivs", &lerpyExt::_reset_dens_deriv, "reset the densities_gradient array to zeros")
         .def("reduce_density_derivs", &lerpyExt::_reduce_density_derivs, "reduce the densities_gradient (set on rank=0)")
         .def("update_masked_density", &lerpyExt::_update_masked_density, "receives np::ndarray V and updates masked density. Length of V is number of non masked voxels")
+        .def ("set_sparse_lookup", &lerpyExt::_set_sparse_lookup, "takes a voxel mask, and creates a sparse vector framework for saving GPU memory (use carefully!)")
         ;
 
     /******************************/

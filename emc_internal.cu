@@ -4,7 +4,7 @@
 #include "emc_ext.h"
 #include "general.cuh"
 
-__device__ __inline__ unsigned int get_densities_index(int i,int j,int k, int nx, int ny, int nz);
+__device__ __inline__ int get_densities_index(int i,int j,int k, int nx, int ny, int nz, int* sparse_lookup);
 
 __global__ void normalize_density(CUDAREAL* densities, CUDAREAL* wts, int N);
 
@@ -15,7 +15,8 @@ __global__ void trilinear_interpolation_rotate_on_GPU(const CUDAREAL* __restrict
                                         int num_qvec,
                                         int nx, int ny, int nz,
                                         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
-                                        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
+                                        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
+                                        int* sparse_lookup);
 
 
 __global__ void trilinear_insertion_rotate_on_GPU(
@@ -28,7 +29,8 @@ __global__ void trilinear_insertion_rotate_on_GPU(
         MAT3 rotMat, int num_qvec,
         int nx, int ny, int nz,
         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
-        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
+        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
+        int * sparse_lookup);
 
 
 __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
@@ -45,7 +47,8 @@ __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
                                  CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
                                  const bool compute_scale_derivative,
                                  const bool compute_density_derivative,
-                                 const bool poisson, CUDAREAL sigma_r_sq);
+                                 const bool poisson, CUDAREAL sigma_r_sq,
+                                 int* sparse_lookup);
 
 __global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
                            CUDAREAL * densities_gradient,
@@ -60,7 +63,8 @@ __global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
                            MAT3* rotMats, int* rot_inds, int numRot, int num_qvec,
                            int nx, int ny, int nz,
                            CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
-                           CUDAREAL dx, CUDAREAL dy, CUDAREAL dz);
+                           CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
+                           int* sparse_lookup);
 
 
 void do_after_kernel(int rank){
@@ -99,11 +103,6 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
     }
 
     set_threads_blocks(gpu);
-    // The gpu instance was allocated for the size of the detector
-    // however here we are going to use that same allocated array to insert the density into itself
-    // Typically the density will have more "voxels" than "pixels" in the detector, hence we will need to
-    // chunk the density
-    int n_chunk = gpu.numDens / gpu.numDataPixels + 1;
 
     //// here we store the current values of gpu.data and gpu.qVecs, as we will be hijacking those arrays for symmetrization
     eigVec3_vec temp_qvec;
@@ -128,18 +127,38 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
     CUDAREAL * curr = &current_density[0];
     from_dev_memcpy(gpu.densities, curr, gpu.numDens);
 
+
     // reset the density and wts to 0
     toggle_insert_mode(gpu);
+
+    // The gpu instance was allocated for the size of the detector
+    // however here we are going to use that same allocated array to insert the density into itself
+    // Typically the density will have more "voxels" than "pixels" in the detector, hence we will need to
+    // chunk the density
+    int Nvox = gpu.densDim*gpu.densDim*gpu.densDim;
+    int n_chunk = Nvox / gpu.numDataPixels + 1;
+
+    std::vector<int> sparse_lookup;
+    if (gpu.sparse_lookup != NULL){
+        sparse_lookup.resize(Nvox);
+        gpuErr(cudaMemcpy(sparse_lookup.data(), gpu.sparse_lookup, sizeof(int)*Nvox, cudaMemcpyDeviceToHost));
+    }
 
     for (int i_chunk=0; i_chunk < n_chunk; i_chunk++ ){
         int start=i_chunk*gpu.numDataPixels;
         int stop = start + gpu.numDataPixels;
-        if (stop > gpu.numDens)
-            stop = gpu.numDens;
+        if (stop > Nvox)
+            stop = Nvox;
         int densDim_sq = gpu.densDim*gpu.densDim;
         int i_q=0;
         for (int i_dens=start; i_dens < stop; i_dens++){
-            gpu.data[i_q] = current_density[i_dens];
+            if (gpu.sparse_lookup != NULL) {
+                int sparse_idx = sparse_lookup[i_dens];
+                gpu.data[i_q] = (sparse_idx==-1) ? 0 : current_density[sparse_idx];
+            }
+            else{
+                gpu.data[i_q] = current_density[i_dens];
+            }
             int qi = i_dens / densDim_sq;
             int qj = (i_dens/gpu.densDim) % gpu.densDim;
             int qk = i_dens % gpu.densDim;
@@ -156,8 +175,8 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
                      gpu.rotMatsSym[i_sym], chunk_num_q,
                      gpu.densDim, gpu.densDim, gpu.densDim,
                      gpu.corner[0], gpu.corner[1], gpu.corner[2],
-                     gpu.delta[0], gpu.delta[1], gpu.delta[2]
-                    );
+                     gpu.delta[0], gpu.delta[1], gpu.delta[2],
+                     gpu.sparse_lookup);
             do_after_kernel(gpu.mpi_rank);
         }
     }
@@ -216,12 +235,45 @@ __global__ void normalize_density(CUDAREAL* densities, CUDAREAL* wts, int N){
     }
 }
 
+
+/*
+is_peak_in_density is a boolean np.ndarray with size=number of voxels. Its True if the voxel is to be modeled
+note: it should be contiguous array (np.ascontiguousarray)
+this allocates gpu.sparse_lookup, which should have size=densDim**3 (number of voxels)
+Its values should be either -1 (if voxel is masked) or else an integer from 0 to M
+where M is the number of unmasked voxels, i.e. the index of the voxel in a sparse density vector
+*/
+void set_sparse_lookup(lerpy& gpu, np::ndarray& is_peak_in_density){
+    int N = gpu.densDim*gpu.densDim*gpu.densDim;
+    if (gpu.sparse_lookup == NULL)
+        gpuErr(cudaMalloc((void**)&gpu.sparse_lookup, sizeof(int)*N));
+    int * sparse_lookup = new int[N];
+    bool* is_peak_ptr = reinterpret_cast<bool*>(is_peak_in_density.get_data());
+
+    int numUnMasked=0;
+    for (int i=0; i < N; i++){
+        bool is_peak = *(is_peak_ptr+i);
+        if (is_peak){
+            sparse_lookup[i] =numUnMasked;
+            numUnMasked += 1;
+        }
+        else{
+            sparse_lookup[i] = -1;
+        }
+    }
+    gpu.numDens = numUnMasked;
+    gpuErr(cudaMemcpy(gpu.sparse_lookup, sparse_lookup, sizeof(int) * N, cudaMemcpyHostToDevice));
+    delete sparse_lookup;
+}
+
+
 void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
                         np::ndarray& qvectors, bool use_IPC){
 
     gpu.numQ = qvectors.shape(0)/3;
     // TODO global verbose flag
-    gpu.numDens = gpu.densDim*gpu.densDim*gpu.densDim;
+    if (gpu.numDens == -1)
+        gpu.numDens = gpu.densDim*gpu.densDim*gpu.densDim;
 
     //// TODO asserts on len of corner and delta (must be 3)
     MPI_Comm device_comm;
@@ -245,6 +297,7 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
     if (!use_IPC)
         gpuErr(cudaMallocManaged((void **)&gpu.rotMats, gpu.numRot*sizeof(MAT3)));
 
+    // TODO assert on numDens > 0
     gpuErr(cudaMalloc((void ** )&gpu.densities, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMemset(gpu.densities, 0, gpu.numDens*sizeof(CUDAREAL)));
     gpuErr(cudaMalloc((void ** )&gpu.densities_gradient, gpu.numDens*sizeof(CUDAREAL)));
@@ -302,6 +355,10 @@ void from_dev_memcpy( CUDAREAL* dev_ptr,  CUDAREAL* host_ptr, int N){
     gpuErr(cudaMemcpy(host_ptr, dev_ptr, sizeof(CUDAREAL) * N, cudaMemcpyDeviceToHost));
 }
 
+void from_dev_memcpy_int( int* dev_ptr,  int* host_ptr, int N){
+    gpuErr(cudaMemcpy(host_ptr, dev_ptr, sizeof(int) * N, cudaMemcpyDeviceToHost));
+}
+
 void densities_to_device(lerpy& gpu, np::ndarray& new_densities){
     unsigned int numDens = new_densities.shape(0);
     CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(new_densities.get_data());
@@ -340,16 +397,12 @@ void relp_mask_to_device(lerpy& gpu, np::ndarray& relp_mask){
         int num_unmasked = unmasked_inds.size();
         gpuErr(cudaMalloc((void ** )&gpu.unmasked_inds, num_unmasked*sizeof(int)));
         gpuErr(cudaMemcpy(gpu.unmasked_inds, unmasked_inds.data(), sizeof(int)*num_unmasked, cudaMemcpyHostToDevice) );
-        //to_dev_memcpy(gpu.unmasked_inds, unmasked_inds.data(), sizeof(int)*num_unmasked, cudaMemcpyHostToDevice);
-        //for (int i=0; i < num_unmasked; i++)
-        //    gpu.unmasked_inds[i] = unmasked_inds[i];
         gpu.num_unmasked = num_unmasked;
     }
     bool * temp = new bool[gpu.numDens];
     for (int i=0; i< gpu.numDens; i++)
         temp[i] = *(relp_mask_ptr+i);
     gpuErr(cudaMemcpy(gpu.is_peak_in_density, temp, sizeof(bool) * gpu.numDens, cudaMemcpyHostToDevice));
-    //gpuErr(cudaMemcpy(gpu.is_peak_in_density, relp_mask_ptr, sizeof(bool) * gpu.numDens, cudaMemcpyHostToDevice));
     delete temp;
 }
 
@@ -412,8 +465,8 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                  rotMat, gpu.numQ,
                  gpu.densDim, gpu.densDim, gpu.densDim,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
-                 gpu.delta[0], gpu.delta[1], gpu.delta[2]
-                );
+                 gpu.delta[0], gpu.delta[1], gpu.delta[2],
+                 gpu.sparse_lookup);
     }
     else if(task==1 || task==3 || task==4) {
         if (verbose)printf("Running equation 2! Shotscale=%f\n", gpu.shot_scale);
@@ -422,6 +475,8 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         // task 1: compute image logLikelihood
         // task 3: compute deriv of image logLikelihood w.r.t scale factor
         // task 4: ""  "" w.r.t. density
+        if (gpu.sparse_lookup != NULL){
+        }
         EMC_equation_two<<<gpu.numBlocks, gpu.blockSize>>>
                 (gpu.densities, gpu.densities_gradient,
                  gpu.data, gpu.background, gpu.mask,
@@ -431,8 +486,8 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
                  gpu.delta[0], gpu.delta[1], gpu.delta[2],
                  task==3, task==4,
-                 use_poisson_stats, sigma_r_sq
-                );
+                 use_poisson_stats, sigma_r_sq,
+                 gpu.sparse_lookup);
 
     }
     else if (task==5){
@@ -455,8 +510,8 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                  gpu.rotMats, gpu.rotInds, numRotInds, gpu.numQ,
                  gpu.densDim, gpu.densDim, gpu.densDim,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
-                 gpu.delta[0], gpu.delta[1], gpu.delta[2]
-                );
+                 gpu.delta[0], gpu.delta[1], gpu.delta[2],
+                 gpu.sparse_lookup);
     }
     else if (task==2)  {
         MAT3 rotMat;
@@ -468,8 +523,8 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                  rotMat, gpu.numQ,
                  gpu.densDim, gpu.densDim, gpu.densDim,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
-                 gpu.delta[0], gpu.delta[1], gpu.delta[2]
-                );
+                 gpu.delta[0], gpu.delta[1], gpu.delta[2],
+                 gpu.sparse_lookup);
    
     }
     do_after_kernel(gpu.mpi_rank);
@@ -496,6 +551,8 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
 
 void free_lerpy(lerpy& gpu){
 //  TODO free sym ops
+    if (gpu.sparse_lookup != NULL)
+        gpuErr(cudaFree(gpu.sparse_lookup));
     if(gpu.unmasked_vals != NULL)
         gpuErr(cudaFree(gpu.unmasked_vals));
     if(gpu.unmasked_inds != NULL)
@@ -531,10 +588,12 @@ void free_lerpy(lerpy& gpu){
     gpu.is_allocated = false;
 }
 
-__device__ __inline__ unsigned int get_densities_index(int i,int j,int k, int nx, int ny, int nz)
+__device__ __inline__ int get_densities_index(int i,int j,int k, int nx, int ny, int nz, int* sparse_lookup)
 {
     //int idx = i + j*nx + k*nx*ny;
-    unsigned int idx = fma(nx, fma(k,ny,j), i);
+    int idx = fma(nx, fma(k,ny,j), i);
+    if (sparse_lookup != NULL)
+        idx = sparse_lookup[idx];
     return idx;
 }
 
@@ -548,7 +607,8 @@ __global__ void trilinear_interpolation_rotate_on_GPU(
                                         MAT3 rotMat, int num_qvec,
                                         int nx, int ny, int nz,
                                         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
-                                        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz){
+                                        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
+                                        int* sparse_lookup){
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int thread_stride = blockDim.x * gridDim.x;
@@ -559,6 +619,7 @@ __global__ void trilinear_interpolation_rotate_on_GPU(
     CUDAREAL I0,I1,I2,I3,I4,I5,I6,I7;
     CUDAREAL a0,a1,a2,a3,a4,a5,a6,a7;
     CUDAREAL x0y0, x1y1, x0y1, x1y0;
+    int idx0,idx1,idx2,idx3,idx4,idx5,idx6,idx7;
     int i;
     VEC3 Q;
     
@@ -589,14 +650,23 @@ __global__ void trilinear_interpolation_rotate_on_GPU(
         y1 = 1.0 - y0;
         z1 = 1.0 - z0;
 
-        I0 = __ldg(&densities[get_densities_index(i0, j0, k0, nx, ny, nz)]);
-        I1 = __ldg(&densities[get_densities_index(i1, j0, k0, nx, ny, nz)]);
-        I2 = __ldg(&densities[get_densities_index(i0, j1, k0, nx, ny, nz)]);
-        I3 = __ldg(&densities[get_densities_index(i0, j0, k1, nx, ny, nz)]);
-        I4 = __ldg(&densities[get_densities_index(i1, j0, k1, nx, ny, nz)]);
-        I5 = __ldg(&densities[get_densities_index(i0, j1, k1, nx, ny, nz)]);
-        I6 = __ldg(&densities[get_densities_index(i1, j1, k0, nx, ny, nz)]);
-        I7 = __ldg(&densities[get_densities_index(i1, j1, k1, nx, ny, nz)]);
+        idx0 = get_densities_index(i0, j0, k0, nx, ny, nz,sparse_lookup);
+        idx1 = get_densities_index(i1, j0, k0, nx, ny, nz,sparse_lookup);
+        idx2 = get_densities_index(i0, j1, k0, nx, ny, nz,sparse_lookup);
+        idx3 = get_densities_index(i0, j0, k1, nx, ny, nz,sparse_lookup);
+        idx4 = get_densities_index(i1, j0, k1, nx, ny, nz,sparse_lookup);
+        idx5 = get_densities_index(i0, j1, k1, nx, ny, nz,sparse_lookup);
+        idx6 = get_densities_index(i1, j1, k0, nx, ny, nz,sparse_lookup);
+        idx7 = get_densities_index(i1, j1, k1, nx, ny, nz,sparse_lookup);
+
+        I0 = (idx0 ==-1) ? 0: __ldg(&densities[idx0]);
+        I1 = (idx1 ==-1) ? 0: __ldg(&densities[idx1]);
+        I2 = (idx2 ==-1) ? 0: __ldg(&densities[idx2]);
+        I3 = (idx3 ==-1) ? 0: __ldg(&densities[idx3]);
+        I4 = (idx4 ==-1) ? 0: __ldg(&densities[idx4]);
+        I5 = (idx5 ==-1) ? 0: __ldg(&densities[idx5]);
+        I6 = (idx6 ==-1) ? 0: __ldg(&densities[idx6]);
+        I7 = (idx7 ==-1) ? 0: __ldg(&densities[idx7]);
 
         x0y0 = x0*y0;
         x1y1 = x1*y1;
@@ -639,7 +709,8 @@ __global__ void trilinear_insertion_rotate_on_GPU(
         MAT3 rotMat, int num_qvec,
         int nx, int ny, int nz,
         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
-        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz){
+        CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
+        int* sparse_lookup){
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int thread_stride = blockDim.x * gridDim.x;
@@ -701,33 +772,48 @@ __global__ void trilinear_insertion_rotate_on_GPU(
         a5 = x1y0 * z0;
         a6 = x0y0 * z1;
         a7 = x0y0 * z0;
-        idx0 = get_densities_index(i0, j0, k0, nx, ny, nz);
-        idx1 = get_densities_index(i1, j0, k0, nx, ny, nz);
-        idx2 = get_densities_index(i0, j1, k0, nx, ny, nz);
-        idx3 = get_densities_index(i0, j0, k1, nx, ny, nz);
-        idx4 = get_densities_index(i1, j0, k1, nx, ny, nz);
-        idx5 = get_densities_index(i0, j1, k1, nx, ny, nz);
-        idx6 = get_densities_index(i1, j1, k0, nx, ny, nz);
-        idx7 = get_densities_index(i1, j1, k1, nx, ny, nz);
-        // TODO verify indices idx0-idx7 are inbounds
+        idx0 = get_densities_index(i0, j0, k0, nx, ny, nz,sparse_lookup);
+        idx1 = get_densities_index(i1, j0, k0, nx, ny, nz,sparse_lookup);
+        idx2 = get_densities_index(i0, j1, k0, nx, ny, nz,sparse_lookup);
+        idx3 = get_densities_index(i0, j0, k1, nx, ny, nz,sparse_lookup);
+        idx4 = get_densities_index(i1, j0, k1, nx, ny, nz,sparse_lookup);
+        idx5 = get_densities_index(i0, j1, k1, nx, ny, nz,sparse_lookup);
+        idx6 = get_densities_index(i1, j1, k0, nx, ny, nz,sparse_lookup);
+        idx7 = get_densities_index(i1, j1, k1, nx, ny, nz,sparse_lookup);
 
-        atomicAdd(&densities[idx0], val*a0);
-        atomicAdd(&densities[idx1], val*a1);
-        atomicAdd(&densities[idx2], val*a2);
-        atomicAdd(&densities[idx3], val*a3);
-        atomicAdd(&densities[idx4], val*a4);
-        atomicAdd(&densities[idx5], val*a5);
-        atomicAdd(&densities[idx6], val*a6);
-        atomicAdd(&densities[idx7], val*a7);
+        if (idx0>0){
+            atomicAdd(&densities[idx0], val*a0);
+            atomicAdd(&wts[idx0], a0);
+        }
+        if (idx1>0){
+            atomicAdd(&densities[idx1], val*a1);
+            atomicAdd(&wts[idx1], a1);
+        }
+        if (idx2>0){
+            atomicAdd(&densities[idx2], val*a2);
+            atomicAdd(&wts[idx2], a2);
+        }
+        if (idx3>0){
+            atomicAdd(&densities[idx3], val*a3);
+            atomicAdd(&wts[idx3], a3);
+        }
+        if (idx4>0){
+            atomicAdd(&densities[idx4], val*a4);
+            atomicAdd(&wts[idx4], a4);
+        }
+        if (idx5>0){
+            atomicAdd(&densities[idx5], val*a5);
+            atomicAdd(&wts[idx5], a5);
+        }
+        if (idx6>0){
+            atomicAdd(&densities[idx6], val*a6);
+            atomicAdd(&wts[idx6], a6);
+        }
+        if (idx7>0){
+            atomicAdd(&densities[idx7], val*a7);
+            atomicAdd(&wts[idx7], a7);
+        }
 
-        atomicAdd(&wts[idx0], a0);
-        atomicAdd(&wts[idx1], a1);
-        atomicAdd(&wts[idx2], a2);
-        atomicAdd(&wts[idx3], a3);
-        atomicAdd(&wts[idx4], a4);
-        atomicAdd(&wts[idx5], a5);
-        atomicAdd(&wts[idx6], a6);
-        atomicAdd(&wts[idx7], a7);
     }
 }
 
@@ -749,7 +835,8 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                                  CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
                                  const bool compute_scale_derivative,
                                  const bool compute_density_derivative,
-                                 const bool poisson, CUDAREAL sigma_r_sq){
+                                 const bool poisson, CUDAREAL sigma_r_sq,
+                                 int* sparse_lookup){
 
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int thread_stride = blockDim.x * gridDim.x;
@@ -816,23 +903,23 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
             y1 = 1.0 - y0;
             z1 = 1.0 - z0;
 
-            idx0 = get_densities_index(i0, j0, k0, nx, ny, nz);
-            idx1 = get_densities_index(i1, j0, k0, nx, ny, nz);
-            idx2 = get_densities_index(i0, j1, k0, nx, ny, nz);
-            idx3 = get_densities_index(i0, j0, k1, nx, ny, nz);
-            idx4 = get_densities_index(i1, j0, k1, nx, ny, nz);
-            idx5 = get_densities_index(i0, j1, k1, nx, ny, nz);
-            idx6 = get_densities_index(i1, j1, k0, nx, ny, nz);
-            idx7 = get_densities_index(i1, j1, k1, nx, ny, nz);
+            idx0 = get_densities_index(i0, j0, k0, nx, ny, nz,sparse_lookup);
+            idx1 = get_densities_index(i1, j0, k0, nx, ny, nz,sparse_lookup);
+            idx2 = get_densities_index(i0, j1, k0, nx, ny, nz,sparse_lookup);
+            idx3 = get_densities_index(i0, j0, k1, nx, ny, nz,sparse_lookup);
+            idx4 = get_densities_index(i1, j0, k1, nx, ny, nz,sparse_lookup);
+            idx5 = get_densities_index(i0, j1, k1, nx, ny, nz,sparse_lookup);
+            idx6 = get_densities_index(i1, j1, k0, nx, ny, nz,sparse_lookup);
+            idx7 = get_densities_index(i1, j1, k1, nx, ny, nz,sparse_lookup);
 
-            I0 = __ldg(&densities[idx0]);
-            I1 = __ldg(&densities[idx1]);
-            I2 = __ldg(&densities[idx2]);
-            I3 = __ldg(&densities[idx3]);
-            I4 = __ldg(&densities[idx4]);
-            I5 = __ldg(&densities[idx5]);
-            I6 = __ldg(&densities[idx6]);
-            I7 = __ldg(&densities[idx7]);
+            I0 = (idx0 ==-1) ? 0: __ldg(&densities[idx0]);
+            I1 = (idx1 ==-1) ? 0: __ldg(&densities[idx1]);
+            I2 = (idx2 ==-1) ? 0: __ldg(&densities[idx2]);
+            I3 = (idx3 ==-1) ? 0: __ldg(&densities[idx3]);
+            I4 = (idx4 ==-1) ? 0: __ldg(&densities[idx4]);
+            I5 = (idx5 ==-1) ? 0: __ldg(&densities[idx5]);
+            I6 = (idx6 ==-1) ? 0: __ldg(&densities[idx6]);
+            I7 = (idx7 ==-1) ? 0: __ldg(&densities[idx7]);
 
             x0y0 = x0*y0;
             x1y1 = x1*y1;
@@ -876,14 +963,22 @@ __global__ void EMC_equation_two(const CUDAREAL * __restrict__ densities,
                         W_rt_prime6 = dens_grad_factor*a6;
                         W_rt_prime7 = dens_grad_factor*a7;
 
-                        atomicAdd(&densities_gradient[idx0], W_rt_prime0);
-                        atomicAdd(&densities_gradient[idx1], W_rt_prime1);
-                        atomicAdd(&densities_gradient[idx2], W_rt_prime2);
-                        atomicAdd(&densities_gradient[idx3], W_rt_prime3);
-                        atomicAdd(&densities_gradient[idx4], W_rt_prime4);
-                        atomicAdd(&densities_gradient[idx5], W_rt_prime5);
-                        atomicAdd(&densities_gradient[idx6], W_rt_prime6);
-                        atomicAdd(&densities_gradient[idx7], W_rt_prime7);
+                        if (idx0>0)
+                            atomicAdd(&densities_gradient[idx0], W_rt_prime0);
+                        if (idx1>0)
+                            atomicAdd(&densities_gradient[idx1], W_rt_prime1);
+                        if (idx2>0)
+                            atomicAdd(&densities_gradient[idx2], W_rt_prime2);
+                        if (idx3>0)
+                            atomicAdd(&densities_gradient[idx3], W_rt_prime3);
+                        if (idx4>0)
+                            atomicAdd(&densities_gradient[idx4], W_rt_prime4);
+                        if (idx5>0)
+                            atomicAdd(&densities_gradient[idx5], W_rt_prime5);
+                        if (idx6>0)
+                            atomicAdd(&densities_gradient[idx6], W_rt_prime6);
+                        if (idx7>0)
+                            atomicAdd(&densities_gradient[idx7], W_rt_prime7);
                     }
                 }
                 else{ // compute logLikelihood
@@ -931,7 +1026,8 @@ __global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
                            MAT3* rotMats, int* rot_inds, int numRot, int num_qvec,
                            int nx, int ny, int nz,
                            CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
-                           CUDAREAL dx, CUDAREAL dy, CUDAREAL dz){
+                           CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
+                           int* sparse_lookup){
 
     unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int thread_stride = blockDim.x * gridDim.x;
@@ -999,23 +1095,23 @@ __global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
             y1 = 1.0 - y0;
             z1 = 1.0 - z0;
 
-            idx0 = get_densities_index(i0, j0, k0, nx, ny, nz);
-            idx1 = get_densities_index(i1, j0, k0, nx, ny, nz);
-            idx2 = get_densities_index(i0, j1, k0, nx, ny, nz);
-            idx3 = get_densities_index(i0, j0, k1, nx, ny, nz);
-            idx4 = get_densities_index(i1, j0, k1, nx, ny, nz);
-            idx5 = get_densities_index(i0, j1, k1, nx, ny, nz);
-            idx6 = get_densities_index(i1, j1, k0, nx, ny, nz);
-            idx7 = get_densities_index(i1, j1, k1, nx, ny, nz);
+            idx0 = get_densities_index(i0, j0, k0, nx, ny, nz,sparse_lookup);
+            idx1 = get_densities_index(i1, j0, k0, nx, ny, nz,sparse_lookup);
+            idx2 = get_densities_index(i0, j1, k0, nx, ny, nz,sparse_lookup);
+            idx3 = get_densities_index(i0, j0, k1, nx, ny, nz,sparse_lookup);
+            idx4 = get_densities_index(i1, j0, k1, nx, ny, nz,sparse_lookup);
+            idx5 = get_densities_index(i0, j1, k1, nx, ny, nz,sparse_lookup);
+            idx6 = get_densities_index(i1, j1, k0, nx, ny, nz,sparse_lookup);
+            idx7 = get_densities_index(i1, j1, k1, nx, ny, nz,sparse_lookup);
 
-            I0 = __ldg(&densities[idx0]);
-            I1 = __ldg(&densities[idx1]);
-            I2 = __ldg(&densities[idx2]);
-            I3 = __ldg(&densities[idx3]);
-            I4 = __ldg(&densities[idx4]);
-            I5 = __ldg(&densities[idx5]);
-            I6 = __ldg(&densities[idx6]);
-            I7 = __ldg(&densities[idx7]);
+            I0 = (idx0 < 0) ? 0: __ldg(&densities[idx0]);
+            I1 = (idx1 < 0) ? 0: __ldg(&densities[idx1]);
+            I2 = (idx2 < 0) ? 0: __ldg(&densities[idx2]);
+            I3 = (idx3 < 0) ? 0: __ldg(&densities[idx3]);
+            I4 = (idx4 < 0) ? 0: __ldg(&densities[idx4]);
+            I5 = (idx5 < 0) ? 0: __ldg(&densities[idx5]);
+            I6 = (idx6 < 0) ? 0: __ldg(&densities[idx6]);
+            I7 = (idx7 < 0) ? 0: __ldg(&densities[idx7]);
 
             x0y0 = x0*y0;
             x1y1 = x1*y1;
@@ -1053,22 +1149,42 @@ __global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
                 W_rt_prime6 = dens_grad_factor*a6;
                 W_rt_prime7 = dens_grad_factor*a7;
 
-                if (is_peak_in_density[idx0])
-                    atomicAdd(&densities_gradient[idx0], W_rt_prime0);
-                if (is_peak_in_density[idx1])
-                    atomicAdd(&densities_gradient[idx1], W_rt_prime1);
-                if (is_peak_in_density[idx2])
-                    atomicAdd(&densities_gradient[idx2], W_rt_prime2);
-                if (is_peak_in_density[idx3])
-                    atomicAdd(&densities_gradient[idx3], W_rt_prime3);
-                if (is_peak_in_density[idx4])
-                    atomicAdd(&densities_gradient[idx4], W_rt_prime4);
-                if (is_peak_in_density[idx5])
-                    atomicAdd(&densities_gradient[idx5], W_rt_prime5);
-                if (is_peak_in_density[idx6])
-                    atomicAdd(&densities_gradient[idx6], W_rt_prime6);
-                if (is_peak_in_density[idx7])
-                    atomicAdd(&densities_gradient[idx7], W_rt_prime7);
+                if (sparse_lookup==NULL){
+                    if (is_peak_in_density[idx0])
+                        atomicAdd(&densities_gradient[idx0], W_rt_prime0);
+                    if (is_peak_in_density[idx1])
+                        atomicAdd(&densities_gradient[idx1], W_rt_prime1);
+                    if (is_peak_in_density[idx2])
+                        atomicAdd(&densities_gradient[idx2], W_rt_prime2);
+                    if (is_peak_in_density[idx3])
+                        atomicAdd(&densities_gradient[idx3], W_rt_prime3);
+                    if (is_peak_in_density[idx4])
+                        atomicAdd(&densities_gradient[idx4], W_rt_prime4);
+                    if (is_peak_in_density[idx5])
+                        atomicAdd(&densities_gradient[idx5], W_rt_prime5);
+                    if (is_peak_in_density[idx6])
+                        atomicAdd(&densities_gradient[idx6], W_rt_prime6);
+                    if (is_peak_in_density[idx7])
+                        atomicAdd(&densities_gradient[idx7], W_rt_prime7);
+                }
+                else{
+                    if (idx0 > 0)
+                        atomicAdd(&densities_gradient[idx0], W_rt_prime0);
+                    if (idx1 > 0)
+                        atomicAdd(&densities_gradient[idx1], W_rt_prime1);
+                    if (idx2 > 0)
+                        atomicAdd(&densities_gradient[idx2], W_rt_prime2);
+                    if (idx3 > 0)
+                        atomicAdd(&densities_gradient[idx3], W_rt_prime3);
+                    if (idx4 > 0)
+                        atomicAdd(&densities_gradient[idx4], W_rt_prime4);
+                    if (idx5 > 0)
+                        atomicAdd(&densities_gradient[idx5], W_rt_prime5);
+                    if (idx6 > 0)
+                        atomicAdd(&densities_gradient[idx6], W_rt_prime6);
+                    if (idx7 > 0)
+                        atomicAdd(&densities_gradient[idx7], W_rt_prime7);
+                }
 
                 R_dr_thread += K_t * log(model+eps) - model;
             }

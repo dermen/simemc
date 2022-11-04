@@ -27,6 +27,7 @@ if COMM.rank == 0:
     parser.add_argument("--useSavedBg", action="store_true")
     parser.add_argument("--noSym", action="store_true")
     parser.add_argument("--maxIter", type=int, default=60)
+    parser.add_argument("--subsampleRots", default=None, type=float, nargs=2, help="2 numbers, first specifying size, second specifying angular resultion, for subsampling. E.g. 0.2 0.05 will subsample the probable rotations according to degree offsets from [-0.2 -0.15 -0.1 -0.5 0.5 1 1.5 2]")
     args = parser.parse_args()
 else:
     args = None
@@ -37,10 +38,14 @@ import sys
 import os
 import numpy as np
 import h5py
-from scipy.ndimage import median_filter as mf
 import time
+from itertools import product
+from scipy.ndimage import median_filter as mf
+from scipy.spatial.transform import Rotation
 
 from dials.array_family import flex
+#from copy import deepcopy
+#from dxtbx.model.crystal import CrystalFactory
 from simtbx.diffBragg import utils as db_utils
 from dxtbx.model import ExperimentList
 
@@ -150,6 +155,7 @@ if args.useCrystals:#  and np.any([C is not None for C in this_ranks_crystals]):
     print0("Sent all rot mat indices")
     if DEV_COMM.rank==0:
         rots = np.append(rots, extra_rots_not_none, axis=0)
+        # TODO use these ? Do these even matter ?
         wts = np.append(wts, np.ones(len(extra_rots_not_none)) * np.mean(wts))
     print0("appended extra rot mats")
 
@@ -160,7 +166,7 @@ for i,R in enumerate(this_ranks_refls):
     sel = flex.bool(dspace >= highRes)
     Rsel = R.select(sel)
     nsel = len(Rsel)
-    if nsel <3:
+    if nsel < 3:
         num_with_less_than_3 += 1
     if USE_RSEL and nsel >=3:
         this_ranks_refls[i] = Rsel
@@ -196,16 +202,115 @@ this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
         verbose=COMM.rank==0, detector=DET,beam=BEAM, hcut_incr=0.0025,
         device_comm=DEV_COMM)
 
+if args.subsampleRots is not None:
+    # generate all rotational perturbations within the grid defined by subsampleRots
+    ang_size, delta_ang = args.subsampleRots
+    angs = np.arange(-ang_size, ang_size+1e-6, delta_ang)
+    angs_xyz = product(angs, repeat=3)
+    all_reff = []
+    rot_x, rot_y, rot_z = np.eye(3)
+    for ang_x, ang_y, ang_z in angs_xyz:
+        if np.allclose([ang_x, ang_y, ang_z],0):
+            continue
+        rx=rot_x*ang_x
+        ry=rot_y*ang_y
+        rz=rot_z*ang_z
+        rxyz=Rotation.from_rotvec([rx,ry,rz], degrees=True)
+        reff = rxyz[0]*rxyz[1]*rxyz[2]
+        all_reff.append(reff.as_matrix())
+    print0("Adding %d rotation perturbation per probable rot" % len(all_reff))
+    print0("Perturbing along rotational grid defined by the following list (degrees): ", angs)
+
+    all_this_ranks_prob_rot = DEV_COMM.gather(this_ranks_prob_rot)
+    this_ranks_prob_Umats = []
+    if DEV_COMM.rank == 0:
+        for rank_prob_rot in all_this_ranks_prob_rot:
+            rank_Umats = []
+            for i_shot, rot_inds in enumerate(rank_prob_rot):
+                shot_Umats = [rots[i] for i in rot_inds]
+                rank_Umats.append(shot_Umats)
+            this_ranks_prob_Umats.append(rank_Umats)
+    this_ranks_prob_Umats = DEV_COMM.scatter(this_ranks_prob_Umats)
+
+    this_ranks_U_perturbs = []
+    for i_shot, prob_Umats in enumerate(this_ranks_prob_Umats):
+        U_perturbs = []
+        for ii, U in enumerate(prob_Umats):
+            U_perturbs.append(np.dot(all_reff, U))
+        this_ranks_U_perturbs.append(np.concatenate(U_perturbs))
+
+    all_ranks_U_perturbs = COMM.gather(this_ranks_U_perturbs)
+    all_ranks_U_perturbs = COMM.bcast(all_ranks_U_perturbs)
+    # for dev comm roots, update the orts matrices
+    if DEV_COMM.rank==0:
+        for i_rank, rank_U_perturbs in enumerate(all_ranks_U_perturbs):
+            print0("rank %d / %d appending rot mat perturbations" % (i_rank+1, COMM.size))
+            for U_perturbs in rank_U_perturbs:
+                rots = np.append(rots, U_perturbs, axis=0)
+    else:
+        rots = np.empty([])
+
+    # for world root, tell other ranks where in the rots array are there extra probable orientations
+    this_ranks_prob_rot_pert = []
+    if COMM.rank == 0:
+        start = rots.shape[0]
+        for rank_U_perturbs in all_ranks_U_perturbs:
+            ranks_extra_prob_rots = []
+            for U_perturbs in rank_U_perturbs:
+                rot_inds = np.arange(start, start + U_perturbs.shape[0])
+                start += U_perturbs.shape[0]
+                ranks_extra_prob_rots.append(rot_inds)
+            this_ranks_prob_rot_pert.append(ranks_extra_prob_rots)
+    this_ranks_prob_rot_pert = COMM.scatter(this_ranks_prob_rot_pert)
+
+    for i_shot, rot_inds in enumerate(this_ranks_prob_rot_pert):
+        assert len(rot_inds) == len(this_ranks_prob_rot[i_shot]) * len(all_reff)
+        this_ranks_prob_rot[i_shot] = np.hstack((this_ranks_prob_rot[i_shot], rot_inds))
+    if COMM.rank==0:
+        print0("Total Umats = %d" %len(rots))
+
 # for all of the loaded experiments with crystals, lets add the ground truth rotation matrix
 # to the list of probable rotation indices....
 nmissing_gt = 0
 nwith_gt = 0
+comps = {}
 for ii,(gt, inds) in enumerate(zip(this_ranks_gt_inds, this_ranks_prob_rot)):
     if gt is not None:
         nwith_gt += 1
         if gt not in set(inds):
+            #rot_gt = rots[gt]
+            #_CRYSTAL_DICT = {
+            #    '__id__': 'crystal',
+            #    'real_space_a': (ave_ucell[0], 0.0, 0.0),
+            #    'real_space_b': (0.0, ave_ucell[1], 0.0),
+            #    'real_space_c': (0.0, 0.0, ave_ucell[2]),
+            #    'space_group_hall_symbol': '-P 4 2'}
+            #C = CrystalFactory.from_dict(_CRYSTAL_DICT)
+            #Cg = deepcopy(C)
+            #Cg.set_U(tuple(rots[gt].T.ravel()))
+            #Cinds = []
+            #for Ui in inds:
+            #    Ci = deepcopy(C)
+            #    Ci.set_U(tuple(rots[Ui].T.ravel()))
+            #    Cinds.append(Ci)
+            #comps[gt] = (Cg, Cinds)
+            ##comp_oir = db_utils.compare_with_ground_truth(*Cg.get_real_space_vectors(), Cinds, "P43212")
             this_ranks_prob_rot[ii] = np.append(this_ranks_prob_rot[ii], gt)
             nmissing_gt += 1
+
+#outs = []
+#for i in comps:
+#    outs_i = []
+#    Cg, Cinds = comps[i]
+#    for Ci in Cinds:
+#        try:
+#          out = db_utils.compare_with_ground_truth(*Cg.get_real_space_vectors(), [Ci], "P43212")
+#          outs_i.append(out[0])
+#        except:
+#          pass
+#    if outs_i:
+#        outs.append( min(outs_i))
+
 nwith_gt = COMM.reduce(nwith_gt)
 nmissing_gt = COMM.reduce(nmissing_gt)
 if COMM.rank==0:
