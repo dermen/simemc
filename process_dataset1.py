@@ -60,7 +60,7 @@ ndevice = args.ndev
 TEST_UCELLS = False
 
 if args.highres:
-    dens_dim = 751
+    dens_dim = 351
     max_q = 0.5
 else:
     dens_dim=351
@@ -412,10 +412,12 @@ if maxRotInds < max_n:
 num_pix = MASK.size
 rots = rots.astype(L.array_type)
 qcoords = qcoords.astype(L.array_type)
+peak_mask = utils.whole_punch_W(dens_dim, max_q, width=args.wholePunch, ucell_p=ave_ucell, symbol=symbol)
 
 L.allocate_lerpy(DEV_ID, rots.ravel(), num_pix,
                  corner, deltas, qcoords.ravel(),
-                 maxRotInds, num_pix)
+                 maxRotInds, num_pix,
+                 peak_mask=peak_mask)
 
 # convert the image dtypes to match the lerpy instance array_type (prevents annoying warnings)
 for i, img in enumerate(this_ranks_imgs):
@@ -456,9 +458,11 @@ elif args.useCrystals:
         print0("applying crystal symm")
         L.symmetrize()
         print0("applying friedel")
-        L.apply_friedel_symmetry()
-        Wstart = L.densities().reshape(L.dens_sh)
+        L.apply_friedel_symmetry(peak_mask)
+        Wstart = np.zeros(L.dens_dim**3)
+        Wstart[peak_mask.ravel()] =  L.densities()
         Wstart[Wstart<0] = 0
+        Wstart = Wstart.reshape(L.dens_sh)
 
 else:
     if COMM.rank==0:
@@ -475,7 +479,7 @@ if COMM.rank==0:
 #        h.create_dataset("ucell", data=ave_ucell)
 
 # this method sets Wstart on rank0 and broadcasts to other ranks
-L.mpi_set_starting_densities(Wstart, COMM)
+L.mpi_set_starting_densities(Wstart[peak_mask], COMM)
 
 init_shot_scales = np.ones(len(this_ranks_imgs))
 
@@ -489,12 +493,12 @@ SHOT_MASK = inbounds*MASK.ravel()
 # make the mpi emc object
 print0("instantiating emc class instance")
 emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
+                    peak_mask=peak_mask,
                     shot_mask=SHOT_MASK,
                     shot_background=this_ranks_bgs,
                     min_p=1e-5,
                     outdir=args.outdir,
                     beta=1,
-                    whole_punch=args.wholePunch,
                     shot_scales=init_shot_scales,
                     refine_scale_factors=True,
                     ave_signal_level=ave_signal_level,
@@ -518,8 +522,7 @@ except Exception as err:
     tb_s = "".join(format_tb(tb))
     tb_s = tb_s.replace("\n", "\nRANK%04d"%COMM.rank)
     err_s = str(err)+"\n"+ tb_s
-    error_logger.critical(err_s)# , exc_info=True)
-    #error_logger.critical(err, exc_info=True)
+    error_logger.critical(err_s)
     COMM.Abort()
 
 print0("Finish EMC")

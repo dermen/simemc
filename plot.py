@@ -30,7 +30,7 @@ max_q=0.25
 if sym:
     data = utils.symmetrize(data.ravel(), dens_dim, max_q, symbol)
         
-_, relp_mask = utils.whole_punch_W(data,dens_dim, max_q, 1, ucell_p=ave_ucell)
+relp_mask = utils.whole_punch_W(dens_dim, max_q, width=1, ucell_p=ave_ucell)
 
 vox_res = utils.voxel_resolution(dens_dim, max_q)
 highRes_limit = 1/max_q

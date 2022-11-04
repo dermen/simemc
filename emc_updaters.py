@@ -46,31 +46,8 @@ class DensityUpdater(Updater):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.LOGGER.debug("making temp density")
-        temp = np.random.random(self.emc.L.dens_sh)
-        # TODO update for arbitrary UCELL
-        self.relp_mask=None
-        if COMM.rank==0:
-            self.LOGGER.debug("Whole punching W for relp mask")
-            wid = self.emc.whole_punch
-            if wid is None:
-                wid = 1
-            _, self.relp_mask = utils.whole_punch_W(temp,
-                self.emc.L.dens_dim, self.emc.L.max_q, wid, ucell_p=self.emc.ucell_p, symbol=self.emc.symbol)
-            self.LOGGER.debug("getting voxel resolution")
-            vox_res = utils.voxel_resolution(self.emc.L.dens_dim,
-                self.emc.L.max_q)
-            highRes_limit = 1./self.emc.L.max_q
-            vox_inbounds = vox_res >= highRes_limit # TODO generalize
-            self.LOGGER.debug("applying resolution cutoff to relp mask")
-            self.relp_mask = np.logical_and(self.relp_mask, vox_inbounds)
-            self.relp_mask = self.relp_mask.ravel()
-            self.LOGGER.debug("Copying relp mask to device")
-            self.emc.L.copy_relp_mask_to_device(self.relp_mask)
-        self.LOGGER.debug("Done Copying relp mask to device")
-        self.LOGGER.debug("Broadcasting relp mask")
-        self.emc.L.bcast_relp_mask(COMM)
-        self.LOGGER.debug("Done Broadcasting relp mask")
+        # TODO: assert emc.L is in sparse mode
+        assert self.emc.L.is_in_sparse_mode
         mpi_utils.print_gpu_usage_across_ranks(self.emc.L)
         COMM.barrier()
         self.min_prob = 1e-5
@@ -94,8 +71,7 @@ class DensityUpdater(Updater):
                 dens_start[is_zero] = min_pos_val
 
             self.LOGGER.debug("Reparameterizing density")
-            theta = dens_start[self.relp_mask]
-            xstart = np.sqrt((theta + 1)**2 -1)
+            xstart = np.sqrt((dens_start + 1)**2 -1)
 
         xstart = mpi_utils.bcast_large(xstart, verbose=True, comm=COMM)
 
@@ -120,8 +96,8 @@ class DensityUpdater(Updater):
 
         if COMM.rank==0:
             with np.errstate(over='raise'):
-                dens_start[self.relp_mask] = np.sqrt(xopt()**2 +1) -1
-            dens_start[~self.relp_mask] = 0
+                dens_start = np.sqrt(xopt()**2 +1) -1
+            #dens_start[~self.relp_mask] = 0
         return dens_start
 
     def target(self, x):
@@ -129,7 +105,7 @@ class DensityUpdater(Updater):
         if COMM.rank==0:
             with np.errstate(over='raise'):
                 theta = np.sqrt(x**2+1) -1
-            emc.L.update_masked_density(theta)
+            emc.L.update_density(theta)
         emc.L.bcast_densities(COMM)
         emc.L.reset_density_derivs()
 
@@ -175,7 +151,7 @@ class DensityUpdater(Updater):
         grad = None
         if COMM.rank==0:
             grad = emc.L.densities_gradient()
-            grad = grad[self.relp_mask]
+            #grad = grad[self.relp_mask]
             grad *= x/np.sqrt(x**2+1)
         self.LOGGER.debug("Bcasting the Scaled gradient (iter %d)" % (self.iter_num+1))
         grad = mpi_utils.bcast_large(grad, verbose=True, comm=COMM)

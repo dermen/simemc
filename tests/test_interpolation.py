@@ -53,7 +53,7 @@ def _test(highRes=False, sparse=False):
     qbins = np.linspace(-max_q, max_q, dens_dim+1)
     W = utils.insert_slice(img.ravel(), qcoords_rot, qbins)
 
-    _,peak_mask = utils.whole_punch_W(W, dens_dim, max_q, width=1)
+    peak_mask = utils.whole_punch_W(dens_dim, max_q)
 
     if sparse:
         W*= peak_mask

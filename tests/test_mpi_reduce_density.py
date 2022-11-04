@@ -46,7 +46,7 @@ def main(sparse=False):
     if COMM.rank==0:
         Wstart = np.random.random((n,n,n))
 
-    _,peak_mask = utils.whole_punch_W(np.random.random((n,n,n)), dens_dim, max_q)
+    peak_mask = utils.whole_punch_W(dens_dim, max_q)
     if sparse and COMM.rank==0:
         Wstart = Wstart[peak_mask]
 

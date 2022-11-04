@@ -180,6 +180,10 @@ class lerpyExt{
         return comm;
     }
 
+    bool inline _is_in_sparse_mode(){
+        return gpu.sparse_lookup != NULL;
+    }
+
     inline void mpi_set_starting_density(np::ndarray & dens_start, bp::object py_comm){
         MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
         int rank;
@@ -589,7 +593,11 @@ BOOST_PYTHON_MODULE(emc){
                        make_function(&lerpyExt::get_densDim,rbv()),
                        make_function(&lerpyExt::set_densDim,dcp()),
                        "the number of bins along the density edge (its always a cube); default=256")
-        
+
+        .add_property("is_in_sparse_mode",
+                       make_function(&lerpyExt::_is_in_sparse_mode,rbv()),
+                       "whether sparse density mode is being used")
+
         .add_property("max_q",
                        make_function(&lerpyExt::get_maxQ,rbv()),
                        make_function(&lerpyExt::set_maxQ,dcp()),

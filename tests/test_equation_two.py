@@ -109,7 +109,7 @@ def main(maxRotInds=10, finite_diff=0, highRes=False, sparse=False):
     L.dens_dim=dens_dim
     L.max_q=max_q
     gpu_dev=0
-    _, peak_mask = utils.whole_punch_W(W, L.dens_dim, max_q, width=1)
+    peak_mask = utils.whole_punch_W(L.dens_dim, max_q, width=1)
     if sparse:
         W*=peak_mask
     L.allocate_lerpy(gpu_dev, rotMats, maxNumQ,

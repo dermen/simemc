@@ -38,7 +38,7 @@ def _test(highRes=False, sparse=False):
     X_MAX = L.xmax
     c,d = utils.corners_and_deltas(W.shape, X_MIN, X_MAX)
 
-    _,peak_mask = utils.whole_punch_W(W, dens_dim, max_q, width=2)
+    peak_mask = utils.whole_punch_W(dens_dim, max_q, width=2)
     if sparse:
         W*=peak_mask
 

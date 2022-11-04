@@ -202,7 +202,7 @@ void update_masked_density_gpu(lerpy& gpu, np::ndarray& new_vals){
     // assertion on N
     // assert that gpu.unmasked_inds is not None
     if (gpu.unmasked_vals ==NULL){
-        cudaMallocManaged((void**)&gpu.unmasked_vals, sizeof(CUDAREAL)*N);
+        gpuErr(cudaMallocManaged((void**)&gpu.unmasked_vals, sizeof(CUDAREAL)*N));
     }
     for (int i=0; i < N; i++)
         gpu.unmasked_vals[i] = *(vals_ptr+i);

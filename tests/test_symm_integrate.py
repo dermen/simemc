@@ -74,7 +74,7 @@ def _test(on_dev=1, friedel=1, centered=0, sparse=0):
     # make some dummie rot mats
     rotMats = Rotation.random(100, random_state=0).as_matrix()
 
-    _,peak_mask = utils.whole_punch_W(W, dens_dim, max_q, ucell_p=ucell, symbol=sym)
+    peak_mask = utils.whole_punch_W(dens_dim, max_q, ucell_p=ucell, symbol=sym)
     if sparse:
         W*=peak_mask
 

@@ -415,8 +415,8 @@ def reduce_large(v, sz=None, broadcast=True, verbose=False, buffers=False):
 
 class EMC:
 
-    def __init__(self, L, shots, prob_rots, shot_background=None, shot_mask=None, min_p=0, outdir=None, beta=1,
-                 symmetrize=True, whole_punch=1, img_sh=None, shot_scales=None,
+    def __init__(self, L, shots, prob_rots, peak_mask, shot_background=None, shot_mask=None, min_p=0, outdir=None, beta=1,
+                 symmetrize=True, img_sh=None, shot_scales=None,
                  refine_scale_factors=False, ave_signal_level=1, scale_update_method="analytical",
                  density_update_method="analytical", ucell_p=None, shot_names=None, symbol=None):
         """
@@ -425,10 +425,10 @@ class EMC:
         :param L: instance of emc.lerpy in insert mode
         :param shots: array of images (Nshot, Npanel , slowDim , fastDim) or (Nshot, Npanel x slowDim x fastDim)
         :param prob_rots: list of array containing indices of probable orientations
+        :param peak_mask:
         :param shot_mask: boolean np.ndarray (same shape as each shot in shots), corresponding to the masked pixels (True is a trusted pixel, False is masked)
         :param beta: float , controls the probability distribution for orientations. lower beta makes more orientations probable
         :param symmetrize: bool, update W after each iteration according to the space group symmetry operators
-        :param whole_punch: int, if not None, voxels in W this many voxels away from Bragg peaks are set to 0 after each iteration
         :param shot_scales: list of floats, one per shot, same length as shots and prob_rots. Scale factor applied to
             tomograms for each shot
         :param refine_scale_factors: bool, update scale factors with 3d density
@@ -439,6 +439,7 @@ class EMC:
         """
 
         self.LOGGER = logging.getLogger(utils.LOGNAME)
+        self.peak_mask = peak_mask
 
         if ucell_p is None:
             self.ucell_p = CRYSTAL.get_unit_cell().parameters()
@@ -515,7 +516,6 @@ class EMC:
         else:
             self.img_sh = img_sh
         self.num_data_pix = int(np.product(self.img_sh))
-        self.whole_punch = whole_punch
         self.symmetrize = symmetrize
         self.shot_P_dr = []
         self.outdir = outdir
@@ -658,18 +658,7 @@ class EMC:
             self.print("Applying Friedel symmetry")
             self.LOGGER.debug("Applying friedel symmetry (i_emc=%d)" % self.i_emc)
             self.L.symmetrize()
-            self.L.apply_friedel_symmetry()
-
-        if self.whole_punch is not None:
-            self.print("reshape density")
-            self.LOGGER.debug("reshape dens (i_emc=%d)" %self.i_emc)
-            den = self.L.densities().reshape(self.L.dens_sh)
-            self.print("whole punch density")
-            self.LOGGER.debug("whole punch dens (i_emc=%d)" %self.i_emc)
-            den,_ = utils.whole_punch_W(den, self.L.dens_dim, self.L.max_q, self.whole_punch, self.ucell_p, symbol=self.symbol)
-            self.print("Update density again")
-            self.LOGGER.debug("update dens again (i_emc=%d)" %self.i_emc)
-            self.L.update_density(den.ravel())
+            self.L.apply_friedel_symmetry(self.peak_mask)
 
     def prep_for_insertion(self):
         self.L.toggle_insert()
@@ -842,8 +831,8 @@ class EMC:
         self.save_prob_rots_npz()
 
     def save_h5(self, density_file):
-        # TODO: do this in c++ to avoid calling L.densities()
-        den = self.L.densities()
+        den = np.zeros(self.L.dens_dim**3)
+        den[self.peak_mask.ravel()] = self.L.densities()
         with h5py.File(density_file, "w") as out_h5:
             NBINS = self.L.dens_dim
             out_h5.create_dataset("Wprime",data=den.reshape((NBINS, NBINS, NBINS)), compression="lzf")

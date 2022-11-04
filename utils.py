@@ -103,14 +103,13 @@ def get_primitive_vectors(ucell_p, symbol):
     return (a1,a2,a3)
 
 
-def whole_punch_W(W, dens_dim, max_q, width=1, ucell_p=None, symbol=None):
+def whole_punch_W(dens_dim, max_q, width=1, ucell_p=None, symbol=None):
     """
     set all values far from the Bragg peaks to 0
-    :param W: input density
     :param width: increase the width to increase the size of the Bragg peaks
         The unit is arbitrary, 0 would is a single pixel at every Bragg peaks
         1 keeps 17(?) pixels at every Bragg peak
-    :return: W with 0s in between the Bragg reflections
+    :return: binaryt mask, 0s in between the Bragg reflections
     """
     ucell_p, symbol = ucell_and_symbol(ucell_p, symbol)
     BO = get_BO_matrix(ucell_p, symbol)
@@ -137,8 +136,8 @@ def whole_punch_W(W, dens_dim, max_q, width=1, ucell_p=None, symbol=None):
     Imap = np.zeros((dens_dim, dens_dim, dens_dim),bool)
     Imap[aidx, bidx, cidx] = True
     Imap = ni.binary_dilation(Imap.astype(bool), iterations=width)
-    Imap = Imap.reshape(W.shape)
-    return W*Imap, Imap
+    Imap = Imap.reshape((dens_dim,dens_dim,dens_dim))
+    return Imap
 
 
 def round_to(rounds, values):
