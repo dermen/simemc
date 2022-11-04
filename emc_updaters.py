@@ -103,9 +103,12 @@ class DensityUpdater(Updater):
     def target(self, x):
         emc = self.emc
         if COMM.rank==0:
-            with np.errstate(over='raise'):
-                theta = np.sqrt(x**2+1) -1
-            emc.L.update_density(theta)
+            # x is reparameterized so we need to operate on it with
+            # according to
+            #      x -> np.sqrt(x**2+ 1) -1
+            # this operation is done in-place on the GPU
+            emc.L.update_reparameterized_density(x)
+
         emc.L.bcast_densities(COMM)
         emc.L.reset_density_derivs()
 
@@ -140,7 +143,7 @@ class DensityUpdater(Updater):
         self.LOGGER.debug("Done with rank grad/functional (iter %d)" % (self.iter_num+1))
         COMM.barrier()
         self.LOGGER.debug("Reducing grad")
-        emc.L.reduce_density_derivs(COMM)
+        emc.L.allreduce_density_derivs(COMM)
         COMM.barrier()
         self.LOGGER.debug("functional")
         functional = COMM.reduce(functional)
@@ -148,20 +151,18 @@ class DensityUpdater(Updater):
 
         # Because we reparameterized, such that W = exp(x), then grad -> dW/dx *grad = exp(x)*grad = density*grad
         self.LOGGER.debug("Scaling the gradient (iter %d)" % (self.iter_num+1))
-        grad = None
-        if COMM.rank==0:
-            grad = emc.L.densities_gradient()
-            #grad = grad[self.relp_mask]
-            grad *= x/np.sqrt(x**2+1)
+        #if COMM.rank==0:
+        minus_grad = emc.L.reparameterized_densities_gradient()
         self.LOGGER.debug("Bcasting the Scaled gradient (iter %d)" % (self.iter_num+1))
-        grad = mpi_utils.bcast_large(grad, verbose=True, comm=COMM)
+        # TODO time different BCast methods,also time REduceAll above on grad to potentially  avoid this bcast
+        #minus_grad = mpi_utils.bcast_large(minus_grad, verbose=True, comm=COMM)
         emc_s = "Done with emc iter num: %d (F=%f,G=%10.7g, |x|=%f)" \
-                % (self.iter_num+1, functional, np.mean(grad),  np.linalg.norm(x))
+                % (self.iter_num+1, functional, np.mean(minus_grad),  np.linalg.norm(x))
         self.LOGGER.debug(emc_s)
 
         # running a minimizer, so return the negative loglike and its gradient
         self.iter_num += 1
-        return -functional, -grad
+        return -functional, minus_grad
 
 
 class ScaleUpdater(Updater):

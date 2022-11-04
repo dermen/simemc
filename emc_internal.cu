@@ -8,6 +8,10 @@ __device__ __inline__ int get_densities_index(int i,int j,int k, int nx, int ny,
 
 __global__ void normalize_density(CUDAREAL* densities, CUDAREAL* wts, int N);
 
+__global__ void reparameterize_density_gradients_kernel(CUDAREAL* dens_grad, int N);
+
+__global__ void convert_reparameterized_densities_kernel(CUDAREAL* dens, int N);
+
 __global__ void update_unmasked_kernel(CUDAREAL* unmasked_vals, int * unmasked_idx, CUDAREAL* dens, int N);
 
 __global__ void trilinear_interpolation_rotate_on_GPU(const CUDAREAL* __restrict__ densities,
@@ -30,7 +34,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
         int nx, int ny, int nz,
         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
         CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
-        int * sparse_lookup);
+        int * sparse_lookup, bool use_trusted_flags);
 
 
 __global__ void EMC_equation_two(const CUDAREAL* __restrict__ densities,
@@ -102,13 +106,13 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
         q_cent.push_back(q_val);
     }
 
-    set_threads_blocks(gpu);
+    set_threads_blocks(gpu, gpu.numQ);
 
     //// here we store the current values of gpu.data and gpu.qVecs, as we will be hijacking those arrays for symmetrization
     eigVec3_vec temp_qvec;
     temp_qvec.reserve(gpu.numDataPixels);
     std::vector<CUDAREAL> temp_data;
-    std::vector<bool> temp_mask;
+    //std::vector<bool> temp_mask;
     // check that nuymDataPixles is same as numQ;
     if (gpu.numQ != gpu.numDataPixels){
         printf("Warning numQ=%d != numDataPixels=%d\n", gpu.numQ, gpu.numDataPixels);
@@ -117,8 +121,8 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
     for (int i=0; i< gpu.numDataPixels; i++){
         temp_data.push_back(gpu.data[i]);
         temp_qvec.push_back(gpu.qVecs[i]);
-        temp_mask.push_back(gpu.mask[i]);
-        gpu.mask[i] = true; // mask only applies to the detector images, so ignore for symmetrization
+        //temp_mask.push_back(gpu.mask[i]);
+        //gpu.mask[i] = true; // mask only applies to the detector images, so ignore for symmetrization
     }
 
     // copy the density to a host array
@@ -176,7 +180,7 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
                      gpu.densDim, gpu.densDim, gpu.densDim,
                      gpu.corner[0], gpu.corner[1], gpu.corner[2],
                      gpu.delta[0], gpu.delta[1], gpu.delta[2],
-                     gpu.sparse_lookup);
+                     gpu.sparse_lookup, false);
             do_after_kernel(gpu.mpi_rank);
         }
     }
@@ -185,7 +189,7 @@ void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent){
     for (int i=0; i < gpu.numDataPixels; i++){
         gpu.data[i] = temp_data[i];
         gpu.qVecs[i] = temp_qvec[i];
-        gpu.mask[i] = temp_mask[i];
+        //gpu.mask[i] = temp_mask[i];
     }
 
     // normalize the new density
@@ -235,6 +239,52 @@ __global__ void normalize_density(CUDAREAL* densities, CUDAREAL* wts, int N){
     }
 }
 
+/*
+this method reparameterizes the gradients that are
+used in the L-BFGS densityUpdater class method (see emc_updaters.py)
+Basically this updates the gradients in place via
+            grad *= -x/np.sqrt(x**2+1)
+*/
+void reparameterize_density_gradients(lerpy& gpu){
+    set_threads_blocks(gpu, gpu.numDens);
+    reparameterize_density_gradients_kernel<<< gpu.numBlocks, gpu.blockSize>>>(gpu.densities_gradient, gpu.numDens);
+    do_after_kernel(gpu.mpi_rank);
+}
+
+__global__ void reparameterize_density_gradients_kernel(CUDAREAL* dens_grad, int N){
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int thread_stride = blockDim.x * gridDim.x;
+    for(int i=tid; i< N; i+= thread_stride){
+        CUDAREAL x = dens_grad[i];
+        CUDAREAL num = -x;
+        CUDAREAL den = sqrt(x*x+1);
+        dens_grad[i] = num / den;
+    }
+}
+
+/* Convert the densities array in place on the GPU according to
+            #    theta = np.sqrt(x**2+1) -1
+   This is used in the emc_updaters.py DensityUpdater class method target
+   when running L-BFGS
+   L-BFGS uses reparmaterized coordinates to keep the density positive during refinement
+   hence when we receive a new density from L-BFGS refiner, we need to
+   convert it back to normal coordinates. This can be done un numpy
+   but its probable faster on GPU
+*/
+void convert_reparameterized_densities(lerpy& gpu){
+    set_threads_blocks(gpu, gpu.numDens);
+    convert_reparameterized_densities_kernel<<<gpu.numBlocks, gpu.blockSize>>>(gpu.densities, gpu.numDens);
+    do_after_kernel(gpu.mpi_rank);
+}
+
+__global__ void convert_reparameterized_densities_kernel(CUDAREAL* dens, int N){
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int thread_stride = blockDim.x * gridDim.x;
+    for(int i=tid; i< N; i+= thread_stride){
+        CUDAREAL x = dens[i];
+        dens[i] = sqrt(x*x+1)-1;
+    }
+}
 
 /*
 is_peak_in_density is a boolean np.ndarray with size=number of voxels. Its True if the voxel is to be modeled
@@ -244,6 +294,14 @@ Its values should be either -1 (if voxel is masked) or else an integer from 0 to
 where M is the number of unmasked voxels, i.e. the index of the voxel in a sparse density vector
 */
 void set_sparse_lookup(lerpy& gpu, np::ndarray& is_peak_in_density){
+
+    // get the device host communicator
+    // TODO: test IPC for sparse_lookup array
+    //MPI_Comm device_comm;
+    //device_comm = get_host_dev_comm(gpu.device);
+    //int dev_rank;
+    //MPI_Comm_rank(device_comm, &dev_rank);
+
     int N = gpu.densDim*gpu.densDim*gpu.densDim;
     if (gpu.sparse_lookup == NULL)
         gpuErr(cudaMalloc((void**)&gpu.sparse_lookup, sizeof(int)*N));
@@ -264,6 +322,10 @@ void set_sparse_lookup(lerpy& gpu, np::ndarray& is_peak_in_density){
     gpu.numDens = numUnMasked;
     gpuErr(cudaMemcpy(gpu.sparse_lookup, sparse_lookup, sizeof(int) * N, cudaMemcpyHostToDevice));
     delete sparse_lookup;
+}
+
+void set_device(lerpy& gpu){
+    gpuErr(cudaSetDevice(gpu.device));
 }
 
 
@@ -289,7 +351,6 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
     else
         gpu.numRot = Umats.shape(0)/9;
 
-    gpuErr(cudaSetDevice(gpu.device));
     cudaIpcMemHandle_t rotMats_memHand;
     if (dev_rank==0 && use_IPC)
         get_mem_handle(rotMats_memHand, gpu.rotMats, Umats, gpu.numRot);
@@ -307,8 +368,8 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
     gpuErr(cudaMallocManaged((void **)&gpu.rotInds, gpu.maxNumRotInds*sizeof(int)));
     gpuErr(cudaMallocManaged((void **)&gpu.Pdr, gpu.maxNumRotInds*sizeof(CUDAREAL)));
     gpuErr(cudaMallocManaged((void **)&gpu.data, gpu.numDataPixels*sizeof(CUDAREAL)));
-    gpuErr(cudaMallocManaged((void **)&gpu.mask, gpu.numDataPixels*sizeof(bool)));
-    gpuErr(cudaMallocManaged((void **)&gpu.background, gpu.numDataPixels*sizeof(CUDAREAL)));
+    gpuErr(cudaMalloc((void **)&gpu.mask, gpu.numDataPixels*sizeof(bool)));
+    gpuErr(cudaMalloc((void **)&gpu.background, gpu.numDataPixels*sizeof(CUDAREAL)));
 
     // broadcast and copy the memoryhandle to gpu.rotMats on other processes
     if (use_IPC){
@@ -335,16 +396,18 @@ void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
 }
 
 
-void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_mask, np::ndarray& shot_background){
+void copy_image_data_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_mask, np::ndarray& shot_background){
     unsigned int num_pix = shot_data.shape(0);
     CUDAREAL* data_ptr = reinterpret_cast<CUDAREAL*>(shot_data.get_data());
-    CUDAREAL* background_ptr = reinterpret_cast<CUDAREAL*>(shot_background.get_data());
     bool* mask_ptr = reinterpret_cast<bool*>(shot_mask.get_data());
+    CUDAREAL* background_ptr = reinterpret_cast<CUDAREAL*>(shot_background.get_data());
     for (int i=0; i < num_pix; i++) {
         gpu.data[i] = *(data_ptr + i);
-        gpu.mask[i] = *(mask_ptr + i);
-        gpu.background[i] = *(background_ptr + i);
+        //gpu.mask[i] = *(mask_ptr + i);
+        //gpu.background[i] = *(background_ptr + i);
     }
+    to_dev_memcpy(gpu.background, background_ptr, num_pix);
+    cudaMemcpy(gpu.mask, mask_ptr, sizeof(bool)*num_pix, cudaMemcpyHostToDevice);
 }
 
 void to_dev_memcpy(CUDAREAL* dev_ptr, CUDAREAL* host_ptr, int N){
@@ -416,7 +479,7 @@ void toggle_insert_mode(lerpy& gpu){
 }
 
 
-void set_threads_blocks(lerpy& gpu){
+void set_threads_blocks(lerpy& gpu, int N){
     // optional size of each device block, else default to 128
     char *threads = getenv("ORIENT_THREADS_PER_BLOCK");
     if (threads == NULL)
@@ -424,7 +487,7 @@ void set_threads_blocks(lerpy& gpu){
     else
         gpu.blockSize = atoi(threads);
     //gpu.blockSize=blockSize;
-    gpu.numBlocks = (gpu.numQ + gpu.blockSize - 1) / gpu.blockSize;
+    gpu.numBlocks = (N + gpu.blockSize - 1) / gpu.blockSize;
 }
 
 void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
@@ -433,7 +496,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
 
     gettimeofday(&t1, 0);
 
-    set_threads_blocks(gpu);
+    set_threads_blocks(gpu, gpu.numQ);
 
     int numRotInds = rot_inds.size();
     for (int i=0; i< numRotInds; i++){
@@ -494,7 +557,9 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
         for (int i=0; i< numRotInds; i++)
             gpu.Pdr[i] = gpu.Pdr_host[i];
         if (gpu.is_peak_in_density==NULL){
-            printf("WARNING! NO RELP MASK ALLOCATED: use copy_relp_mask method\n");
+            if (gpu.sparse_lookup == NULL)
+                printf("WARNING! NO RELP MASK ALLOCATED: use copy_relp_mask method or set_sparse_lookup\n");
+            // TODO : do we need to do this if sparse_lookup != NULL ?
             malloc_relp_mask(gpu);
             bool* temp = new bool[gpu.numDens];
             for(int i=0; i < gpu.numDens;i++)
@@ -524,7 +589,7 @@ void do_a_lerp(lerpy& gpu, std::vector<int>& rot_inds, bool verbose, int task) {
                  gpu.densDim, gpu.densDim, gpu.densDim,
                  gpu.corner[0], gpu.corner[1], gpu.corner[2],
                  gpu.delta[0], gpu.delta[1], gpu.delta[2],
-                 gpu.sparse_lookup);
+                 gpu.sparse_lookup, true);
    
     }
     do_after_kernel(gpu.mpi_rank);
@@ -710,7 +775,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
         int nx, int ny, int nz,
         CUDAREAL cx, CUDAREAL cy, CUDAREAL cz,
         CUDAREAL dx, CUDAREAL dy, CUDAREAL dz,
-        int* sparse_lookup){
+        int* sparse_lookup, bool use_trusted_flags){
 
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int thread_stride = blockDim.x * gridDim.x;
@@ -726,7 +791,7 @@ __global__ void trilinear_insertion_rotate_on_GPU(
     int idx0,idx1,idx2,idx3,idx4,idx5,idx6,idx7;
     CUDAREAL val;
     for (i=tid; i < num_qvec; i += thread_stride){
-        if (!is_trusted[i]){
+        if (use_trusted_flags && !is_trusted[i]){
             continue;
         }
         val = insertion_values[i];

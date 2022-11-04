@@ -60,7 +60,7 @@ ndevice = args.ndev
 TEST_UCELLS = False
 
 if args.highres:
-    dens_dim = 351
+    dens_dim = 751
     max_q = 0.5
 else:
     dens_dim=351
@@ -478,8 +478,10 @@ if COMM.rank==0:
 #        h.create_dataset("Wprime", data=Wstart)
 #        h.create_dataset("ucell", data=ave_ucell)
 
+if COMM.rank==0:
+    Wstart = Wstart[peak_mask]
 # this method sets Wstart on rank0 and broadcasts to other ranks
-L.mpi_set_starting_densities(Wstart[peak_mask], COMM)
+L.mpi_set_starting_densities(Wstart, COMM)
 
 init_shot_scales = np.ones(len(this_ranks_imgs))
 
@@ -507,9 +509,9 @@ emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
                     density_update_method="lbfgs",
                     symbol=symbol,
                     symmetrize=not args.noSym,
-                    ucell_p=ave_ucell)
+                    ucell_p=ave_ucell,
+                    max_iter=args.maxIter)
 
-emc.max_iter = args.maxIter
 # run emc for specified number of iterations
 print0("Begin EMC")
 error_logger = mpi_utils.setup_rank_log_files(args.outdir+"/ranklogs", name="errors", ext="err")

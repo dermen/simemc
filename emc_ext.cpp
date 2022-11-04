@@ -63,6 +63,11 @@ class lerpyExt{
         return gpu.device;
     }
 
+    inline void set_dev_id(int val){
+        gpu.device=val;
+        set_device(gpu);
+    }
+
     inline void copy_sym_info(np::ndarray& rot_mats){
         sym_ops_to_dev(gpu, rot_mats);
         has_sym_ops = true;
@@ -98,7 +103,7 @@ class lerpyExt{
         return gpu.is_allocated;
     }
 
-    inline void copy_pixels( np::ndarray& pixels, np::ndarray& mask, np::ndarray& bg){
+    inline void copy_image_data( np::ndarray& pixels, np::ndarray& mask, np::ndarray& bg){
         // assert len pixels matches up
         if (pixels.shape(0) != gpu.numQ){
             PyErr_SetString(PyExc_TypeError, "Number of pixels passed does not agree with number of allocated pixels on device\n");
@@ -113,7 +118,7 @@ class lerpyExt{
             bp::throw_error_already_set();
         }
         else{
-            shot_data_to_device(gpu,pixels,mask,bg);
+            copy_image_data_to_device(gpu,pixels,mask,bg);
         }
     }
 
@@ -121,7 +126,7 @@ class lerpyExt{
         relp_mask_to_device(gpu, relp_mask);
     }
 
-    inline void copy_densities( np::ndarray& new_dens){
+    inline void copy_densities( np::ndarray& new_dens, bool dens_is_reparam){
         // assert len pixels matches up
         if (new_dens.shape(0) != gpu.numDens){
             PyErr_SetString(PyExc_TypeError, "Number of densities passed does not agree with number of allocated densities on device\n");
@@ -129,6 +134,9 @@ class lerpyExt{
         }
         else{
             densities_to_device(gpu,new_dens);
+        }
+        if (dens_is_reparam) {
+            convert_reparameterized_densities(gpu);
         }
     }
 
@@ -262,8 +270,13 @@ class lerpyExt{
         _reduce_in_chunks(py_comm, gpu.densities_gradient, gpu.numDens);
     }
 
+    inline void _allreduce_density_derivs(bp::object py_comm){
+        // TODO verify gpu.densities_gradient is not NULL
+        _reduce_in_chunks(py_comm, gpu.densities_gradient, gpu.numDens, true);
+    }
 
-    inline void _reduce_in_chunks(bp::object py_comm, CUDAREAL* vec, int N){
+
+    inline void _reduce_in_chunks(bp::object py_comm, CUDAREAL* vec, int N, bool all=false){
 
         PyObject* py_obj = py_comm.ptr();
         MPI_Comm *comm_p = PyMPIComm_Get(py_obj);
@@ -271,7 +284,9 @@ class lerpyExt{
         int sz=16*1024*1024;
         MPI_Comm_rank(*comm_p, &rank);
         std::vector<CUDAREAL> temp;
-        if (rank==0)
+        if (!all && rank==0)
+            temp.resize(N);
+        if (all)
             temp.resize(N);
         int start=0;
         while (start < N){
@@ -279,10 +294,17 @@ class lerpyExt{
             if (start + count >=N ){
                 count = N-start;
             }
-            MPI_Reduce(&vec[start], temp.data()+start, count, MPI_CUDAREAL, MPI_SUM, 0, *comm_p);
+            if(all)
+                MPI_Allreduce(&vec[start], temp.data()+start, count, MPI_CUDAREAL, MPI_SUM, *comm_p);
+            else
+                MPI_Reduce(&vec[start], temp.data()+start, count, MPI_CUDAREAL, MPI_SUM, 0, *comm_p);
             start += count;
         }
-        if (rank==0){
+        if (!all && rank==0){
+            CUDAREAL* temp_ptr = &temp[0];
+            to_dev_memcpy(vec, temp_ptr, N );
+        }
+        if (all){
             CUDAREAL* temp_ptr = &temp[0];
             to_dev_memcpy(vec, temp_ptr, N );
         }
@@ -312,6 +334,16 @@ class lerpyExt{
             bp::throw_error_already_set();
         }
         return dev_to_ndarray(gpu.densities, gpu.numDens);
+    }
+
+    inline np::ndarray get_reparameterized_densities_gradient(){
+        if (gpu.densities_gradient==NULL){
+            PyErr_SetString(PyExc_TypeError,
+                            "densities_gradient has not been allocated\n");
+            bp::throw_error_already_set();
+        }
+        reparameterize_density_gradients(gpu);
+        return dev_to_ndarray(gpu.densities_gradient, gpu.numDens);
     }
 
     inline  np::ndarray get_densities_gradient(){
@@ -519,7 +551,7 @@ BOOST_PYTHON_MODULE(emc){
     bp::class_<lerpyExt>("lerpy", bp::no_init)
         .def(bp::init<>("returns a class instance"))
         .def ("_allocate_lerpy", &lerpyExt::alloc, "allocate the device")
-        .def ("_copy_image_data", &lerpyExt::copy_pixels, "copy pixels to the GPU device")
+        .def ("_copy_image_data", &lerpyExt::copy_image_data, "copy pixels to the GPU device")
         .def ("_copy_relp_mask", &lerpyExt::copy_relp_mask, "copy relp mask to the GPU device")
         .def ("_update_density", &lerpyExt::copy_densities, "copies new density to the GPU device")
         //.def("free_device", &lerpyExt::free, "free any allocated GPU memory")
@@ -576,6 +608,10 @@ BOOST_PYTHON_MODULE(emc){
         .def("densities_gradient",
               &lerpyExt::get_densities_gradient,
               "get the gradient of the logLikelikhood w.r.t. the densities (this just points to the data , one should run equation_two with deriv=2 prior to calling this method, otherwise densities will be meaningless")
+
+        .def("reparameterized_densities_gradient",
+              &lerpyExt::get_reparameterized_densities_gradient,
+              "get the reparameterized version of gradient of the logLikelikhood w.r.t. the densities (this just points to the data , one should run equation_two with deriv=2 prior to calling this method, otherwise densities will be meaningless")
         .def("wts",
               &lerpyExt::get_wts,
               "get the density weights")
@@ -620,7 +656,8 @@ BOOST_PYTHON_MODULE(emc){
 
         .add_property("dev_id",
                        make_function(&lerpyExt::get_dev_id,rbv()),
-                       "return the GPU device ID used to allocate lerpy")
+                       make_function(&lerpyExt::set_dev_id,dcp()),
+                       "the GPU device ID used for running the emc kernels")
 
         .def("_mpi_set_starting_density", &lerpyExt::mpi_set_starting_density, "set the starting density, broadcast to other ranks")
 
@@ -630,6 +667,7 @@ BOOST_PYTHON_MODULE(emc){
         .def("bcast_relp_mask", &lerpyExt::_bcast_relp_mask, "broadcast relp mask from root to other ranks")
         .def("reset_density_derivs", &lerpyExt::_reset_dens_deriv, "reset the densities_gradient array to zeros")
         .def("reduce_density_derivs", &lerpyExt::_reduce_density_derivs, "reduce the densities_gradient (set on rank=0)")
+        .def("allreduce_density_derivs", &lerpyExt::_allreduce_density_derivs, "Allreduce the densities_gradient (set on rank=0)")
         .def("update_masked_density", &lerpyExt::_update_masked_density, "receives np::ndarray V and updates masked density. Length of V is number of non masked voxels")
         .def ("set_sparse_lookup", &lerpyExt::_set_sparse_lookup, "takes a voxel mask, and creates a sparse vector framework for saving GPU memory (use carefully!)")
         ;

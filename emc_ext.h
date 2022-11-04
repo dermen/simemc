@@ -68,6 +68,9 @@ struct lerpy {
 };
 
 void set_sparse_lookup(lerpy& gpu, np::ndarray& is_peak_in_density);
+void set_device(lerpy& gpu);
+void reparameterize_density_gradients(lerpy& gpu);
+void convert_reparameterized_densities(lerpy& gpu);
 void malloc_relp_mask(lerpy& gpu);
 void relp_mask_to_device(lerpy& gpu, np::ndarray& relp_mask);
 void malloc_unmasked_inds(lerpy& gpu);
@@ -75,10 +78,10 @@ void malloc_unmasked_inds(lerpy& gpu);
 void prepare_for_lerping(lerpy& gpu, np::ndarray& Umats,
                          np::ndarray& qvectors, bool use_IPC);
 
-void shot_data_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_mask, np::ndarray& shot_background);
+void copy_image_data_to_device(lerpy& gpu, np::ndarray& shot_data, np::ndarray& shot_mask, np::ndarray& shot_background);
 void densities_to_device(lerpy& gpu, np::ndarray& new_densities);
 
-void set_threads_blocks(lerpy& gpu);  // sets the blocksize
+void set_threads_blocks(lerpy& gpu, int N);  // sets the blocksize
 void do_after_kernel();
 void sym_ops_to_dev(lerpy& gpu, np::ndarray& rot_mats);
 void symmetrize_density(lerpy& gpu, np::ndarray& _q_cent);

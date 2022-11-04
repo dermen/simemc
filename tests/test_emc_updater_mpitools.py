@@ -19,7 +19,12 @@ def test_sparse():
     main(sparse=True)
 
 
-def main(sparse=False):
+@pytest.mark.mpi(min_size=2)
+def test_sparse_allreduce():
+    main(sparse=True, allreduce=True)
+
+
+def main(sparse=False, allreduce=False):
     dens_dim=151
     max_q=0.25
     L = lerpy()
@@ -84,8 +89,11 @@ def main(sparse=False):
         L.copy_image_data(shots[i_shot], shot_mask, shot_backgrounds[i_shot])
         L.dens_deriv(finite_rot_inds, finite_P_dr, verbose=False, shot_scale_factor=1,
                      reset_derivs=False, return_grad=False)
-    L.reduce_density_derivs(COMM)
-    L.bcast_density_derivs(COMM)
+    if allreduce:
+        L.allreduce_density_derivs(COMM)
+    else:
+        L.reduce_density_derivs(COMM)
+        L.bcast_density_derivs(COMM)
     dens_deriv = L.densities_gradient()  # should be same on all ranks
 
     # pattern 2 for computing gradients (all internal arrays)
@@ -104,5 +112,5 @@ def main(sparse=False):
 
 if __name__=="__main__":
     import sys
-    sparse = int(sys.argv[1])
-    main(sparse)
+    sparse, allreduce = map(int,sys.argv[1:3])
+    main(sparse, allreduce)

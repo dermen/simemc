@@ -418,7 +418,7 @@ class EMC:
     def __init__(self, L, shots, prob_rots, peak_mask, shot_background=None, shot_mask=None, min_p=0, outdir=None, beta=1,
                  symmetrize=True, img_sh=None, shot_scales=None,
                  refine_scale_factors=False, ave_signal_level=1, scale_update_method="analytical",
-                 density_update_method="analytical", ucell_p=None, shot_names=None, symbol=None):
+                 density_update_method="analytical", ucell_p=None, shot_names=None, symbol=None, max_iter=60):
         """
         run emc, the resulting density is stored in the L (emc.lerpy) object
         see call to this method in ests/test_emc_iteration
@@ -436,6 +436,11 @@ class EMC:
             seeks the minimum directly
         :param density_update_method: str, can be either 'analytical' or  'line_search'. The latter uses numerical optimization
             (see emc_updaters.DensityUpdater class)
+        :ucell_p: unit cell parameters e.g. 78,78,38,90,90,90  (a,b,c,alpha,beta,gamma in angstrom / degrees)
+        :shot_names: names corresponding to the images in shots, for record keeping, these will be written to some outputfiles
+        :symbol: space group symbol e.g. P43212
+        :param max_iter: for density updater method lbfgs: maximum number of iterations per minimization cycle
+
         """
 
         self.LOGGER = logging.getLogger(utils.LOGNAME)
@@ -451,7 +456,7 @@ class EMC:
             symbol = CRYSTAL.get_space_group().info().type().lookup_symbol()
         self.symbol=symbol
 
-        self.max_iter = 60
+        self.max_iter = max_iter
 
         self.shot_names = shot_names  # optional names identifying each shot (for book-keeping)
         assert len(shots) > 0
@@ -758,6 +763,7 @@ class EMC:
             t = time.time()-t
             iter_times.append(t)
             self.ave_time_per_iter = np.mean(iter_times)
+            exit()
 
     def log_R_dr(self, deriv=False):
         shot_log_R_dr = []

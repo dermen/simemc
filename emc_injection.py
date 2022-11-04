@@ -217,6 +217,8 @@ class _():
         rotMats = self.check_arrays(rotMats)
         self.qvecs = self.check_arrays(qvecs)
 
+        self.device_id = dev_id
+
         if peak_mask is not None:
             peak_mask = self.check_arrays(peak_mask, bool)
             self.set_sparse_lookup(peak_mask)
@@ -261,13 +263,16 @@ class _():
         # assert len dens is len(relp)
         self._copy_relp_mask(relp_mask)
 
-    def update_density(self, new_dens):
+    def update_reparameterized_density(self, new_dens):
+        self.update_density(new_dens, dens_is_reparam=True)
+
+    def update_density(self, new_dens, dens_is_reparam=False):
         """
         :param new_dens:
         :return:
         """
         new_dens = self.check_arrays(new_dens)
-        self._update_density(new_dens)
+        self._update_density(new_dens, dens_is_reparam)
 
     def normalize_density(self):
         new_dens = utils.errdiv(self.densities(), self.wts())
