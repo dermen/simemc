@@ -434,7 +434,7 @@ if maxRotInds < max_n:
 num_pix = MASK.size
 rots = rots.astype(L.array_type)
 qcoords = qcoords.astype(L.array_type)
-print0("Getting peak mask")
+print0("Getting relp mask")
 peak_mask=None
 if COMM.rank==0:
     peak_mask = utils.whole_punch_W(dens_dim, max_q, width=args.wholePunch, ucell_p=ave_ucell, symbol=symbol)

@@ -51,13 +51,14 @@ class DensityUpdater(Updater):
         mpi_utils.print_gpu_usage_across_ranks(self.emc.L)
         COMM.barrier()
         self.min_prob = 1e-5
+        self.prev_iter_F = np.inf
 
     def update(self, how="line_search", lbfgs_maxiter=60):
         """
 
         :return: optimized density, returns None for rank >0
         """
-        dens_start = xstart = None
+        xstart = None
         if COMM.rank==0:
             dens_start = self.emc.L.densities()
 
@@ -82,34 +83,27 @@ class DensityUpdater(Updater):
             self.emc.print("")
             self.emc.print("Line search finished", out)
             alpha = out[0]
-            xopt = lambda: xstart + alpha*pk
+            self.emc.L.update_density(xstart + alpha*pk)
 
         elif how == "lbfgs":
+            self.prev_iter_F = np.inf  # for print purposes only, we keep track of the target functional
             self.LOGGER.debug("Beginning density optimization process")
             out = minimize(self, xstart, method="L-BFGS-B", jac=self.jac, callback=None,
                            options={"maxiter": lbfgs_maxiter})
             self.LOGGER.debug("Minimization has terminated in %d iterations (final value=%10.7g, msg=%s, success=%s)" % (out.nit,out.fun, out.message, out.success))
             self.emc.print("")
-            xopt = lambda: out.x
+            self.emc.L.update_reparameterized_density(out.x)
         else:
             raise NotImplementedError("method %s not supported" % how)
 
-        if COMM.rank==0:
-            with np.errstate(over='raise'):
-                dens_start = np.sqrt(xopt()**2 +1) -1
-            #dens_start[~self.relp_mask] = 0
-        return dens_start
-
     def target(self, x):
         emc = self.emc
-        if COMM.rank==0:
-            # x is reparameterized so we need to operate on it
-            # according to
-            #      x -> np.sqrt(x**2+ 1) -1
-            # this operation is done in-place on the GPU
-            emc.L.update_reparameterized_density(x)
+        # x is reparameterized so we need to operate on it
+        # according to
+        #      x -> np.sqrt(x**2+ 1) -1
+        # this operation is done in-place on the GPU
+        emc.L.update_reparameterized_density(x)
 
-        emc.L.bcast_densities(COMM)
         emc.L.reset_density_derivs()
 
         functional = 0
@@ -119,7 +113,7 @@ class DensityUpdater(Updater):
 
         self.LOGGER.debug("Compute func/grads for %d shots" % emc.nshots)
         for i_shot in range(emc.nshots):
-            print_s = "Maximization iter %d ( %d/ %d)" % (self.iter_num+1, i_shot+1, emc.nshots)
+            print_s = "Maximization iter %d ( %d/ %d) (last F=%10.7g)" % (self.iter_num+1, i_shot+1, emc.nshots, self.prev_iter_F)
             self.LOGGER.debug(print_s)
             self.emc.print(print_s, end="\r", flush=True)
             P_dr = emc.shot_P_dr[i_shot]
@@ -160,6 +154,7 @@ class DensityUpdater(Updater):
 
         # running a minimizer, so return the negative loglike and its gradient
         self.iter_num += 1
+        self.prev_iter_F = -functional
         return -functional, minus_grad
 
 

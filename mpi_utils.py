@@ -537,8 +537,7 @@ class EMC:
         self.update_density = True  # if the specific iteration is updating the density
 
         self.qs_inbounds = utils.qs_inbounds(self.L.qvecs.reshape((-1,3)), self.dens_sh, self.L.xmin, self.L.xmax)
-        if COMM.rank==0:
-            self.apply_density_rules()
+        # just in case, ensure all ranks start with same density
         self.L.bcast_densities(COMM)
 
         for i,s in enumerate(self.shots):
@@ -644,16 +643,11 @@ class EMC:
         self.L.reduce_wts()
 
         self.LOGGER.debug("Update density (i_emc=%d)" %self.i_emc)
-        den = None
         if COMM.rank==0:
             den = utils.errdiv(self.L.densities(), self.L.wts())
             self.L.update_densities(den)
             self.apply_density_rules()
         self.L.bcast_densities(COMM)
-
-
-    def set_new_density(self, den):
-        pass
 
     def apply_density_rules(self):
         if self.symmetrize:
@@ -662,7 +656,6 @@ class EMC:
             self.L.symmetrize()
             self.print("Applying Friedel symmetry")
             self.LOGGER.debug("Applying friedel symmetry (i_emc=%d)" % self.i_emc)
-            self.L.symmetrize()
             self.L.apply_friedel_symmetry(self.peak_mask)
 
     def prep_for_insertion(self):
@@ -743,12 +736,9 @@ class EMC:
                 self.LOGGER.debug("Beginning numerical density update step")
                 density_updater = emc_updaters.DensityUpdater(self)
                 self.LOGGER.debug("Instantiated density updater...")
-                den = density_updater.update(how=self.density_update_method, lbfgs_maxiter=self.max_iter)
-                self.set_new_density(den)
-                self.LOGGER.debug("Update density (i_emc=%d)" % self.i_emc)
+                density_updater.update(how=self.density_update_method, lbfgs_maxiter=self.max_iter)
+                self.LOGGER.debug("Updated density (i_emc=%d)" % self.i_emc)
                 if COMM.rank==0:
-                    assert den is not None
-                    self.L.update_density(den.ravel())
                     self.apply_density_rules()
                 self.L.bcast_densities(COMM)
             else:
