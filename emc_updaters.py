@@ -103,7 +103,7 @@ class DensityUpdater(Updater):
     def target(self, x):
         emc = self.emc
         if COMM.rank==0:
-            # x is reparameterized so we need to operate on it with
+            # x is reparameterized so we need to operate on it
             # according to
             #      x -> np.sqrt(x**2+ 1) -1
             # this operation is done in-place on the GPU
@@ -132,7 +132,8 @@ class DensityUpdater(Updater):
             finite_rot_inds = emc.prob_rots[i_shot][is_finite_prob]  # TODO : verify type is np.ndarray and avoid the extra call to np.array
             finite_P_dr = P_dr[is_finite_prob]
             self.LOGGER.debug("Dens deriv iter%d (%d / %d)" % (self.iter_num+1, i_shot+1, emc.nshots))
-            emc.L.dens_deriv(finite_rot_inds, finite_P_dr, verbose=False, shot_scale_factor=emc.shot_scales[i_shot], reset_derivs=False, return_grad=False)
+            emc.L.dens_deriv(finite_rot_inds, finite_P_dr, verbose=False, shot_scale_factor=emc.shot_scales[i_shot],
+                             reset_derivs=False, return_grad=False)
             self.LOGGER.debug("Done Dens deriv iter%d (%d / %d)" % (self.iter_num+1, i_shot+1, emc.nshots))
 
             log_Rdr = np.array(emc.L.get_out())
@@ -143,19 +144,20 @@ class DensityUpdater(Updater):
         self.LOGGER.debug("Done with rank grad/functional (iter %d)" % (self.iter_num+1))
         COMM.barrier()
         self.LOGGER.debug("Reducing grad")
-        emc.L.allreduce_density_derivs(COMM)
+        emc.L.reduce_density_derivs(COMM)
         COMM.barrier()
         self.LOGGER.debug("functional")
         functional = COMM.reduce(functional)
         functional = COMM.bcast(functional)
 
-        # Because we reparameterized, such that W = exp(x), then grad -> dW/dx *grad = exp(x)*grad = density*grad
+        # Because we reparameterized, we must scale the grad -> dW/dx *grad
         self.LOGGER.debug("Scaling the gradient (iter %d)" % (self.iter_num+1))
-        #if COMM.rank==0:
-        minus_grad = emc.L.reparameterized_densities_gradient()
+        minus_grad = None
+        if COMM.rank == 0:
+            minus_grad = emc.L.reparameterized_densities_gradient()
         self.LOGGER.debug("Bcasting the Scaled gradient (iter %d)" % (self.iter_num+1))
         # TODO time different BCast methods,also time REduceAll above on grad to potentially  avoid this bcast
-        #minus_grad = mpi_utils.bcast_large(minus_grad, verbose=True, comm=COMM)
+        minus_grad = mpi_utils.bcast_large(minus_grad, verbose=True, comm=COMM)
         emc_s = "Done with emc iter num: %d (F=%f,G=%10.7g, |x|=%f)" \
                 % (self.iter_num+1, functional, np.mean(minus_grad),  np.linalg.norm(x))
         self.LOGGER.debug(emc_s)

@@ -221,17 +221,21 @@ if args.subsampleRots is not None:
     print0("Adding %d rotation perturbation per probable rot" % len(all_reff))
     print0("Perturbing along rotational grid defined by the following list (degrees): ", angs)
 
-    all_this_ranks_prob_rot = DEV_COMM.gather(this_ranks_prob_rot)
-    this_ranks_prob_Umats = []
+    # Because rots only exists on DEV_COMM roots, we must scatter the probable rotation matrices to
+    # each of the non-root ranks
+    all_ranks_prob_rot = DEV_COMM.gather(this_ranks_prob_rot)
+    all_ranks_prob_Umats = []
     if DEV_COMM.rank == 0:
-        for rank_prob_rot in all_this_ranks_prob_rot:
-            rank_Umats = []
-            for i_shot, rot_inds in enumerate(rank_prob_rot):
+        for ranks_prob_rot in all_ranks_prob_rot:
+            ranks_prob_Umats = []
+            for i_shot, rot_inds in enumerate(ranks_prob_rot):
                 shot_Umats = [rots[i] for i in rot_inds]
-                rank_Umats.append(shot_Umats)
-            this_ranks_prob_Umats.append(rank_Umats)
-    this_ranks_prob_Umats = DEV_COMM.scatter(this_ranks_prob_Umats)
+                ranks_prob_Umats.append(shot_Umats)
+            all_ranks_prob_Umats.append(ranks_prob_Umats)
+    this_ranks_prob_Umats = DEV_COMM.scatter(all_ranks_prob_Umats)
+    # now every rank has a list of Umats for each shot that corresonds to the list of probable rot indices
 
+    # for each shot, each rank will generate a larger list of probable rotation matrices, according to the rotation perturbations above
     this_ranks_U_perturbs = []
     for i_shot, prob_Umats in enumerate(this_ranks_prob_Umats):
         U_perturbs = []
@@ -239,35 +243,53 @@ if args.subsampleRots is not None:
             U_perturbs.append(np.dot(all_reff, U))
         this_ranks_U_perturbs.append(np.concatenate(U_perturbs))
 
-    all_ranks_U_perturbs = COMM.gather(this_ranks_U_perturbs)
-    all_ranks_U_perturbs = COMM.bcast(all_ranks_U_perturbs)
-    # for dev comm roots, update the orts matrices
+    req = COMM.isend(this_ranks_prob_Umats, dest=0, tag=COMM.rank)
+
+    if COMM.rank == 0:
+        all_ranks_U_perturbs = []
+        for i_rank in range(COMM.size):
+            print("receiving Umat pertubrs from rank=%d/%d" % (COMM.rank, COMM.size), end="\r", flush=True)
+            ranks_U_perturbs = COMM.recv(source=i_rank, tag=i_rank)
+            all_ranks_U_perturbs.append(ranks_U_perturbs)
+    req.wait()
+
+    #all_ranks_U_perturbs = COMM.gather(this_ranks_U_perturbs)
+    #all_ranks_U_perturbs = COMM.bcast(all_ranks_U_perturbs)
+
+    # for dev comm roots, update the rots matrices to include "ALL" ranks perturbations
+    # then create the new rot_inds to append to this_rank_prob_rot
+    all_ranks_extra_prob_rot = []
+    current_nrots = rots.shape[0]
     if DEV_COMM.rank==0:
+        start = rots.shape[0]
         for i_rank, rank_U_perturbs in enumerate(all_ranks_U_perturbs):
             print0("rank %d / %d appending rot mat perturbations" % (i_rank+1, COMM.size))
-            for U_perturbs in rank_U_perturbs:
+            ranks_extra_prob_rot = []
+            for i_shot, U_perturbs in enumerate(rank_U_perturbs):
                 rots = np.append(rots, U_perturbs, axis=0)
-    else:
-        rots = np.empty([])
+                new_rot_inds = np.arange(start, start+len(U_perturbs))
+                ranks_extra_prob_rot.append(new_rot_inds)
+                start += len(U_perturbs)
+            all_ranks_extra_prob_rot.append(ranks_extra_prob_rot)
 
-    # for world root, tell other ranks where in the rots array are there extra probable orientations
-    this_ranks_prob_rot_pert = []
-    if COMM.rank == 0:
-        start = rots.shape[0]
-        for rank_U_perturbs in all_ranks_U_perturbs:
-            ranks_extra_prob_rots = []
-            for U_perturbs in rank_U_perturbs:
-                rot_inds = np.arange(start, start + U_perturbs.shape[0])
-                start += U_perturbs.shape[0]
-                ranks_extra_prob_rots.append(rot_inds)
-            this_ranks_prob_rot_pert.append(ranks_extra_prob_rots)
-    this_ranks_prob_rot_pert = COMM.scatter(this_ranks_prob_rot_pert)
 
-    for i_shot, rot_inds in enumerate(this_ranks_prob_rot_pert):
+    # we only need to scatter all_ranks_extra_prob_rot from world root=0, even though its identical on all dev_comm roots
+    this_ranks_extra_prob_rot = COMM.scatter(all_ranks_extra_prob_rot)
+    # this_ranks_extra_prob_rot specifies the indices in the global rots array that correspond to the perturbations to this_ranks_prob_rot
+
+    for i_shot, rot_inds in enumerate(this_ranks_extra_prob_rot):
         assert len(rot_inds) == len(this_ranks_prob_rot[i_shot]) * len(all_reff)
         this_ranks_prob_rot[i_shot] = np.hstack((this_ranks_prob_rot[i_shot], rot_inds))
+
+    # make sure all prob_rot_inds are less than the total number of rots
+    total_umats = None
     if COMM.rank==0:
-        print0("Total Umats = %d" %len(rots))
+        total_umats = len(rots)
+        print0("Total Umats = %d" %total_umats)
+    total_umats = COMM.bcast(total_umats)
+    for i_shot, rot_inds in enumerate(this_ranks_prob_rot):
+        assert np.max(rot_inds) < total_umats
+
 
 # for all of the loaded experiments with crystals, lets add the ground truth rotation matrix
 # to the list of probable rotation indices....
@@ -412,7 +434,16 @@ if maxRotInds < max_n:
 num_pix = MASK.size
 rots = rots.astype(L.array_type)
 qcoords = qcoords.astype(L.array_type)
-peak_mask = utils.whole_punch_W(dens_dim, max_q, width=args.wholePunch, ucell_p=ave_ucell, symbol=symbol)
+print0("Getting peak mask")
+peak_mask=None
+if COMM.rank==0:
+    peak_mask = utils.whole_punch_W(dens_dim, max_q, width=args.wholePunch, ucell_p=ave_ucell, symbol=symbol)
+    vox_res = utils.voxel_resolution(dens_dim, max_q)
+    highRes_limit = 1. / L.max_q
+    vox_inbounds = vox_res >= highRes_limit
+    print0("applying resolution cutoff to relp mask")
+    peak_mask = np.logical_and(peak_mask, vox_inbounds)
+peak_mask = mpi_utils.bcast_large(peak_mask, verbose=True, comm=COMM)
 
 L.allocate_lerpy(DEV_ID, rots.ravel(), num_pix,
                  corner, deltas, qcoords.ravel(),

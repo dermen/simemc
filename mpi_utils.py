@@ -763,7 +763,6 @@ class EMC:
             t = time.time()-t
             iter_times.append(t)
             self.ave_time_per_iter = np.mean(iter_times)
-            exit()
 
     def log_R_dr(self, deriv=False):
         shot_log_R_dr = []

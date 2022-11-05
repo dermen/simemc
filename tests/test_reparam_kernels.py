@@ -60,7 +60,7 @@ def main():
         L.dens_deriv(finite_rot_inds, finite_P_dr, verbose=False, shot_scale_factor=1,
                      reset_derivs=False, return_grad=False)
     dens_deriv = L.densities_gradient()
-    dens_deriv_reparam = -dens_deriv / np.sqrt(dens_deriv**2 + 1)
+    dens_deriv_reparam = - dens_deriv * (dens_deriv / np.sqrt(dens_deriv**2 + 1))
     dens_deriv_reparam2 = L.reparameterized_densities_gradient()
 
     assert np.allclose(dens_deriv_reparam, dens_deriv_reparam2)

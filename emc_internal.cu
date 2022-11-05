@@ -258,7 +258,7 @@ __global__ void reparameterize_density_gradients_kernel(CUDAREAL* dens_grad, int
         CUDAREAL x = dens_grad[i];
         CUDAREAL num = -x;
         CUDAREAL den = sqrt(x*x+1);
-        dens_grad[i] = num / den;
+        dens_grad[i] = x*num / den;
     }
 }
 
@@ -1233,21 +1233,21 @@ __global__ void dens_deriv(const CUDAREAL * __restrict__ densities,
                         atomicAdd(&densities_gradient[idx7], W_rt_prime7);
                 }
                 else{
-                    if (idx0 > 0)
+                    if (idx0 >= 0)
                         atomicAdd(&densities_gradient[idx0], W_rt_prime0);
-                    if (idx1 > 0)
+                    if (idx1 >= 0)
                         atomicAdd(&densities_gradient[idx1], W_rt_prime1);
-                    if (idx2 > 0)
+                    if (idx2 >= 0)
                         atomicAdd(&densities_gradient[idx2], W_rt_prime2);
-                    if (idx3 > 0)
+                    if (idx3 >= 0)
                         atomicAdd(&densities_gradient[idx3], W_rt_prime3);
-                    if (idx4 > 0)
+                    if (idx4 >= 0)
                         atomicAdd(&densities_gradient[idx4], W_rt_prime4);
-                    if (idx5 > 0)
+                    if (idx5 >= 0)
                         atomicAdd(&densities_gradient[idx5], W_rt_prime5);
-                    if (idx6 > 0)
+                    if (idx6 >= 0)
                         atomicAdd(&densities_gradient[idx6], W_rt_prime6);
-                    if (idx7 > 0)
+                    if (idx7 >= 0)
                         atomicAdd(&densities_gradient[idx7], W_rt_prime7);
                 }
 

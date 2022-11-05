@@ -126,18 +126,20 @@ class lerpyExt{
         relp_mask_to_device(gpu, relp_mask);
     }
 
-    inline void copy_densities( np::ndarray& new_dens, bool dens_is_reparam){
+    /* sets densities on the GPUdevice . if dens_is_reparam
+       then its assumed the densities are coming from the L-BFGS refiner
+       and a transformation x ->sqrt(x*x+1)-1 is applied to the densities
+       in place on the GPU , after copying . See emc_updaters.DensityUpdater
+    */
+    inline void update_density( np::ndarray& new_dens, bool dens_is_reparam=false){
         // assert len pixels matches up
         if (new_dens.shape(0) != gpu.numDens){
             PyErr_SetString(PyExc_TypeError, "Number of densities passed does not agree with number of allocated densities on device\n");
             bp::throw_error_already_set();
         }
-        else{
-            densities_to_device(gpu,new_dens);
-        }
-        if (dens_is_reparam) {
-            convert_reparameterized_densities(gpu);
-        }
+        densities_to_device(gpu,new_dens);
+        if (dens_is_reparam)
+            convert_reparameterized_densities(gpu); // an in place method to convert the densities back to normal units
     }
 
     inline np::ndarray trilinear_interpolation(int rot_idx, bool verbose){
@@ -284,9 +286,7 @@ class lerpyExt{
         int sz=16*1024*1024;
         MPI_Comm_rank(*comm_p, &rank);
         std::vector<CUDAREAL> temp;
-        if (!all && rank==0)
-            temp.resize(N);
-        if (all)
+        if ( (!all && rank==0) || all)
             temp.resize(N);
         int start=0;
         while (start < N){
@@ -300,11 +300,7 @@ class lerpyExt{
                 MPI_Reduce(&vec[start], temp.data()+start, count, MPI_CUDAREAL, MPI_SUM, 0, *comm_p);
             start += count;
         }
-        if (!all && rank==0){
-            CUDAREAL* temp_ptr = &temp[0];
-            to_dev_memcpy(vec, temp_ptr, N );
-        }
-        if (all){
+        if ( (!all && rank==0) || all){
             CUDAREAL* temp_ptr = &temp[0];
             to_dev_memcpy(vec, temp_ptr, N );
         }
@@ -553,7 +549,7 @@ BOOST_PYTHON_MODULE(emc){
         .def ("_allocate_lerpy", &lerpyExt::alloc, "allocate the device")
         .def ("_copy_image_data", &lerpyExt::copy_image_data, "copy pixels to the GPU device")
         .def ("_copy_relp_mask", &lerpyExt::copy_relp_mask, "copy relp mask to the GPU device")
-        .def ("_update_density", &lerpyExt::copy_densities, "copies new density to the GPU device")
+        .def ("_update_density", &lerpyExt::update_density, "copies new density to the GPU device")
         //.def("free_device", &lerpyExt::free, "free any allocated GPU memory")
         .def ("print_rotMat", &lerpyExt::print_rotMat, "show elements of allocated rotMat i_rot")
         .def ("get_out", &lerpyExt::get_out, "return the output array.")
