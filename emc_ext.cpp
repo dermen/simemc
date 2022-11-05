@@ -332,12 +332,18 @@ class lerpyExt{
         return dev_to_ndarray(gpu.densities, gpu.numDens);
     }
 
-    inline np::ndarray get_reparameterized_densities_gradient(){
+
+    //
+    inline np::ndarray get_reparameterized_densities_gradient(np::ndarray& reparam_dens){
         if (gpu.densities_gradient==NULL){
             PyErr_SetString(PyExc_TypeError,
                             "densities_gradient has not been allocated\n");
             bp::throw_error_already_set();
         }
+        check_densities_are_set();
+        // copy the reparameterized densities to device (see emc_updaters.DensityUpdater
+        densities_to_device(gpu,reparam_dens);
+        // update the density gradients in-place, using the reparameterized densities
         reparameterize_density_gradients(gpu);
         return dev_to_ndarray(gpu.densities_gradient, gpu.numDens);
     }

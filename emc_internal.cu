@@ -8,7 +8,7 @@ __device__ __inline__ int get_densities_index(int i,int j,int k, int nx, int ny,
 
 __global__ void normalize_density(CUDAREAL* densities, CUDAREAL* wts, int N);
 
-__global__ void reparameterize_density_gradients_kernel(CUDAREAL* dens_grad, int N);
+__global__ void reparameterize_density_gradients_kernel(CUDAREAL* dens_grad, CUDAREAL* reparam_dens, int N);
 
 __global__ void convert_reparameterized_densities_kernel(CUDAREAL* dens, int N);
 
@@ -244,21 +244,20 @@ this method reparameterizes the gradients that are
 used in the L-BFGS densityUpdater class method (see emc_updaters.py)
 Basically this updates the gradients in place via
             grad *= -x/np.sqrt(x**2+1)
+where x is the reparameterized densities (the ones that the L-BFGS refiner sees)
 */
 void reparameterize_density_gradients(lerpy& gpu){
     set_threads_blocks(gpu, gpu.numDens);
-    reparameterize_density_gradients_kernel<<< gpu.numBlocks, gpu.blockSize>>>(gpu.densities_gradient, gpu.numDens);
+    reparameterize_density_gradients_kernel<<< gpu.numBlocks, gpu.blockSize>>>(gpu.densities_gradient, gpu.densities, gpu.numDens);
     do_after_kernel(gpu.mpi_rank);
 }
 
-__global__ void reparameterize_density_gradients_kernel(CUDAREAL* dens_grad, int N){
+__global__ void reparameterize_density_gradients_kernel(CUDAREAL* dens_grad, CUDAREAL* reparam_dens, int N){
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int thread_stride = blockDim.x * gridDim.x;
     for(int i=tid; i< N; i+= thread_stride){
-        CUDAREAL x = dens_grad[i];
-        CUDAREAL num = -x;
-        CUDAREAL den = sqrt(x*x+1);
-        dens_grad[i] = x*num / den;
+        CUDAREAL x = reparam_dens[i];
+        dens_grad[i] = -dens_grad[i]*x/sqrt(x*x+1);
     }
 }
 
