@@ -42,6 +42,7 @@ import time
 from itertools import product
 from scipy.ndimage import median_filter as mf
 from scipy.spatial.transform import Rotation
+import socket
 
 from dials.array_family import flex
 #from copy import deepcopy
@@ -235,46 +236,36 @@ if args.subsampleRots is not None:
     this_ranks_prob_Umats = DEV_COMM.scatter(all_ranks_prob_Umats)
     # now every rank has a list of Umats for each shot that corresonds to the list of probable rot indices
 
-    # for each shot, each rank will generate a larger list of probable rotation matrices, according to the rotation perturbations above
+    # for each shot (on this rank), we will generate a larger list of probable rotation matrices, according to the rotation perturbations above
     this_ranks_U_perturbs = []
     for i_shot, prob_Umats in enumerate(this_ranks_prob_Umats):
         U_perturbs = []
         for ii, U in enumerate(prob_Umats):
             U_perturbs.append(np.dot(all_reff, U))
         this_ranks_U_perturbs.append(np.concatenate(U_perturbs))
+        # these perturbation computations could/should be done on GPU, but that would require a large code change to the kernels... benchmark here for now to see how powerful perturbations are
 
-    req = COMM.isend(this_ranks_prob_Umats, dest=0, tag=COMM.rank)
+    # Now for each dev_comm root, we need to update the rots ndarray to include all perturbation matrices (for ranks sharing that device/rots array (cuda IPC protocol))
+    all_ranks_U_perturbs = DEV_COMM.gather(this_ranks_U_perturbs)
 
-    if COMM.rank == 0:
-        all_ranks_U_perturbs = []
-        for i_rank in range(COMM.size):
-            print("receiving Umat pertubrs from rank=%d/%d" % (COMM.rank, COMM.size), end="\r", flush=True)
-            ranks_U_perturbs = COMM.recv(source=i_rank, tag=i_rank)
-            all_ranks_U_perturbs.append(ranks_U_perturbs)
-    req.wait()
-
-    #all_ranks_U_perturbs = COMM.gather(this_ranks_U_perturbs)
-    #all_ranks_U_perturbs = COMM.bcast(all_ranks_U_perturbs)
-
-    # for dev comm roots, update the rots matrices to include "ALL" ranks perturbations
+    # for dev comm roots, update the rots matrices to include "ALL" ranks perturbations (all means all on device)
     # then create the new rot_inds to append to this_rank_prob_rot
     all_ranks_extra_prob_rot = []
-    current_nrots = rots.shape[0]
     if DEV_COMM.rank==0:
         start = rots.shape[0]
         for i_rank, rank_U_perturbs in enumerate(all_ranks_U_perturbs):
-            print0("rank %d / %d appending rot mat perturbations" % (i_rank+1, COMM.size))
+            print0("rank %d / %d appending rot mat perturbations" % (i_rank+1, DEV_COMM.size))
             ranks_extra_prob_rot = []
             for i_shot, U_perturbs in enumerate(rank_U_perturbs):
+                # TODO only do this np.append once to avoid slow memory management
                 rots = np.append(rots, U_perturbs, axis=0)
                 new_rot_inds = np.arange(start, start+len(U_perturbs))
                 ranks_extra_prob_rot.append(new_rot_inds)
                 start += len(U_perturbs)
             all_ranks_extra_prob_rot.append(ranks_extra_prob_rot)
 
-
-    # we only need to scatter all_ranks_extra_prob_rot from world root=0, even though its identical on all dev_comm roots
-    this_ranks_extra_prob_rot = COMM.scatter(all_ranks_extra_prob_rot)
+    # report to other ranks on the device there new extra prob rot indices
+    this_ranks_extra_prob_rot = DEV_COMM.scatter(all_ranks_extra_prob_rot)
     # this_ranks_extra_prob_rot specifies the indices in the global rots array that correspond to the perturbations to this_ranks_prob_rot
 
     for i_shot, rot_inds in enumerate(this_ranks_extra_prob_rot):
@@ -283,10 +274,10 @@ if args.subsampleRots is not None:
 
     # make sure all prob_rot_inds are less than the total number of rots
     total_umats = None
-    if COMM.rank==0:
+    if DEV_COMM.rank==0:
         total_umats = len(rots)
-        print0("Total Umats = %d" %total_umats)
-    total_umats = COMM.bcast(total_umats)
+        print("Total Umats on device %d (%s) = %d" % (DEV_ID, socket.gethostname(), total_umats))
+    total_umats = DEV_COMM.bcast(total_umats)
     for i_shot, rot_inds in enumerate(this_ranks_prob_rot):
         assert np.max(rot_inds) < total_umats
 
@@ -338,7 +329,7 @@ nmissing_gt = COMM.reduce(nmissing_gt)
 if COMM.rank==0:
     print0("Out of %d experiments with provided crystals, %d did not determine the gt rot ind as probable" %(nwith_gt, nmissing_gt))
 
-# sanity test on gt rot inds
+# sanity test on gt rot inds (just use dev comm root, as thats the only ranks with finite rots ndarrays
 if DEV_COMM.rank==0:
     for gt, C in zip(this_ranks_gt_inds, this_ranks_crystals):
         if C is None:
@@ -358,7 +349,7 @@ n_prob_rot = [len(prob_rots) for prob_rots in this_ranks_prob_rot]
 all_ranks_max_n_prob = COMM.gather(np.max(n_prob_rot))
 if COMM.rank==0:
     max_nprob = np.max(all_ranks_max_n_prob)
-    print("Maximum number of probable orientations=%d"% max_nprob)
+    print("Maximum number of probable orientations=%d"% max_nprob)  #TODO this can be done at the DEV_COMM level, but probably doesnt matter ...
 
 
 def background_fit(img, R, radProMaker):
@@ -372,7 +363,6 @@ def background_fit(img, R, radProMaker):
     img_filled[~bg_mask] = img_background[~bg_mask]
     bg = mf(img_filled[0], mf_filter_sh)
     return bg
-
 
 
 # fit background to each image; estimate signal level per image
