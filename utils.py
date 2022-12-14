@@ -6,6 +6,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from scipy.spatial import cKDTree, distance
 from scipy.ndimage import generate_binary_structure, iterate_structure, map_coordinates
+from scipy.interpolate import RegularGridInterpolator
 from scipy import ndimage as nd
 from scipy import ndimage as ni
 import sympy
@@ -338,6 +339,88 @@ def get_W_init(dens_dim, max_q, ndom=20, ucell_p=None, symbol=None):
     W_init = np.exp(-hkl_rad_sq*2/0.63)
 
     return W_init
+
+
+def init_from_mtz(mtzname, dens_dim, max_q, ucell_p, symbol, kernel_iters=2, conn=2, mtzlabel=None, sigma=1):
+    """
+
+    :param mtzname:
+    :param dens_dim:
+    :param max_q:
+    :param ucell_p:
+    :param symbol:
+    :param kernel_iters:
+    :param conn:
+    :param mtzlabel:
+    :param sigma:
+    :return:
+    """
+    F = db_utils.open_mtz(mtzname, mtzlabel)  # returns a cctbx.miller.array object
+    if F.observation_type() != "xray.amplitude":
+        F = F.as_amplitude_array()
+    else:
+        assert np.min(F.data()) >= 0
+    F = F.expand_to_p1().generate_bijvoet_mates()
+    Fmap = {h: val for h, val in zip(F.indices(), F.data())}
+
+    BO = get_BO_matrix(ucell_p, symbol)
+
+    max_h, max_k, max_l = get_hkl_max(max_q, BO)
+
+    hvals = np.arange(-max_h + 1, max_h, 1)
+    kvals = np.arange(-max_k + 1, max_k, 1)
+    lvals = np.arange(-max_l + 1, max_l, 1)
+    hkl_grid = np.meshgrid(hvals, kvals, lvals, indexing='ij')
+    hkl_grid = np.array(hkl_grid)
+    BOinv = np.round(np.linalg.inv(BO), 8)
+
+    # find the q-values of the whole miller-indices
+    Qabc_grid = np.dot(hkl_grid.T, BOinv.T).T
+
+    # for each of these q vectors, we need to find the corresponding nearest voxel
+    QBINS = np.linspace(-max_q, max_q, dens_dim + 1)
+    QCENT = (QBINS[:-1] + QBINS[1:]) * .5  # center of each voxel
+    Qpts = np.array( [x.ravel() for x in Qabc_grid]).T
+
+    Qinds = np.arange(0, dens_dim)
+    QX,QY,QZ = [RegularGridInterpolator((QCENT, QCENT, QCENT), coord, bounds_error=False, method='nearest', fill_value=None) \
+                for coord in np.meshgrid(Qinds, Qinds, Qinds, indexing='ij')]
+    closest_grid_pt = np.vstack([QX(Qpts), QY(Qpts), QZ(Qpts)]).T
+    aidx, bidx, cidx = np.array([x.astype(np.int32) for x in closest_grid_pt.T])
+    all_hvals, all_kvals, all_lvals = map(lambda x: x.ravel(), hkl_grid)
+
+    # initial density
+    D = np.zeros((dens_dim, dens_dim, dens_dim))
+
+    # create a kernel for integrating each peak in the 3-d map
+    base_kernel = ni.generate_binary_structure(3, conn)  # 3 dimensional kernel
+    kernel = ni.iterate_structure(base_kernel, kernel_iters)  # enlargen kernel to bring in more neighboring voxels
+    ksz = int(kernel.shape[0] / 2)  # kernel always has odd dimension
+
+    for i_peak, (i1, i2, i3, h, k, l) in enumerate(zip(aidx, bidx, cidx, all_hvals, all_kvals, all_lvals)):
+        hkl = h,k,l
+        if hkl not in Fmap:
+            continue
+        i1_slc = slice(i1 - ksz, i1 + ksz + 1, 1)
+        i2_slc = slice(i2 - ksz, i2 + ksz + 1, 1)
+        i3_slc = slice(i3 - ksz, i3 + ksz + 1, 1)
+        try:
+            peak = D[i1_slc, i2_slc, i3_slc]  # region around one peak, same shape as kernel
+        except IndexError:
+            continue
+
+        # replace peak with a gaussian
+        Z, Y, X = np.indices(peak.shape)
+
+        Ihkl = Fmap[hkl]**2
+        exp_arg = -((Z - ksz) ** 2 + (Y-ksz)**2 + (X-ksz)**2) / 2 / sigma ** 2
+        Gxyz = np.exp(exp_arg) * Ihkl
+        D[i1_slc, i2_slc, i3_slc] += Gxyz
+
+        if i_peak % 1000 == 0:
+            print("Filling gaussian peak %d / %d" % (i_peak + 1, len(aidx)))
+
+    return D
 
 
 def corners_and_deltas(shape, x_min, x_max):
@@ -1028,7 +1111,8 @@ def signal_level_of_image(R, img):
 
 
 def get_prob_rots_per_shot(O, R, hcut, min_pred,
-                           detector=None, beam=None, hcut_incr=None):
+                           detector=None, beam=None, hcut_incr=None,
+                           minimum_prob_rot=0):
     """
 
     :param O:
@@ -1048,7 +1132,7 @@ def get_prob_rots_per_shot(O, R, hcut, min_pred,
     qvecs = qvecs.astype(O.array_type)
     if hcut_incr is not None:
         num_rot = 0
-        while num_rot==0:
+        while num_rot <= minimum_prob_rot:
             prob_rot = O.orient_peaks(qvecs.ravel(), hcut, min_pred, False)
             num_rot = len(prob_rot)
             hcut = hcut + hcut_incr
@@ -1059,7 +1143,7 @@ def get_prob_rots_per_shot(O, R, hcut, min_pred,
 
 def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=None,
                  max_num_strong_spots=1000, hcut=0.1, min_pred=3, verbose=True,
-                detector=None,beam=None, hcut_incr=None, device_comm=None):
+                detector=None,beam=None, hcut_incr=None, device_comm=None, minimum_prob_rot=0):
     """
 
     :param dev_id: gpu device ID
@@ -1074,6 +1158,7 @@ def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=N
     :param beam: dxtbx beam
     :param hcut_incr: if hcut is too small to flag probable orientations, iteratively increase it by this much until probablt orientations are flagged
     :param device_comm: if not None, use for interprocess communication on gpus to save memory (when more than 1 rank share a GPU)
+    :param minimum_prob_rot:  minimum number of probable rotations per shot
     :return:
     """
     if probable_orients is None:
@@ -1099,7 +1184,7 @@ def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=N
     prob_rots_per_shot = []
     for i_img, R in enumerate(list_of_refl_tables):
         t = time.time()
-        prob_rot = get_prob_rots_per_shot(O, R, hcut, min_pred, detector, beam, hcut_incr=hcut_incr)
+        prob_rot = get_prob_rots_per_shot(O, R, hcut, min_pred, detector, beam, hcut_incr=hcut_incr, minimum_prob_rot=minimum_prob_rot)
         prob_rots_per_shot.append(prob_rot)
         if verbose:
             print("%d probable rots on shot %d / %d with %d strongs (%f sec)"

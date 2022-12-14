@@ -107,7 +107,7 @@ def generate_n_images(nshot, seed, dev_id, xtal_size, phil_file, file_prefix):
 
             R = utils.refls_from_sims(img, sim_const.DETECTOR, sim_const.BEAM, phil_file=phil_file)
             num_ref = len(R)
-            print0("Shot %d / %d on device %d simulated with %d refls (%d required to proceed)"
+            mpi_utils.printRf("Shot %d / %d on device %d simulated with %d refls (%d required to proceed)"
                    % (i_shot+1, nshot, dev_id, num_ref, MIN_REF_PER_SHOT), flush=True)
 
         ground_truth_U = C.get_U()
@@ -153,7 +153,7 @@ def load_rotation_samples(extra_rot_mats=None):
 
 
 def get_lerpy(dev_id, rotation_samples, qcoords, dens_dim=256, max_q=0.25,
-    maxRotInds=20000):
+    maxRotInds=20000, peak_mask=None):
     sh = dens_dim, dens_dim, dens_dim
     Winit = np.zeros(sh, np.float32)
 
@@ -167,8 +167,12 @@ def get_lerpy(dev_id, rotation_samples, qcoords, dens_dim=256, max_q=0.25,
 
     L.allocate_lerpy(dev_id, rots.ravel(), 2463*2527,
                      corner, deltas, qcoords.ravel(),
-                     maxRotInds, 2463*2527)
-    L.update_density(Winit.ravel())
+                     maxRotInds, 2463*2527, peak_mask=peak_mask)
+    if peak_mask is None:
+        L.update_density(Winit.ravel())
+    else:
+        L.update_density(Winit.ravel()[peak_mask.ravel()])
+
     return L
 
 
@@ -262,7 +266,20 @@ def emc_iteration():
     qmap = utils.calc_qmap(sim_const.DETECTOR, sim_const.BEAM)
     qx,qy,qz = map(lambda x: x.ravel(), qmap)
     qcoords = np.vstack([qx,qy,qz]).T
-    L = get_lerpy(DEV_ID, rots, qcoords, dens_dim=ARGS.dens_dim, max_q=ARGS.max_q, maxRotInds=max_rot)
+
+    ucell_p = sim_const.CRYSTAL.get_unit_cell().parameters()
+    sym = sim_const.CRYSTAL.get_space_group().info().type().lookup_symbol()
+    peak_mask = None
+    if COMM.rank == 0:
+        peak_mask = utils.whole_punch_W(ARGS.dens_dim, ARGS.max_q, ucell_p=ucell_p, symbol=sym)
+        vox_res = utils.voxel_resolution(ARGS.dens_dim, ARGS.max_q)
+        highResLimit = 1. / ARGS.max_q
+        vox_inbounds = vox_res >= highResLimit
+        print0("applying resolution cutoff to relp mask")
+        peak_mask = np.logical_and(peak_mask, vox_inbounds)
+    peak_mask = COMM.bcast(peak_mask)
+    L = get_lerpy(DEV_ID, rots, qcoords, dens_dim=ARGS.dens_dim,
+                  max_q=ARGS.max_q, maxRotInds=max_rot, peak_mask=peak_mask)
 
     # convert the type of images to match the lerpy instance array_type (prevents annoying warnings)
     for i, img in enumerate(this_ranks_imgs):
@@ -271,8 +288,11 @@ def emc_iteration():
 
     # set the starting density
     L.toggle_insert()
-    L.update_density(Wstart)
-    if COMM.rank==0:
+    if peak_mask is None:
+        L.update_density(Wstart)
+    else:
+        L.update_density(Wstart[peak_mask].ravel())
+    if COMM.rank == 0:
         np.save(os.path.join(ARGS.outdir, "Starting_density_relp"), Wstart)
 
     init_shot_scales = np.ones(len(this_ranks_imgs))
@@ -285,9 +305,8 @@ def emc_iteration():
     print0("INIT SHOT SCALES:", init_shot_scales)
 
     # make the mpi emc object
-    ucell_p = sim_const.CRYSTAL.get_unit_cell().parameters() 
-    sym = sim_const.CRYSTAL.get_space_group().info().type().lookup_symbol()
     emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
+                        peak_mask=peak_mask,
                         shot_mask=inbounds,
                         shot_background=this_ranks_bgs,
                         min_p=0,
@@ -342,5 +361,5 @@ def plot_models(emc, init=False):
     plt.pause(0.1)
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
     emc_iteration()

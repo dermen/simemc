@@ -740,6 +740,7 @@ class EMC:
                 self.LOGGER.debug("Updated density (i_emc=%d)" % self.i_emc)
                 if COMM.rank==0:
                     self.apply_density_rules()
+                COMM.barrier()
                 self.L.bcast_densities(COMM)
             else:
                 raise NotImplementedError("Unknown method %s" % self.density_update_method)
@@ -810,13 +811,15 @@ class EMC:
             return
         make_dir(self.outdir)
         all_scales = COMM.gather(self.shot_scales)
+        all_names = COMM.gather(self.shot_names)
         all_scale_changed = None
         if self.scale_changed is not None:
             all_scale_changed = COMM.gather(self.scale_changed)
         if COMM.rank==0:
             density_file = os.path.join(self.outdir, "Witer%d.h5" % (self.i_emc+1))
             all_scales = np.hstack(all_scales)
-            np.save(os.path.join(self.outdir,"Scales%d" % (self.i_emc+1)), all_scales)
+            all_names = np.hstack(all_names)
+            np.savez(os.path.join(self.outdir,"Scales%d" % (self.i_emc+1)), scales=all_scales, names=all_names)
             if all_scale_changed is not None:
                 all_scale_changed = np.hstack(all_scale_changed)
                 np.save(os.path.join(self.outdir, "ScalesChanged%d" % (self.i_emc+1)), all_scale_changed)

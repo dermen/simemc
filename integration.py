@@ -69,7 +69,7 @@ def integrate_W(W, max_q, ucell_p, symbol, method='sum', kernel_iters=2, conn=2,
     :return: flex.miller_index object
     """
 
-    if method not in ['sum', 'fit']:
+    if method not in ['sum', 'fit', 'max']:
         raise NotImplementedError("no integration method=%s" %method)
     dens_dim = W.shape[0]
 
@@ -141,8 +141,11 @@ def integrate_W(W, max_q, ucell_p, symbol, method='sum', kernel_iters=2, conn=2,
                     integrated_val = 0
                     nfit_fail += 1
 
-            else: # method=="sum":
+            elif method=="sum":
                 integrated_val = peakRegion[kernel].sum()
+            elif method=="max":
+                integrated_val = peakRegion[kernel].max()
+
 
             data.append(integrated_val)
             hkls.append((int(h), int(k), int(l)))

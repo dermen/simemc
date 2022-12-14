@@ -16,19 +16,29 @@ if COMM.rank == 0:
     parser.add_argument("--odd", action="store_true", help="read in data from odd line numbers in args.input file")
     parser.add_argument("--allrefls", action="store_true", help="use all reflection to determine probable orientations. DEfault is to just use those refls out to max_q")
     # TODO change to dens_dim and max_q arguments!
-    parser.add_argument("--highres", action="store_true", help="use the high resolution setting (max_q=0.5, dens_dim=512). Otherwise use low-res (max_q=0.25, dens_dim=256)")
     parser.add_argument("--hcut", default=0.02, type=float, help="distance from prediction to observed spot, used in determining probably orientaitons")
     parser.add_argument("--medFilt", type=int, default=8)
     parser.add_argument('--minPred', default=4, type=int, help="minimum number of spots that must be within hcut of a prediction in order for an orientation to be deemed probable")
     parser.add_argument("--restartfile", help="density file output by a previous run, e.g. Witer10.h5", default=None, type=str)
     parser.add_argument("--maxProc", default=None, type=int, help="only read this many shots from args.input file")
     parser.add_argument("--useCrystals", action="store_true", help="if experiments in args.expt contain crystal models, use those as probable orientations")
+    parser.add_argument("--minProbRot", type=int, help="minumum number of probable orientations per shot", default=0)
     parser.add_argument("--saveBg", action="store_true", help="write background images to disk( will be used upon restart)")
     parser.add_argument("--useSavedBg", action="store_true")
     parser.add_argument("--noSym", action="store_true")
     parser.add_argument("--maxIter", type=int, default=60)
-    parser.add_argument("--subsampleRots", default=None, type=float, nargs=2, help="2 numbers, first specifying size, second specifying angular resultion, for subsampling. E.g. 0.2 0.05 will subsample the probable rotations according to degree offsets from [-0.2 -0.15 -0.1 -0.5 0.5 1 1.5 2]")
+    parser.add_argument("--subsampleRots", default=None, type=float, nargs=2, help="2 numbers, first specifying size, second specifying angular resultion, for subsampling. E.g. 0.2 0.05 will subsample the probable rotations according to degree offsets from [-0.2 -0.15 -0.1 -0.5 0.5 1 1.5 2]",
+                        metavar=("angularSpread","deltaAng"))
+    parser.add_argument("--initDensity", type=str, default=None, choices=["fromMTZ", "fromRestart", "fromIndexed"])
+    parser.add_argument("--mtz", type=str, nargs=2, default=None, metavar=("mtzFileName", "mtzCol"))
+    parser.add_argument("--scaleFile", type=str, default=None, help="A Scales_iter%d.npz file from a previous emc job")
+    parser.add_argument("--lowResLimit", type=float, default=None)
+    parser.add_argument("--densDim", type=int, default=256)
+    parser.add_argument("--highResLimit", type=float, default=4)
+    parser.add_argument("--maxQ", type=float, default=4, help="specifies the size of the voxel grid")
     args = parser.parse_args()
+    if args.initDensity=="fromMTZ":
+        assert args.mtz is not None
 else:
     args = None
 
@@ -60,13 +70,8 @@ from simemc.emc import lerpy
 ndevice = args.ndev
 TEST_UCELLS = False
 
-if args.highres:
-    dens_dim = 751
-    max_q = 0.5
-else:
-    dens_dim=351
-    max_q=0.25
-
+dens_dim = args.densDim
+max_q = args.maxQ
 
 mf_filter_sh= args.medFilt, args.medFilt
 
@@ -114,14 +119,13 @@ for i_img in range(len(this_ranks_imgs)):
     this_ranks_imgs[i_img] *= correction
 
 DEV_COMM = mpi_utils.get_host_dev_comm(DEV_ID)
-print("Got device communicator")
 if DEV_COMM.rank==0:
     rots, wts = utils.load_quat_file(args.quat)
 else:
     rots = np.empty([])
     # wts = np.empty([])
 
-mpi_utils.printRf("loaded rot mats")
+print0("loaded rot mats")
 
 if args.useCrystals:#  and np.any([C is not None for C in this_ranks_crystals]):
     extra_rots = [np.reshape(C.get_U(), (3,3)) if C is not None else None for C in this_ranks_crystals]
@@ -201,7 +205,7 @@ if COMM.rank==0:
 this_ranks_prob_rot = utils.get_prob_rot(DEV_ID, this_ranks_refls, rots,
         Bmat_reference=Brecip, hcut=args.hcut, min_pred=args.minPred,
         verbose=COMM.rank==0, detector=DET,beam=BEAM, hcut_incr=0.0025,
-        device_comm=DEV_COMM)
+        device_comm=DEV_COMM, minimum_prob_rot=args.minProbRot)
 
 if args.subsampleRots is not None:
     # generate all rotational perturbations within the grid defined by subsampleRots
@@ -282,61 +286,62 @@ if args.subsampleRots is not None:
         assert np.max(rot_inds) < total_umats
 
 
-# for all of the loaded experiments with crystals, lets add the ground truth rotation matrix
-# to the list of probable rotation indices....
-nmissing_gt = 0
-nwith_gt = 0
-comps = {}
-for ii,(gt, inds) in enumerate(zip(this_ranks_gt_inds, this_ranks_prob_rot)):
-    if gt is not None:
-        nwith_gt += 1
-        if gt not in set(inds):
-            #rot_gt = rots[gt]
-            #_CRYSTAL_DICT = {
-            #    '__id__': 'crystal',
-            #    'real_space_a': (ave_ucell[0], 0.0, 0.0),
-            #    'real_space_b': (0.0, ave_ucell[1], 0.0),
-            #    'real_space_c': (0.0, 0.0, ave_ucell[2]),
-            #    'space_group_hall_symbol': '-P 4 2'}
-            #C = CrystalFactory.from_dict(_CRYSTAL_DICT)
-            #Cg = deepcopy(C)
-            #Cg.set_U(tuple(rots[gt].T.ravel()))
-            #Cinds = []
-            #for Ui in inds:
-            #    Ci = deepcopy(C)
-            #    Ci.set_U(tuple(rots[Ui].T.ravel()))
-            #    Cinds.append(Ci)
-            #comps[gt] = (Cg, Cinds)
-            ##comp_oir = db_utils.compare_with_ground_truth(*Cg.get_real_space_vectors(), Cinds, "P43212")
-            this_ranks_prob_rot[ii] = np.append(this_ranks_prob_rot[ii], gt)
-            nmissing_gt += 1
+if args.useCrystals:
+    # for all of the loaded experiments with crystals, lets add the ground truth rotation matrix
+    # to the list of probable rotation indices....
+    nmissing_gt = 0
+    nwith_gt = 0
+    comps = {}
+    for ii,(gt, inds) in enumerate(zip(this_ranks_gt_inds, this_ranks_prob_rot)):
+        if gt is not None:
+            nwith_gt += 1
+            if gt not in set(inds):
+                #rot_gt = rots[gt]
+                #_CRYSTAL_DICT = {
+                #    '__id__': 'crystal',
+                #    'real_space_a': (ave_ucell[0], 0.0, 0.0),
+                #    'real_space_b': (0.0, ave_ucell[1], 0.0),
+                #    'real_space_c': (0.0, 0.0, ave_ucell[2]),
+                #    'space_group_hall_symbol': '-P 4 2'}
+                #C = CrystalFactory.from_dict(_CRYSTAL_DICT)
+                #Cg = deepcopy(C)
+                #Cg.set_U(tuple(rots[gt].T.ravel()))
+                #Cinds = []
+                #for Ui in inds:
+                #    Ci = deepcopy(C)
+                #    Ci.set_U(tuple(rots[Ui].T.ravel()))
+                #    Cinds.append(Ci)
+                #comps[gt] = (Cg, Cinds)
+                ##comp_oir = db_utils.compare_with_ground_truth(*Cg.get_real_space_vectors(), Cinds, "P43212")
+                this_ranks_prob_rot[ii] = np.append(this_ranks_prob_rot[ii], gt)
+                nmissing_gt += 1
 
-#outs = []
-#for i in comps:
-#    outs_i = []
-#    Cg, Cinds = comps[i]
-#    for Ci in Cinds:
-#        try:
-#          out = db_utils.compare_with_ground_truth(*Cg.get_real_space_vectors(), [Ci], "P43212")
-#          outs_i.append(out[0])
-#        except:
-#          pass
-#    if outs_i:
-#        outs.append( min(outs_i))
+    #outs = []
+    #for i in comps:
+    #    outs_i = []
+    #    Cg, Cinds = comps[i]
+    #    for Ci in Cinds:
+    #        try:
+    #          out = db_utils.compare_with_ground_truth(*Cg.get_real_space_vectors(), [Ci], "P43212")
+    #          outs_i.append(out[0])
+    #        except:
+    #          pass
+    #    if outs_i:
+    #        outs.append( min(outs_i))
 
-nwith_gt = COMM.reduce(nwith_gt)
-nmissing_gt = COMM.reduce(nmissing_gt)
-if COMM.rank==0:
-    print0("Out of %d experiments with provided crystals, %d did not determine the gt rot ind as probable" %(nwith_gt, nmissing_gt))
+    nwith_gt = COMM.reduce(nwith_gt)
+    nmissing_gt = COMM.reduce(nmissing_gt)
+    if COMM.rank==0:
+        print0("Out of %d experiments with provided crystals, %d did not determine the gt rot ind as probable" %(nwith_gt, nmissing_gt))
 
-# sanity test on gt rot inds (just use dev comm root, as thats the only ranks with finite rots ndarrays
-if DEV_COMM.rank==0:
-    for gt, C in zip(this_ranks_gt_inds, this_ranks_crystals):
-        if C is None:
-            continue
-        Umat = rots[gt]
-        Umat2 = np.reshape(C.get_U(), (3,3))
-        assert np.allclose(Umat, Umat2)
+    # sanity test on gt rot inds (just use dev comm root, as thats the only ranks with finite rots ndarrays
+    if DEV_COMM.rank==0:
+        for gt, C in zip(this_ranks_gt_inds, this_ranks_crystals):
+            if C is None:
+                continue
+            Umat = rots[gt]
+            Umat2 = np.reshape(C.get_U(), (3,3))
+            assert np.allclose(Umat, Umat2)
 
 
 has_no_rots = [len(prob_rots)==0 for prob_rots in this_ranks_prob_rot]
@@ -429,8 +434,13 @@ peak_mask=None
 if COMM.rank==0:
     peak_mask = utils.whole_punch_W(dens_dim, max_q, width=args.wholePunch, ucell_p=ave_ucell, symbol=symbol)
     vox_res = utils.voxel_resolution(dens_dim, max_q)
-    highRes_limit = 1. / L.max_q
-    vox_inbounds = vox_res >= highRes_limit
+    highResLimit = 1. / L.max_q
+    if args.highResLimit is not None:
+        highResLimit = args.highResLimit
+    vox_inbounds = vox_res >= highResLimit
+    if args.lowResLimit is not None:
+        assert args.lowResLimit > highResLimit
+        vox_inbounds = np.logical_and(vox_inbounds, vox_res <= args.lowResLimit)
     print0("applying resolution cutoff to relp mask")
     peak_mask = np.logical_and(peak_mask, vox_inbounds)
 peak_mask = mpi_utils.bcast_large(peak_mask, verbose=True, comm=COMM)
@@ -454,11 +464,16 @@ print0("getting W init")
 
 Wstart = None
 
-if args.restartfile is not None:
+if args.initDensity=="fromRestart":
     if COMM.rank==0:
         Wstart = h5py.File(args.restartfile, 'r')["Wprime"][()]
 
-elif args.useCrystals:
+elif args.initDensity=="fromMTZ":
+    if COMM.rank==0:
+        print("using mtz file to generate a starting density")
+        Wstart = utils.init_from_mtz(args.mtz[0], dens_dim, max_q, ave_ucell, symbol, mtzlabel=args.mtz[1])
+
+elif args.initDensity=="fromIndexed":
     # TODO: is it better to start the density as 3D gaussians ?
     for ii, (gt_rot_idx, img, bg) in enumerate(zip(this_ranks_gt_inds, this_ranks_imgs, this_ranks_bgs)):
         if gt_rot_idx is None:
@@ -506,6 +521,20 @@ L.mpi_set_starting_densities(Wstart, COMM)
 
 init_shot_scales = np.ones(len(this_ranks_imgs))
 
+if args.scaleFile is not None:
+    scale_data = np.load(args.scaleFile)
+    scales = scale_data["scales"]
+    names = scale_data["names"]
+    scale_map = {name:s for name, s in zip(names, scales)}
+    missing_names = []
+    for name in this_ranks_names:
+        if name not in scale_map:
+            missing_names.append(name)
+    if missing_names:
+        raise ValueError("In shot %s, scale factors are missing for the following experiments:\n%s"
+                        % (args.scaleFile, ", ".join(missing_names)))
+    init_shot_scales = np.array([scale_map[name] for name in this_ranks_names])
+
 # mask pixels that are outside the shell
 # TODO: mask pixels not in bounds
 inbounds = utils.qs_inbounds(qcoords, L.dens_sh , L.xmin, L.xmax)
@@ -519,7 +548,7 @@ emc = mpi_utils.EMC(L, this_ranks_imgs, this_ranks_prob_rot,
                     peak_mask=peak_mask,
                     shot_mask=SHOT_MASK,
                     shot_background=this_ranks_bgs,
-                    min_p=1e-5,
+                    min_p=0,
                     outdir=args.outdir,
                     beta=1,
                     shot_scales=init_shot_scales,
