@@ -929,9 +929,9 @@ def qs_inbounds(qcoords, dens_sh, x_min, x_max):
 def dials_find_spots(data_img, params, trusted_flags=None):
     """
 
-    :param data_img: numpy array image
-    :param params: instance of stills_process params.spotfinder
-    :param trusted_flags:
+    :param data_img: 2-D numpy array image, or sub-image (region of interest, e.g. a shoebox)
+    :param params: instance of stills_process params.spotfinder, see method stills_process_params_from_file
+    :param trusted_flags: boolean array, same shape as data_img, True=good pixel, False is bad pixels
     :return:
     """
     if trusted_flags is None:
