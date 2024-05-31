@@ -31,7 +31,8 @@ def get_famp():
     #PDB = "5k2d.pdb"  # for C2221
     # to retrieve the PDB, run `iotbx.fetch_pdb 4bs7` from cmdline
     if not os.path.exists(PDB):
-        raise OSError("Download 4bs7.pdb using `iotbx.fecth_pdb 4bs7`")
+        os.system("iotbx.fetch_pdb 4bs7")
+        #raise OSError("Download 4bs7.pdb using `iotbx.fecth_pdb 4bs7`")
     Famp = db_utils.get_complex_fcalc_from_pdb(PDB, dmin=SC.DMIN, dmax=SC.DMAX)
     Famp = Famp.as_amplitude_array()
     return Famp

@@ -1,9 +1,9 @@
 #!/bin/bash
 curdir=$PWD
-export CCTBXROOT=$HOME/xtal_gpu3
+export CCTBXROOT=$PWD/../../
 cd $CCTBXROOT
 git clone https://gitlab.com/kirianlab/reborn.git
-ln -s $PWD/reborn/reborn modules/.
+ln -sv $PWD/reborn/reborn modules/.
 cd $curdir
 libtbx.python -c "from reborn.misc import interpolate"
 
