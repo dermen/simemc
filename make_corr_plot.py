@@ -44,7 +44,7 @@ CC = pearsonr
 for wname in args.W:
     try:
         W = h5py.File(wname, "r")['Wprime'][()]
-        ucell_p = tuple(h5py.File(wname, 'r')['ucell'][()])
+        ucell_p = 79.1,79.1,38.4,90,90,90
         if args.symbol is not None:
             print("symmetrize")
             W = utils.symmetrize(W, dens_dim, max_q, args.symbol, uc=ucell_p)
@@ -63,27 +63,27 @@ for wname in args.W:
         gt_vals = np.array([Fmap[h] for h in hcommon])
     else:
         assert set(dataMap.keys()).intersection(Fmap.keys()) == hcommon
+    print(len(hcommon), "HCOMM")
     vals = array([dataMap[h] for h in hcommon])
     dspace = array([dspace_map[h] for h in hcommon])
-    nbin = 10
-    dspace_sort = np.sort(dspace)
-    res_bins = [drng[0] for drng in np.array_split(dspace_sort, nbin)] + [dspace.max()]
-    res_bin_id = np.digitize(dspace, res_bins)
-    corr_at_res = []
-    res_bin_centers = (res_bins[1:] + res_bins[:-1])*0.5
-    for bin_id in range(1,nbin):
-        is_in_bin = res_bin_id==bin_id
-        vals_in_bin = vals[is_in_bin]
-        gt_vals_in_bin = gt_vals[is_in_bin]
-        try:
-            corr_at_res.append(CC(vals_in_bin, gt_vals_in_bin)[0])
-        except ValueError:
-            corr_at_res.append(0)
+    #nbin = 10
+    #dspace_sort = np.sort(dspace)
+    #res_bins = [drng[0] for drng in np.array_split(dspace_sort, nbin)] + [dspace.max()]
+    #res_bin_id = np.digitize(dspace, res_bins)
+    #corr_at_res = []
+    #res_bin_centers = (res_bins[1:] + res_bins[:-1])*0.5
+    #for bin_id in range(1,nbin):
+    #    is_in_bin = res_bin_id==bin_id
+    #    vals_in_bin = vals[is_in_bin]
+    #    gt_vals_in_bin = gt_vals[is_in_bin]
+    #    try:
+    #        corr_at_res.append(CC(vals_in_bin, gt_vals_in_bin)[0])
+    #    except ValueError:
+    #        corr_at_res.append(0)
 
     c = CC(vals, gt_vals)[0]
     print(wname, c)
     plot(gt_vals, vals,'.', label=wname + " --- CC=%.4f" % c)
-
 
 #np.savez("corr_vals", gt=gt_vals, emc=vals, mtz=mtz_vals)
 if Fmtz_map is not None:
@@ -98,8 +98,10 @@ gca().set_yscale('log')
 gca().tick_params(labelsize=12)
 subplots_adjust(left=.15, bottom=.15,right=.95, top=.91)
 
-figure()
-plot( res_bin_centers, corr_at_res, 's')
+show()
+exit()
+#figure()
+#plot( res_bin_centers, corr_at_res, 's')
 
 
 show()

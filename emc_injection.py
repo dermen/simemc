@@ -277,7 +277,7 @@ class _():
     def normalize_density(self):
         new_dens = utils.errdiv(self.densities(), self.wts())
         new_dens = self.check_arrays(new_dens)
-        self._update_density(new_dens)
+        self._update_density(new_dens, False)
 
     def copy_image_data(self, pixels, mask=None, bg=None):
         """

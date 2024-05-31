@@ -17,6 +17,7 @@ namespace np=boost::python::numpy;
 
 
 // TODO: lerpy should be initialized with dens_dim and max_q args
+
 class lerpyExt{
     public:
     virtual ~lerpyExt(){}
@@ -27,441 +28,503 @@ class lerpyExt{
     int size_of_cudareal = sizeof(CUDAREAL);
 
 
-    inline void contig_check(np::ndarray& vals){
-       if (!(vals.get_flags() & np::ndarray::C_CONTIGUOUS)){
-           PyErr_SetString(PyExc_TypeError, "Array must be C-contig and of type CUDAREAL\n" );
-           bp::throw_error_already_set();
-       }
-    }
+    void contig_check(np::ndarray& vals);
 
+    void type_check(np::ndarray& vals);
 
-    inline void type_check(np::ndarray& vals){
-        contig_check(vals);
+    size_t _get_gpu_mem();
 
-        np::dtype vals_t = vals.get_dtype();
-        int vals_size = vals_t.get_itemsize();
-        bool types_agree= (size_of_cudareal != vals_size);
+    void copy_sym_info(np::ndarray& rot_mats);
 
-        if (! types_agree){
-            if (size_of_cudareal==4)
-                PyErr_SetString(PyExc_TypeError, "Array must of type CUDAREAL=float (np.float32)\n" );
-            else if (size_of_cudareal==8)
-                PyErr_SetString(PyExc_TypeError, "Array must of type CUDAREAL=double, (np.float64)\n" );
-            else{
-                printf("sizeof(CUDAREAL) = %d\n", size_of_cudareal);
-                PyErr_SetString(PyExc_TypeError, "Array must of type CUDAREAL\n" );
-            }
-            bp::throw_error_already_set();
-        }
-    }
+    void symmetrize(np::ndarray& q_vecs);
 
-    inline size_t _get_gpu_mem(){
-        return get_gpu_mem();
-    }
-
-    inline int get_dev_id(){
-        return gpu.device;
-    }
-
-    inline void set_dev_id(int val){
-        gpu.device=val;
-        set_device(gpu);
-    }
-
-    inline void copy_sym_info(np::ndarray& rot_mats){
-        sym_ops_to_dev(gpu, rot_mats);
-        has_sym_ops = true;
-    }
-
-    inline void symmetrize(np::ndarray& q_vecs){
-        symmetrize_density(gpu, q_vecs);
-    }
-
-    inline void alloc(int device_id, np::ndarray& rotations, int maxNumQ,
+    void alloc(int device_id, np::ndarray& rotations, int maxNumQ,
                       bp::tuple corner, bp::tuple delta, np::ndarray& qvecs, int maxNumRotInds,
-                      int numDataPix, bool use_IPC){
-        int num_rot=rotations.shape(0)/9;
-        gpu.device = device_id;
-        gpu.numDataPixels = numDataPix;
-        gpu.maxNumQ = maxNumQ;
-        gpu.maxNumRotInds = maxNumRotInds;
-        gpu.corner[0] = bp::extract<CUDAREAL>(corner[0]);
-        gpu.corner[1] = bp::extract<CUDAREAL>(corner[1]);
-        gpu.corner[2] = bp::extract<CUDAREAL>(corner[2]);
+                      int numDataPix, bool use_IPC);
 
-        gpu.delta[0] = bp::extract<CUDAREAL>(delta[0]);
-        gpu.delta[1] = bp::extract<CUDAREAL>(delta[1]);
-        gpu.delta[2] = bp::extract<CUDAREAL>(delta[2]);
-        prepare_for_lerping( gpu, rotations, qvecs, use_IPC);
-    }
+    int get_max_num_rots();
 
-    inline int get_max_num_rots(){
-        return gpu.maxNumRotInds;
-    }
+    bool get_dev_is_allocated();
 
-    inline bool get_dev_is_allocated(){
-        return gpu.is_allocated;
-    }
+    void copy_image_data( np::ndarray& pixels, np::ndarray& mask, np::ndarray& bg);
 
-    inline void copy_image_data( np::ndarray& pixels, np::ndarray& mask, np::ndarray& bg){
-        // assert len pixels matches up
-        if (pixels.shape(0) != gpu.numQ){
-            PyErr_SetString(PyExc_TypeError, "Number of pixels passed does not agree with number of allocated pixels on device\n");
-            bp::throw_error_already_set();
-        }
-        else if (mask.shape(0) != gpu.numQ){
-            PyErr_SetString(PyExc_TypeError, "Number of mask flags passed does not agree with number of allocated pixels on device\n");
-            bp::throw_error_already_set();
-        }
-        else if (bg.shape(0) != gpu.numQ){
-            PyErr_SetString(PyExc_TypeError, "Number of background pixels passed does not agree with number of allocated pixels on device\n");
-            bp::throw_error_already_set();
-        }
-        else{
-            copy_image_data_to_device(gpu,pixels,mask,bg);
-        }
-    }
+    void copy_relp_mask( np::ndarray& relp_mask);
 
-    inline void copy_relp_mask( np::ndarray& relp_mask){
-        relp_mask_to_device(gpu, relp_mask);
-    }
+    void update_density( np::ndarray& new_dens, bool dens_is_reparam);
 
-    /* sets densities on the GPUdevice . if dens_is_reparam
-       then its assumed the densities are coming from the L-BFGS refiner
-       and a transformation x ->sqrt(x*x+1)-1 is applied to the densities
-       in place on the GPU , after copying . See emc_updaters.DensityUpdater
-    */
-    inline void update_density( np::ndarray& new_dens, bool dens_is_reparam=false){
-        // assert len pixels matches up
-        if (new_dens.shape(0) != gpu.numDens){
-            PyErr_SetString(PyExc_TypeError, "Number of densities passed does not agree with number of allocated densities on device\n");
-            bp::throw_error_already_set();
-        }
-        densities_to_device(gpu,new_dens);
-        if (dens_is_reparam)
-            convert_reparameterized_densities(gpu); // an in place method to convert the densities back to normal units
-    }
+    np::ndarray trilinear_interpolation(int rot_idx, bool verbose);
 
-    inline np::ndarray trilinear_interpolation(int rot_idx, bool verbose){
-        if (rot_idx < 0 || rot_idx >= gpu.numRot) {
-            PyErr_SetString(PyExc_TypeError,
-                            "Rot index is out of bounds, check size of allocated rotMats\n");
-            bp::throw_error_already_set();
-        }
-        std::vector<int> rot_inds;
-        rot_inds.push_back(rot_idx);
+    void trilinear_insertion(int rot_idx, bool verbose, CUDAREAL tomo_wt);
 
-        // 0 specifies only do interpolation
-        do_a_lerp(gpu, rot_inds, verbose, 0);
+    void check_densities_are_set();
 
-        bp::tuple shape = bp::make_tuple(gpu.maxNumQ);
-        bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
-        np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
-        np::ndarray output = np::from_data(&gpu.out[0], dt, shape, stride, bp::object());
-        return output.copy();
-    }
-    
-    inline void trilinear_insertion(int rot_idx, bool verbose, CUDAREAL tomo_wt){
-        if (rot_idx < 0 || rot_idx >= gpu.numRot) {
-            PyErr_SetString(PyExc_TypeError,
-                            "Rot index is out of bounds, check size of allocated rotMats\n");
-            bp::throw_error_already_set();
-        }
-        std::vector<int> rot_inds;
-        rot_inds.push_back(rot_idx);
-           
-        // 2 specifies to do a trilinear insertion
-        gpu.tomogram_wt = tomo_wt;
-        do_a_lerp(gpu, rot_inds, verbose, 2);
+    MPI_Comm mpi_comm_from_py_obj(bp::object py_comm);
 
-    }
+    bool _is_in_sparse_mode();
 
-    inline void check_densities_are_set(){
-        if (gpu.densities==NULL){
-            PyErr_SetString(PyExc_TypeError,
-                            "densities has not been allocated\n");
-            bp::throw_error_already_set();
-        }
-    }
+    void mpi_set_starting_density(np::ndarray & dens_start, bp::object py_comm);
 
-    inline MPI_Comm mpi_comm_from_py_obj(bp::object py_comm){
-        PyObject* py_obj = py_comm.ptr();
-        MPI_Comm comm = *PyMPIComm_Get(py_obj);
-        return comm;
-    }
+    void _update_masked_density(np::ndarray& new_vals);
 
-    bool inline _is_in_sparse_mode(){
-        return gpu.sparse_lookup != NULL;
-    }
+    void _bcast_density(bp::object py_comm);
 
-    inline void mpi_set_starting_density(np::ndarray & dens_start, bp::object py_comm){
-        MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
-        int rank;
-        MPI_Comm_rank(comm, &rank);
-        if (rank==0){
-            CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(dens_start.get_data());
-            to_dev_memcpy(gpu.densities, dens_ptr, gpu.numDens);
-        }
-        _bcast_in_chunks<CUDAREAL>(comm, gpu.densities, gpu.numDens, MPI_CUDAREAL);
-    }
+    void _bcast_weights(bp::object py_comm);
 
-    inline void _update_masked_density(np::ndarray& new_vals){
-    //  TODO assert is_peak_in_density is set, and densities is allocated
-        check_densities_are_set();
-        update_masked_density_gpu(gpu, new_vals);
-    }
+    void _bcast_density_grad(bp::object py_comm);
 
-    inline void _bcast_density(bp::object py_comm){
-        MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
-        _bcast_in_chunks<CUDAREAL>(comm, gpu.densities, gpu.numDens, MPI_CUDAREAL);
-    }
+    void _bcast_relp_mask(bp::object py_comm);
 
-    inline void _bcast_weights(bp::object py_comm){
-        MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
-        _bcast_in_chunks<CUDAREAL>(comm, gpu.wts, gpu.numDens, MPI_CUDAREAL);
-    }
+    template <typename vec_t> void _bcast_in_chunks(MPI_Comm comm, vec_t *vec, int N, MPI_Datatype dt);
 
-    inline void _bcast_density_grad(bp::object py_comm){
-        MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
-        _bcast_in_chunks<CUDAREAL>(comm, gpu.densities_gradient, gpu.numDens, MPI_CUDAREAL);
-    }
+    void _set_sparse_lookup(np::ndarray& peak_mask);
+    void _reduce_densities(bp::object py_comm);
+    void _reduce_weights(bp::object py_comm);
 
-    inline void _bcast_relp_mask(bp::object py_comm){
-    //  TODO use IPC for is_peak_in_density
-        if (gpu.is_peak_in_density == NULL)
-            malloc_relp_mask(gpu);
-        MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
-        MPI_Bcast(&gpu.num_unmasked, 1, MPI_INT, 0, comm);
-        if (gpu.unmasked_inds==NULL)
-            malloc_unmasked_inds(gpu);
-        _bcast_in_chunks<bool>(comm, gpu.is_peak_in_density, gpu.numDens, MPI_C_BOOL);
-        _bcast_in_chunks<int>(comm, gpu.unmasked_inds, gpu.num_unmasked, MPI_INT);
-    }
+    void _reduce_density_derivs(bp::object py_comm);
 
-    template <typename vec_t> inline void _bcast_in_chunks(MPI_Comm comm, vec_t *vec, int N, MPI_Datatype dt){
-        int rank;
-        MPI_Comm_rank(comm, &rank);
-        int sz=16*1024*1024; // TODO: make variable chunk size
-        int start=0;
-        while (start < N){
-            int count = sz;
-            if (start + count >=N ){
-                count = N-start;
-            }
-            MPI_Bcast(&vec[start], count, dt, 0, comm);
-            start += count;
-        }
-    }
+    void _allreduce_density_derivs(bp::object py_comm);
 
-    inline void _set_sparse_lookup(np::ndarray& peak_mask){
-        set_sparse_lookup(gpu, peak_mask);
-    }
+    void _reduce_in_chunks(bp::object py_comm, CUDAREAL* vec, int N, bool all);
 
-    inline void _reduce_densities(bp::object py_comm){
-        check_densities_are_set();
-        _reduce_in_chunks(py_comm, gpu.densities, gpu.numDens);
-    }
+    np::ndarray get_sparse_lookup();
 
-    inline void _reduce_weights(bp::object py_comm){
-        // TODO verify gpu.wts is not NULL
-        _reduce_in_chunks(py_comm, gpu.wts, gpu.numDens);
-    }
-
-    inline void _reduce_density_derivs(bp::object py_comm){
-        // TODO verify gpu.densities_gradient is not NULL
-        _reduce_in_chunks(py_comm, gpu.densities_gradient, gpu.numDens);
-    }
-
-    inline void _allreduce_density_derivs(bp::object py_comm){
-        // TODO verify gpu.densities_gradient is not NULL
-        _reduce_in_chunks(py_comm, gpu.densities_gradient, gpu.numDens, true);
-    }
-
-
-    inline void _reduce_in_chunks(bp::object py_comm, CUDAREAL* vec, int N, bool all=false){
-
-        PyObject* py_obj = py_comm.ptr();
-        MPI_Comm *comm_p = PyMPIComm_Get(py_obj);
-        int rank;
-        int sz=16*1024*1024;
-        MPI_Comm_rank(*comm_p, &rank);
-        std::vector<CUDAREAL> temp;
-        if ( (!all && rank==0) || all)
-            temp.resize(N);
-        int start=0;
-        while (start < N){
-            int count = sz;
-            if (start + count >=N ){
-                count = N-start;
-            }
-            if(all)
-                MPI_Allreduce(&vec[start], temp.data()+start, count, MPI_CUDAREAL, MPI_SUM, *comm_p);
-            else
-                MPI_Reduce(&vec[start], temp.data()+start, count, MPI_CUDAREAL, MPI_SUM, 0, *comm_p);
-            start += count;
-        }
-        if ( (!all && rank==0) || all){
-            CUDAREAL* temp_ptr = &temp[0];
-            to_dev_memcpy(vec, temp_ptr, N );
-        }
-    }
-
-    inline  np::ndarray get_sparse_lookup(){
-        if (gpu.sparse_lookup==NULL){
-            PyErr_SetString(PyExc_TypeError,
-                            "sparse_lookup not been allocated\n");
-            bp::throw_error_already_set();
-        }
-        int N = gpu.densDim*gpu.densDim*gpu.densDim;
-        bp::tuple shape = bp::make_tuple(N);
-        bp::tuple stride = bp::make_tuple(sizeof(int));
-        np::dtype dt = np::dtype::get_builtin<int>();
-        np::ndarray output = np::zeros(shape,dt);
-        int* out_ptr = reinterpret_cast<int*>(output.get_data());
-        from_dev_memcpy_int(gpu.sparse_lookup, out_ptr, N);
-        return output;
-    }
-
-    inline  np::ndarray get_densities(){
-        check_densities_are_set();
-        if (gpu.densities==NULL){
-            PyErr_SetString(PyExc_TypeError,
-                            "densities has not been allocated\n");
-            bp::throw_error_already_set();
-        }
-        return dev_to_ndarray(gpu.densities, gpu.numDens);
-    }
-
-
+    np::ndarray get_densities();
     //
-    inline np::ndarray get_reparameterized_densities_gradient(np::ndarray& reparam_dens){
-        if (gpu.densities_gradient==NULL){
-            PyErr_SetString(PyExc_TypeError,
-                            "densities_gradient has not been allocated\n");
-            bp::throw_error_already_set();
-        }
-        check_densities_are_set();
-        // copy the reparameterized densities to device (see emc_updaters.DensityUpdater
-        densities_to_device(gpu,reparam_dens);
-        // update the density gradients in-place, using the reparameterized densities
-        reparameterize_density_gradients(gpu);
-        return dev_to_ndarray(gpu.densities_gradient, gpu.numDens);
-    }
+    np::ndarray get_reparameterized_densities_gradient(np::ndarray& reparam_dens);
 
-    inline  np::ndarray get_densities_gradient(){
-        if (gpu.densities_gradient==NULL){
-            PyErr_SetString(PyExc_TypeError,
-                            "densities_gradient has not been allocated\n");
-            bp::throw_error_already_set();
-        }
-        return dev_to_ndarray(gpu.densities_gradient, gpu.numDens);
-    }
+    np::ndarray get_densities_gradient();
 
-    inline np::ndarray get_wts(){
-        if (gpu.wts==NULL){
-            PyErr_SetString(PyExc_TypeError,
-                            "wts has not been allocated\n");
-            bp::throw_error_already_set();
-        }
-        return dev_to_ndarray(gpu.wts, gpu.numDens);
-    }
+    np::ndarray get_wts();
 
-    inline np::ndarray dev_to_ndarray(CUDAREAL* dev_ptr, int N){
-        //CUDAREAL* temp = new CUDAREAL[N];
-        //from_dev_memcpy(dev_ptr, temp, N);
-        bp::tuple shape = bp::make_tuple(N);
-        bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
-        np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
-        np::ndarray output = np::zeros(shape,dt);
-        CUDAREAL* out_ptr = reinterpret_cast<CUDAREAL*>(output.get_data());
-        //np::ndarray output = np::from_data(temp, dt, shape, stride, bp::object()).copy();
-        from_dev_memcpy(dev_ptr, out_ptr, N);
-        //delete temp;
-        return output;
-    }
+    np::ndarray dev_to_ndarray(CUDAREAL* dev_ptr, int N);
 
-    inline void do_equation_two(np::ndarray rot_idx, bool verbose, CUDAREAL shot_scale, const int deriv){
-        int nrot = rot_idx.shape(0);
-        std::vector<int> rot_inds;
-        for (int i_rot=0; i_rot < nrot; i_rot++)
-            rot_inds.push_back(  bp::extract<int>(rot_idx[i_rot])  );
-        gpu.shot_scale = shot_scale;
-        if (deriv==1 || deriv==2)
-            if (deriv==1) // scale factor derivative (task 3)
-                do_a_lerp(gpu, rot_inds, verbose, 3);
-            else // density derivative (task 4)
-                do_a_lerp(gpu, rot_inds, verbose, 4);
-        else
-            // run through EMC equation two (from the dragon fly paper) for the  specified rotation inds (task 1)
-            do_a_lerp(gpu, rot_inds, verbose, 1);
+    void do_equation_two(np::ndarray rot_idx, bool verbose, CUDAREAL shot_scale, const int deriv);
+    void _reset_dens_deriv();
 
-    }
+    void do_dens_deriv(np::ndarray rot_idx, np::ndarray Pdr_vals, bool verbose, CUDAREAL shot_scale, bool reset_derivs);
 
-    inline void _reset_dens_deriv(){
-        reset_dens_deriv(gpu);
-    }
+    void print_rotMat(int i_rot);
+    bp::list get_out();
+    void toggle_insert();
+    double get_rank();
+    void set_rank(int rank);
 
-    inline void do_dens_deriv(np::ndarray rot_idx, np::ndarray Pdr_vals, bool verbose, CUDAREAL shot_scale, bool reset_derivs){
-        bool temp = gpu.alwaysResetDeriv;
-        gpu.alwaysResetDeriv = reset_derivs;
-
-        int nrot = rot_idx.shape(0);
-        std::vector<int> rot_inds;
-
-        gpu.Pdr_host.clear();
-        for (int i_rot=0; i_rot < nrot; i_rot++) {
-            rot_inds.push_back(bp::extract<int>(rot_idx[i_rot]));
-            gpu.Pdr_host.push_back( bp::extract<CUDAREAL>(Pdr_vals[i_rot]) );
-        }
-        gpu.shot_scale = shot_scale;
-        do_a_lerp(gpu, rot_inds, verbose, 5);
-        gpu.alwaysResetDeriv = temp;
-    }
-
-    inline void print_rotMat(int i_rot){
-        MAT3 M = gpu.rotMats[i_rot];
-        printf("Rotation matrix %d=\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n",
-               M(0,0), M(0,1), M(0,2),
-               M(1,0), M(1,1), M(1,2),
-               M(2,0), M(2,1), M(2,2));
-    }
-    inline bp::list get_out(){
-        return gpu.outList;
-    }
-    inline void toggle_insert(){
-        toggle_insert_mode(gpu);
-    }
-
-    inline int get_densDim(){
-        return gpu.densDim;
-    }
-
-    inline void set_densDim(int densDim){
-        gpu.densDim = densDim;
-    }
-    
-    inline double get_maxQ(){
-        return gpu.maxQ;
-    }
-    
-    inline void set_maxQ(double maxQ){
-        gpu.maxQ = maxQ;
-    }
-
-    inline double get_rank(){
-        return gpu.mpi_rank;
-    }
-
-    inline void set_rank(int rank){
-        gpu.mpi_rank = rank;
-    }
-
-
-    inline void free(){
-        free_lerpy(gpu);
-    }
+    void free();
 };
 
+template <typename vec_t> void lerpyExt::_bcast_in_chunks(MPI_Comm comm, vec_t *vec, int N, MPI_Datatype dt){
+    int rank;
+    MPI_Comm_rank(comm, &rank);
+    int sz=16*1024*1024; // TODO: make variable chunk size
+    int start=0;
+    while (start < N){
+        int count = sz;
+        if (start + count >=N ){
+            count = N-start;
+        }
+        MPI_Bcast(&vec[start], count, dt, 0, comm);
+        start += count;
+    }
+}
+
+void lerpyExt::contig_check(np::ndarray& vals){
+   if (!(vals.get_flags() & np::ndarray::C_CONTIGUOUS)){
+       PyErr_SetString(PyExc_TypeError, "Array must be C-contig and of type CUDAREAL\n" );
+       bp::throw_error_already_set();
+   }
+}
+
+
+void lerpyExt::type_check(np::ndarray& vals){
+    contig_check(vals);
+
+    np::dtype vals_t = vals.get_dtype();
+    int vals_size = vals_t.get_itemsize();
+    bool types_agree= (size_of_cudareal != vals_size);
+
+    if (! types_agree){
+        if (size_of_cudareal==4)
+            PyErr_SetString(PyExc_TypeError, "Array must of type CUDAREAL=float (np.float32)\n" );
+        else if (size_of_cudareal==8)
+            PyErr_SetString(PyExc_TypeError, "Array must of type CUDAREAL=double, (np.float64)\n" );
+        else{
+            printf("sizeof(CUDAREAL) = %d\n", size_of_cudareal);
+            PyErr_SetString(PyExc_TypeError, "Array must of type CUDAREAL\n" );
+        }
+        bp::throw_error_already_set();
+    }
+}
+
+size_t lerpyExt::_get_gpu_mem(){
+    return get_gpu_mem();
+}
+
+void lerpyExt::copy_sym_info(np::ndarray& rot_mats){
+    sym_ops_to_dev(gpu, rot_mats);
+    has_sym_ops = true;
+}
+
+void lerpyExt::symmetrize(np::ndarray& q_vecs){
+    symmetrize_density(gpu, q_vecs);
+}
+
+void lerpyExt::alloc(int device_id, np::ndarray& rotations, int maxNumQ,
+                  bp::tuple corner, bp::tuple delta, np::ndarray& qvecs, int maxNumRotInds,
+                  int numDataPix, bool use_IPC){
+    int num_rot=rotations.shape(0)/9;
+    gpu.device = device_id;
+    gpu.numDataPixels = numDataPix;
+    gpu.maxNumQ = maxNumQ;
+    gpu.maxNumRotInds = maxNumRotInds;
+    gpu.corner[0] = bp::extract<CUDAREAL>(corner[0]);
+    gpu.corner[1] = bp::extract<CUDAREAL>(corner[1]);
+    gpu.corner[2] = bp::extract<CUDAREAL>(corner[2]);
+
+    gpu.delta[0] = bp::extract<CUDAREAL>(delta[0]);
+    gpu.delta[1] = bp::extract<CUDAREAL>(delta[1]);
+    gpu.delta[2] = bp::extract<CUDAREAL>(delta[2]);
+    prepare_for_lerping( gpu, rotations, qvecs, use_IPC);
+}
+
+int lerpyExt::get_max_num_rots(){
+    return gpu.maxNumRotInds;
+}
+
+bool lerpyExt::get_dev_is_allocated(){
+    return gpu.is_allocated;
+}
+
+void lerpyExt::copy_image_data( np::ndarray& pixels, np::ndarray& mask, np::ndarray& bg){
+    // assert len pixels matches up
+    if (pixels.shape(0) != gpu.numQ){
+        PyErr_SetString(PyExc_TypeError, "Number of pixels passed does not agree with number of allocated pixels on device\n");
+        bp::throw_error_already_set();
+    }
+    else if (mask.shape(0) != gpu.numQ){
+        PyErr_SetString(PyExc_TypeError, "Number of mask flags passed does not agree with number of allocated pixels on device\n");
+        bp::throw_error_already_set();
+    }
+    else if (bg.shape(0) != gpu.numQ){
+        PyErr_SetString(PyExc_TypeError, "Number of background pixels passed does not agree with number of allocated pixels on device\n");
+        bp::throw_error_already_set();
+    }
+    else{
+        copy_image_data_to_device(gpu,pixels,mask,bg);
+    }
+}
+
+void lerpyExt::copy_relp_mask( np::ndarray& relp_mask){
+    relp_mask_to_device(gpu, relp_mask);
+}
+
+/* sets densities on the GPUdevice . if dens_is_reparam
+   then its assumed the densities are coming from the L-BFGS refiner
+   and a transformation x ->sqrt(x*x+1)-1 is applied to the densities
+   in place on the GPU , after copying . See emc_updaters.DensityUpdater
+*/
+void lerpyExt::update_density( np::ndarray& new_dens, bool dens_is_reparam){
+    // assert len pixels matches up
+    if (new_dens.shape(0) != gpu.numDens){
+        PyErr_SetString(PyExc_TypeError, "Number of densities passed does not agree with number of allocated densities on device\n");
+        bp::throw_error_already_set();
+    }
+    densities_to_device(gpu,new_dens);
+    if (dens_is_reparam)
+        convert_reparameterized_densities(gpu); // an in place method to convert the densities back to normal units
+}
+
+np::ndarray lerpyExt::trilinear_interpolation(int rot_idx, bool verbose){
+    if (rot_idx < 0 || rot_idx >= gpu.numRot) {
+        PyErr_SetString(PyExc_TypeError,
+                        "Rot index is out of bounds, check size of allocated rotMats\n");
+        bp::throw_error_already_set();
+    }
+    std::vector<int> rot_inds;
+    rot_inds.push_back(rot_idx);
+
+    // 0 specifies only do interpolation
+    do_a_lerp(gpu, rot_inds, verbose, 0);
+
+    bp::tuple shape = bp::make_tuple(gpu.maxNumQ);
+    bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
+    np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
+    np::ndarray output = np::from_data(&gpu.out[0], dt, shape, stride, bp::object());
+    return output.copy();
+}
+
+void lerpyExt::trilinear_insertion(int rot_idx, bool verbose, CUDAREAL tomo_wt){
+    if (rot_idx < 0 || rot_idx >= gpu.numRot) {
+        PyErr_SetString(PyExc_TypeError,
+                        "Rot index is out of bounds, check size of allocated rotMats\n");
+        bp::throw_error_already_set();
+    }
+    std::vector<int> rot_inds;
+    rot_inds.push_back(rot_idx);
+
+    // 2 specifies to do a trilinear insertion
+    gpu.tomogram_wt = tomo_wt;
+    do_a_lerp(gpu, rot_inds, verbose, 2);
+
+}
+
+void lerpyExt::check_densities_are_set(){
+    if (gpu.densities==NULL){
+        PyErr_SetString(PyExc_TypeError,
+                        "densities has not been allocated\n");
+        bp::throw_error_already_set();
+    }
+}
+
+MPI_Comm lerpyExt::mpi_comm_from_py_obj(bp::object py_comm){
+    PyObject* py_obj = py_comm.ptr();
+    MPI_Comm comm = *PyMPIComm_Get(py_obj);
+    return comm;
+}
+
+bool lerpyExt::_is_in_sparse_mode(){
+    return gpu.sparse_lookup != NULL;
+}
+
+void lerpyExt::mpi_set_starting_density(np::ndarray & dens_start, bp::object py_comm){
+    MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
+    int rank;
+    MPI_Comm_rank(comm, &rank);
+    if (rank==0){
+        CUDAREAL* dens_ptr = reinterpret_cast<CUDAREAL*>(dens_start.get_data());
+        to_dev_memcpy(gpu.densities, dens_ptr, gpu.numDens);
+    }
+    _bcast_in_chunks<CUDAREAL>(comm, gpu.densities, gpu.numDens, MPI_CUDAREAL);
+}
+
+void lerpyExt::_update_masked_density(np::ndarray& new_vals){
+//  TODO assert is_peak_in_density is set, and densities is allocated
+    check_densities_are_set();
+    update_masked_density_gpu(gpu, new_vals);
+}
+
+void lerpyExt::_bcast_density(bp::object py_comm){
+    MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
+    _bcast_in_chunks<CUDAREAL>(comm, gpu.densities, gpu.numDens, MPI_CUDAREAL);
+}
+
+void lerpyExt::_bcast_weights(bp::object py_comm){
+    MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
+    _bcast_in_chunks<CUDAREAL>(comm, gpu.wts, gpu.numDens, MPI_CUDAREAL);
+}
+
+void lerpyExt::_bcast_density_grad(bp::object py_comm){
+    MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
+    _bcast_in_chunks<CUDAREAL>(comm, gpu.densities_gradient, gpu.numDens, MPI_CUDAREAL);
+}
+
+void lerpyExt::_bcast_relp_mask(bp::object py_comm){
+//  TODO use IPC for is_peak_in_density
+    if (gpu.is_peak_in_density == NULL)
+        malloc_relp_mask(gpu);
+    MPI_Comm comm = mpi_comm_from_py_obj(py_comm);
+    MPI_Bcast(&gpu.num_unmasked, 1, MPI_INT, 0, comm);
+    if (gpu.unmasked_inds==NULL)
+        malloc_unmasked_inds(gpu);
+    _bcast_in_chunks<bool>(comm, gpu.is_peak_in_density, gpu.numDens, MPI_C_BOOL);
+    _bcast_in_chunks<int>(comm, gpu.unmasked_inds, gpu.num_unmasked, MPI_INT);
+}
+
+void lerpyExt::_set_sparse_lookup(np::ndarray& peak_mask){
+    set_sparse_lookup(gpu, peak_mask);
+}
+
+void lerpyExt::_reduce_densities(bp::object py_comm){
+    check_densities_are_set();
+    _reduce_in_chunks(py_comm, gpu.densities, gpu.numDens, false);
+}
+
+void lerpyExt::_reduce_weights(bp::object py_comm){
+    // TODO verify gpu.wts is not NULL
+    _reduce_in_chunks(py_comm, gpu.wts, gpu.numDens, false);
+}
+
+void lerpyExt::_reduce_density_derivs(bp::object py_comm){
+    // TODO verify gpu.densities_gradient is not NULL
+    _reduce_in_chunks(py_comm, gpu.densities_gradient, gpu.numDens, false);
+}
+
+void lerpyExt::_allreduce_density_derivs(bp::object py_comm){
+    // TODO verify gpu.densities_gradient is not NULL
+    _reduce_in_chunks(py_comm, gpu.densities_gradient, gpu.numDens, true);
+}
+
+
+void lerpyExt::_reduce_in_chunks(bp::object py_comm, CUDAREAL* vec, int N, bool all){
+
+    PyObject* py_obj = py_comm.ptr();
+    MPI_Comm *comm_p = PyMPIComm_Get(py_obj);
+    int rank;
+    int sz=16*1024*1024;
+    MPI_Comm_rank(*comm_p, &rank);
+    std::vector<CUDAREAL> temp;
+    if ( (!all && rank==0) || all)
+        temp.resize(N);
+    int start=0;
+    while (start < N){
+        int count = sz;
+        if (start + count >=N ){
+            count = N-start;
+        }
+        if(all)
+            MPI_Allreduce(&vec[start], temp.data()+start, count, MPI_CUDAREAL, MPI_SUM, *comm_p);
+        else
+            MPI_Reduce(&vec[start], temp.data()+start, count, MPI_CUDAREAL, MPI_SUM, 0, *comm_p);
+        start += count;
+    }
+    if ( (!all && rank==0) || all){
+        CUDAREAL* temp_ptr = &temp[0];
+        to_dev_memcpy(vec, temp_ptr, N );
+    }
+}
+
+np::ndarray lerpyExt::get_sparse_lookup(){
+    if (gpu.sparse_lookup==NULL){
+        PyErr_SetString(PyExc_TypeError,
+                        "sparse_lookup not been allocated\n");
+        bp::throw_error_already_set();
+    }
+    int N = gpu.densDim*gpu.densDim*gpu.densDim;
+    bp::tuple shape = bp::make_tuple(N);
+    bp::tuple stride = bp::make_tuple(sizeof(int));
+    np::dtype dt = np::dtype::get_builtin<int>();
+    np::ndarray output = np::zeros(shape,dt);
+    int* out_ptr = reinterpret_cast<int*>(output.get_data());
+    from_dev_memcpy_int(gpu.sparse_lookup, out_ptr, N);
+    return output;
+}
+
+np::ndarray lerpyExt::get_densities(){
+    check_densities_are_set();
+    if (gpu.densities==NULL){
+        PyErr_SetString(PyExc_TypeError,
+                        "densities has not been allocated\n");
+        bp::throw_error_already_set();
+    }
+    return dev_to_ndarray(gpu.densities, gpu.numDens);
+}
+
+
+//
+np::ndarray lerpyExt::get_reparameterized_densities_gradient(np::ndarray& reparam_dens){
+    if (gpu.densities_gradient==NULL){
+        PyErr_SetString(PyExc_TypeError,
+                        "densities_gradient has not been allocated\n");
+        bp::throw_error_already_set();
+    }
+    check_densities_are_set();
+    // copy the reparameterized densities to device (see emc_updaters.DensityUpdater
+    densities_to_device(gpu,reparam_dens);
+    // update the density gradients in-place, using the reparameterized densities
+    reparameterize_density_gradients(gpu);
+    return dev_to_ndarray(gpu.densities_gradient, gpu.numDens);
+}
+
+np::ndarray lerpyExt::get_densities_gradient(){
+    if (gpu.densities_gradient==NULL){
+        PyErr_SetString(PyExc_TypeError,
+                        "densities_gradient has not been allocated\n");
+        bp::throw_error_already_set();
+    }
+    return dev_to_ndarray(gpu.densities_gradient, gpu.numDens);
+}
+
+np::ndarray lerpyExt::get_wts(){
+    if (gpu.wts==NULL){
+        PyErr_SetString(PyExc_TypeError,
+                        "wts has not been allocated\n");
+        bp::throw_error_already_set();
+    }
+    return dev_to_ndarray(gpu.wts, gpu.numDens);
+}
+
+np::ndarray lerpyExt::dev_to_ndarray(CUDAREAL* dev_ptr, int N){
+    //CUDAREAL* temp = new CUDAREAL[N];
+    //from_dev_memcpy(dev_ptr, temp, N);
+    bp::tuple shape = bp::make_tuple(N);
+    bp::tuple stride = bp::make_tuple(sizeof(CUDAREAL));
+    np::dtype dt = np::dtype::get_builtin<CUDAREAL>();
+    np::ndarray output = np::zeros(shape,dt);
+    CUDAREAL* out_ptr = reinterpret_cast<CUDAREAL*>(output.get_data());
+    //np::ndarray output = np::from_data(temp, dt, shape, stride, bp::object()).copy();
+    from_dev_memcpy(dev_ptr, out_ptr, N);
+    //delete temp;
+    return output;
+}
+
+void lerpyExt::do_equation_two(np::ndarray rot_idx, bool verbose, CUDAREAL shot_scale, const int deriv){
+    int nrot = rot_idx.shape(0);
+    std::vector<int> rot_inds;
+    for (int i_rot=0; i_rot < nrot; i_rot++)
+        rot_inds.push_back(  bp::extract<int>(rot_idx[i_rot])  );
+    gpu.shot_scale = shot_scale;
+    if (deriv==1 || deriv==2)
+        if (deriv==1) // scale factor derivative (task 3)
+            do_a_lerp(gpu, rot_inds, verbose, 3);
+        else // density derivative (task 4)
+            do_a_lerp(gpu, rot_inds, verbose, 4);
+    else
+        // run through EMC equation two (from the dragon fly paper) for the  specified rotation inds (task 1)
+        do_a_lerp(gpu, rot_inds, verbose, 1);
+
+}
+
+void lerpyExt::_reset_dens_deriv(){
+    reset_dens_deriv(gpu);
+}
+
+void lerpyExt::do_dens_deriv(np::ndarray rot_idx, np::ndarray Pdr_vals, bool verbose, CUDAREAL shot_scale, bool reset_derivs){
+    bool temp = gpu.alwaysResetDeriv;
+    gpu.alwaysResetDeriv = reset_derivs;
+
+    int nrot = rot_idx.shape(0);
+    std::vector<int> rot_inds;
+
+    gpu.Pdr_host.clear();
+    for (int i_rot=0; i_rot < nrot; i_rot++) {
+        rot_inds.push_back(bp::extract<int>(rot_idx[i_rot]));
+        gpu.Pdr_host.push_back( bp::extract<CUDAREAL>(Pdr_vals[i_rot]) );
+    }
+    gpu.shot_scale = shot_scale;
+    do_a_lerp(gpu, rot_inds, verbose, 5);
+    gpu.alwaysResetDeriv = temp;
+}
+
+void lerpyExt::print_rotMat(int i_rot){
+    MAT3 M = gpu.rotMats[i_rot];
+    printf("Rotation matrix %d=\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n",
+           M(0,0), M(0,1), M(0,2),
+           M(1,0), M(1,1), M(1,2),
+           M(2,0), M(2,1), M(2,2));
+}
+bp::list lerpyExt::get_out(){
+    return gpu.outList;
+}
+
+void lerpyExt::toggle_insert(){
+    toggle_insert_mode(gpu);
+}
+
+double lerpyExt::get_rank(){
+    return gpu.mpi_rank;
+}
+
+void lerpyExt::set_rank(int rank){
+    gpu.mpi_rank = rank;
+}
+
+void lerpyExt::free(){
+    free_lerpy(gpu);
+}
+
+
+/*
+END OF LERPY
+*/
 
 class probaOr{
 public:
@@ -471,70 +534,113 @@ public:
     gpuOrient gpu;
     int size_of_cudareal = sizeof(CUDAREAL);
     bool auto_convert_arrays = true;
-    inline void set_B(bp::tuple vals){
-        CUDAREAL bxx = bp::extract<CUDAREAL>(vals[0]);
-        CUDAREAL bxy = bp::extract<CUDAREAL>(vals[1]);
-        CUDAREAL bxz = bp::extract<CUDAREAL>(vals[2]);
-        CUDAREAL byx = bp::extract<CUDAREAL>(vals[3]);
-        CUDAREAL byy = bp::extract<CUDAREAL>(vals[4]);
-        CUDAREAL byz = bp::extract<CUDAREAL>(vals[5]);
-        CUDAREAL bzx = bp::extract<CUDAREAL>(vals[6]);
-        CUDAREAL bzy = bp::extract<CUDAREAL>(vals[7]);
-        CUDAREAL bzz = bp::extract<CUDAREAL>(vals[8]);
-        gpu.Bmat << bxx, bxy, bxz,
-                byx, byy, byz,
-                bzx, bzy, bzz;
-    }
-    inline bp::tuple get_B(){
-        bp::tuple B = bp::make_tuple(
-                gpu.Bmat(0,0), gpu.Bmat(0,1), gpu.Bmat(0,2),
-                gpu.Bmat(1,0), gpu.Bmat(1,1), gpu.Bmat(1,2),
-                gpu.Bmat(2,0), gpu.Bmat(2,1), gpu.Bmat(2,2)
-                );
-        return B;
-    }
 
-    inline void alloc(int device_id, np::ndarray& rotations, int maxQvecs){
-        int num_rot=rotations.shape(0)/9;
-        setup_orientMatch( device_id, maxQvecs, gpu, rotations, true);
-    }
-    inline void free(){
-        free_orientMatch(gpu);
-    }
-    inline np::ndarray oriPeaks(np::ndarray& qvecs,
-                         float hcut, int minWithinHcut, bool verbose){
-        orientPeaks(gpu, qvecs, hcut, minWithinHcut, verbose);
+    void alloc(int device_id, np::ndarray& rotations, int maxQvecs);
+    void free();
 
-        bp::tuple shape = bp::make_tuple(gpu.numRot);
-        bp::tuple stride = bp::make_tuple(sizeof(bool));
-        np::dtype dt = np::dtype::get_builtin<bool>();
-        np::ndarray output = np::from_data(&gpu.out[0], dt, shape, stride, bp::object());
-        return output.copy();
-    }
+    np::ndarray oriPeaks(np::ndarray& qvecs,
+                     float hcut, int minWithinHcut, bool verbose);
 
-    inline bp::list listOrients(){
-        return gpu.probable_rot_inds;
-    }
+    bp::list listOrients();
 
-    inline void print_rotMat(int i_rot){
-        MAT3 M = gpu.rotMats[i_rot];
-        printf("Rotation matrix %d=\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n",
-               M(0,0), M(0,1), M(0,2),
-               M(1,0), M(1,1), M(1,2),
-               M(2,0), M(2,1), M(2,2));
-    }
+    void print_rotMat(int i_rot);
 
-    inline void alloc_IPC(int device_id, np::ndarray& rotations,
-                        int maxQvecs, int numRot, bp::object py_comm){
-
-      PyObject* py_obj = py_comm.ptr();
-      MPI_Comm *comm_p = PyMPIComm_Get(py_obj);
-      if (comm_p == NULL) bp::throw_error_already_set();
-      setup_orientMatch_IPC(device_id, maxQvecs, gpu,
-                     rotations, numRot, *comm_p);
-    }
+    void alloc_IPC(int device_id, np::ndarray& rotations,
+                        int maxQvecs, int numRot, bp::object py_comm);
 
 };
+
+
+void probaOr::alloc(int device_id, np::ndarray& rotations, int maxQvecs){
+    int num_rot=rotations.shape(0)/9;
+    setup_orientMatch( device_id, maxQvecs, gpu, rotations, true);
+}
+
+void probaOr::free(){
+    free_orientMatch(gpu);
+}
+
+np::ndarray probaOr::oriPeaks(np::ndarray& qvecs,
+                     float hcut, int minWithinHcut, bool verbose){
+    orientPeaks(gpu, qvecs, hcut, minWithinHcut, verbose);
+
+    bp::tuple shape = bp::make_tuple(gpu.numRot);
+    bp::tuple stride = bp::make_tuple(sizeof(bool));
+    np::dtype dt = np::dtype::get_builtin<bool>();
+    np::ndarray output = np::from_data(&gpu.out[0], dt, shape, stride, bp::object());
+    return output.copy();
+}
+
+bp::list probaOr::listOrients(){
+    return gpu.probable_rot_inds;
+}
+
+void probaOr::print_rotMat(int i_rot){
+    MAT3 M = gpu.rotMats[i_rot];
+    printf("Rotation matrix %d=\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n%.7f %.7f %.7f\n",
+           M(0,0), M(0,1), M(0,2),
+           M(1,0), M(1,1), M(1,2),
+           M(2,0), M(2,1), M(2,2));
+}
+
+void probaOr::alloc_IPC(int device_id, np::ndarray& rotations,
+                    int maxQvecs, int numRot, bp::object py_comm){
+
+  PyObject* py_obj = py_comm.ptr();
+  MPI_Comm *comm_p = PyMPIComm_Get(py_obj);
+  if (comm_p == NULL) bp::throw_error_already_set();
+  setup_orientMatch_IPC(device_id, maxQvecs, gpu,
+                 rotations, numRot, *comm_p);
+}
+
+static double get_maxQ(lerpyExt const& lerpy){
+    return lerpy.gpu.maxQ;
+}
+
+static void set_maxQ(lerpyExt& lerpy, const double maxQ){
+    lerpy.gpu.maxQ = maxQ;
+}
+
+static int get_densDim(lerpyExt const& lerpy){
+    return lerpy.gpu.densDim;
+}
+
+static void set_densDim(lerpyExt& lerpy, const int densDim){
+    lerpy.gpu.densDim = densDim;
+}
+
+static int get_dev_id(lerpyExt const& lerpy){
+    return lerpy.gpu.device;
+}
+
+static void set_dev_id(lerpyExt& lerpy, const int val){
+    lerpy.gpu.device=val;
+    set_device(lerpy.gpu);
+}
+
+static bp::tuple get_B(probaOr const& ori){
+    bp::tuple B = bp::make_tuple(
+            ori.gpu.Bmat(0,0), ori.gpu.Bmat(0,1), ori.gpu.Bmat(0,2),
+            ori.gpu.Bmat(1,0), ori.gpu.Bmat(1,1), ori.gpu.Bmat(1,2),
+            ori.gpu.Bmat(2,0), ori.gpu.Bmat(2,1), ori.gpu.Bmat(2,2)
+            );
+    return B;
+}
+
+static void set_B(probaOr& ori , const bp::tuple vals){
+    CUDAREAL bxx = bp::extract<CUDAREAL>(vals[0]);
+    CUDAREAL bxy = bp::extract<CUDAREAL>(vals[1]);
+    CUDAREAL bxz = bp::extract<CUDAREAL>(vals[2]);
+    CUDAREAL byx = bp::extract<CUDAREAL>(vals[3]);
+    CUDAREAL byy = bp::extract<CUDAREAL>(vals[4]);
+    CUDAREAL byz = bp::extract<CUDAREAL>(vals[5]);
+    CUDAREAL bzx = bp::extract<CUDAREAL>(vals[6]);
+    CUDAREAL bzy = bp::extract<CUDAREAL>(vals[7]);
+    CUDAREAL bzz = bp::extract<CUDAREAL>(vals[8]);
+    ori.gpu.Bmat << bxx, bxy, bxz,
+            byx, byy, byz,
+            bzx, bzy, bzz;
+}
 
 
 BOOST_PYTHON_MODULE(emc){
@@ -628,8 +734,8 @@ BOOST_PYTHON_MODULE(emc){
         .def("free", &lerpyExt::free, "free the gpu")
         
         .add_property("dens_dim",
-                       make_function(&lerpyExt::get_densDim,rbv()),
-                       make_function(&lerpyExt::set_densDim,dcp()),
+                       make_function(&get_densDim,rbv()),
+                       make_function(&set_densDim,dcp()),
                        "the number of bins along the density edge (its always a cube); default=256")
 
         .add_property("is_in_sparse_mode",
@@ -637,8 +743,8 @@ BOOST_PYTHON_MODULE(emc){
                        "whether sparse density mode is being used")
 
         .add_property("max_q",
-                       make_function(&lerpyExt::get_maxQ,rbv()),
-                       make_function(&lerpyExt::set_maxQ,dcp()),
+                       make_function(&get_maxQ,rbv()),
+                       make_function(&set_maxQ,dcp()),
                        "the maximum q magnitude (defines density edge length from -maxQ to +maxQ)")
 
         .add_property("rank",
@@ -657,8 +763,8 @@ BOOST_PYTHON_MODULE(emc){
         .def("get_gpu_mem", &lerpyExt::_get_gpu_mem, "get free GPU memory in bytes (for dev_id that was used in allocate_lerpy)")
 
         .add_property("dev_id",
-                       make_function(&lerpyExt::get_dev_id,rbv()),
-                       make_function(&lerpyExt::set_dev_id,dcp()),
+                       make_function(&get_dev_id,rbv()),
+                       make_function(&set_dev_id,dcp()),
                        "the GPU device ID used for running the emc kernels")
 
         .def("_mpi_set_starting_density", &lerpyExt::mpi_set_starting_density, "set the starting density, broadcast to other ranks")
@@ -685,8 +791,8 @@ BOOST_PYTHON_MODULE(emc){
         .def ("print_rotMat", &probaOr::print_rotMat, "show elements of allocated rotMat i_rot")
         .def ("get_probable_orients", &probaOr::listOrients, "returns a list of rotation matrix indices")
         .add_property("Bmatrix",
-                       make_function(&probaOr::get_B,rbv()),
-                       make_function(&probaOr::set_B,dcp()),
+                       make_function(&get_B,rbv()),
+                       make_function(&set_B,dcp()),
                        "the Bmatrix (dxtbx Crystal.get_B() format)")
         .add_property("size_of_cudareal",
             make_getter(&probaOr::size_of_cudareal,rbv()),

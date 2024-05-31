@@ -82,7 +82,7 @@ def make_dir(dirname):
     COMM.barrier()
 
 
-def mpi_load_exp_ref(input_file, maxN=None, odd=False, even=False):
+def mpi_load_exp_ref(input_file, maxN=None, odd=False, even=False, adu_per_photon=1):
     exp_names, ref_names = utils.load_expt_refl_file(input_file)
     if maxN is not None:
         exp_names = exp_names[:maxN]
@@ -100,7 +100,7 @@ def mpi_load_exp_ref(input_file, maxN=None, odd=False, even=False):
             continue
         explst = ExperimentList.from_file(exp_name)
         assert len(explst)==1
-        img = image_data_from_expt(explst[0])
+        img = image_data_from_expt(explst[0]) / adu_per_photon
         crystal = explst[0].crystal  # these are optional, if no crystal is in explist, these will be None
         refl = flex.reflection_table.from_file(ref_name)
         imgs.append(img)
@@ -689,9 +689,9 @@ class EMC:
         iter_times = []
         while self.i_emc < num_iter:
             t = time.time()
-            print_cpu_mem_usage(self.LOGGER)
-            print_cpu_mem_usage()
-            print_gpu_usage_across_ranks(self.L)
+            #print_cpu_mem_usage(self.LOGGER)
+            #print_cpu_mem_usage()
+            #print_gpu_usage_across_ranks(self.L)
 
             self.update_scale_factors = self.i_emc > 4 and (self.i_emc % 2 == 1) and self.refine_scale_factors
             self.update_density = not self.update_scale_factors
@@ -819,23 +819,28 @@ class EMC:
             density_file = os.path.join(self.outdir, "Witer%d.h5" % (self.i_emc+1))
             all_scales = np.hstack(all_scales)
             all_names = np.hstack(all_names)
-            np.savez(os.path.join(self.outdir,"Scales%d" % (self.i_emc+1)), scales=all_scales, names=all_names)
+            np.savez(os.path.join(self.outdir,"Scales%d" % (self.i_emc+1)),
+                     scales=np.array(all_scales, object),
+                     names=np.array(all_names, object))
             if all_scale_changed is not None:
                 all_scale_changed = np.hstack(all_scale_changed)
-                np.save(os.path.join(self.outdir, "ScalesChanged%d" % (self.i_emc+1)), all_scale_changed)
+                np.save(os.path.join(self.outdir, "ScalesChanged%d" % (self.i_emc+1)),
+                        np.array(all_scale_changed, object))
 
             self.save_h5(density_file)
 
         self.save_prob_rots_npz()
+        self.print("DONE Write to outputdir")
 
     def save_h5(self, density_file):
-        den = np.zeros(self.L.dens_dim**3)
+        NBINS = self.L.dens_dim
+        den = np.zeros(NBINS**3)
+        max_q = self.L.max_q
         den[self.peak_mask.ravel()] = self.L.densities()
         with h5py.File(density_file, "w") as out_h5:
-            NBINS = self.L.dens_dim
             out_h5.create_dataset("Wprime",data=den.reshape((NBINS, NBINS, NBINS)), compression="lzf")
             out_h5.create_dataset("ucell", data=self.ucell_p)
-            out_h5.create_dataset("max_q", data=self.L.max_q)
+            out_h5.create_dataset("max_q", data=max_q)
 
     def save_prob_rots_npz(self):
         dirname = os.path.join( self.outdir , "prob_rots", "rank%d" % COMM.rank)
@@ -843,7 +848,10 @@ class EMC:
             os.makedirs(dirname)
         fname = os.path.join(dirname, "P_dr_iter%d.npz" % (self.i_emc+1))
         # TODO use dtype obj for jagged arrays
-        np.savez(fname, rots=self.prob_rots, Pdr=self.shot_P_dr, names=self.shot_names)
+        np.savez(fname,
+                 rots=np.array(self.prob_rots, object),
+                 Pdr=np.array(self.shot_P_dr, object),
+                 names=np.array(self.shot_names, object))
 
     def success_rate(self, init=False, return_models=False):
         """
@@ -909,6 +917,7 @@ def print_gpu_usage_across_ranks(L, logger=None):
     :param logger: python logger
     :return:
     """
+    return None
     free_mem = L.get_gpu_mem()/1024**3
     dev_id = L.dev_id
     all_data = COMM.gather([dev_id, free_mem])

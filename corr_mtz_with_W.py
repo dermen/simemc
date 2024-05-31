@@ -7,6 +7,11 @@ parser.add_argument("ref", type=str, default=None, help="can be an MTZ file or a
 parser.add_argument("--nbin", type=int, default=10)
 parser.add_argument("--toggle", action="store_true")
 parser.add_argument("--spear", action="store_true")
+parser.add_argument("--symbol", type=str)
+parser.add_argument("--highRes", type=float, default=None)
+parser.add_argument("--mtz", type=str, default=None)
+parser.add_argument("--kern", type=int, default=2)
+parser.add_argument("--conn", type=int, default=2)
 args = parser.parse_args()
 
 from iotbx.reflection_file_reader import any_reflection_file
@@ -14,13 +19,11 @@ from pylab import *
 from scipy.stats import spearmanr, pearsonr
 from simemc import integration
 
-max_q=0.5
-highRes=1/max_q
+highRes= args.highRes
 CC = pearsonr
 if  args.spear:
     CC = spearmanr
-symbol = "P43212"
-ucell_p = 68.48, 68.48, 104.38, 90,90,90
+symbol = args.symbol
 
 from simtbx.diffBragg import utils as db_utils
 if args.ref.endswith("mtz"):
@@ -36,9 +39,12 @@ else:
 H5 = h5py.File(args.W[0], "r")
 ucell = tuple(H5['ucell'][()])
 dens_dim= H5["Wprime"] .shape[0]
+max_q = H5["max_q"][()]
+highRes = 1/max_q
+if args.highRes is not None:
+    highRes = args.highRes
 
 Fref = Fref.resolution_filter(d_min=highRes)
-#ucell_p = Fref.unit_cell().parameters()
 Fref_map = {hkl: val for hkl,val in zip(Fref.indices(), Fref.data())}
 D = Fref.d_spacings()
 dspace_map = {hkl:val for hkl, val in zip(D.indices(), D.data())}
@@ -61,11 +67,15 @@ for wname in wnames:
         W = np.load(wname)[()].reshape([dens_dim]*3)
     # TODO store ucell in W
     print(dens_dim, max_q)
-    ma = integration.integrate_W(W, max_q, ucell_p, symbol, method='sum',kernel_iters=2,conn=2, nj=1).as_amplitude_array().resolution_filter(d_min=1/max_q)
+    ma = integration.integrate_W(W, max_q, ucell, symbol, method='sum',kernel_iters=args.kern,conn=args.conn, nj=1).as_amplitude_array().resolution_filter(d_min=1/max_q)
     print("Fitting to density")
     ma = ma.average_bijvoet_mates()
     dataMap = {hkl:val for hkl,val in zip(ma.indices(), ma.data())}
-    F2 = any_reflection_file("allshotsMerge_mark0/iobs_all.mtz").as_miller_arrays()[0].as_amplitude_array()
+    mtzName = args.mtz
+    if args.mtz is None:
+        #mtzName = "allshotsMerge_mark0/iobs_all.mtz"
+        mtzName = "merge/iobs_all.mtz"
+    F2 = any_reflection_file(mtzName).as_miller_arrays()[0].as_amplitude_array()
     F2map = {h: v for h, v in zip(F2.indices(), F2.data())}
     if hcommon is None:
         hcommon = set(dataMap).intersection(Fref_map, F2map)
@@ -98,6 +108,8 @@ for wname in wnames:
     print(wname, c)
     plot(vals, mtz_vals,'.', label=wname + " --- CC=%.4f" % c)
     cc_per_wname.append(c)
+
+from IPython import embed;embed()
 
 xlabel("EMC $|F|^2$", fontsize=14)
 ylabel("cctbx $|F|^2$", fontsize=14)

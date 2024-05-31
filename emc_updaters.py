@@ -48,7 +48,7 @@ class DensityUpdater(Updater):
         super().__init__(*args, **kwargs)
         # TODO: assert emc.L is in sparse mode
         assert self.emc.L.is_in_sparse_mode
-        mpi_utils.print_gpu_usage_across_ranks(self.emc.L)
+        #mpi_utils.print_gpu_usage_across_ranks(self.emc.L)
         COMM.barrier()
         self.min_prob = 1e-5
         self.prev_iter_F = np.inf
@@ -102,14 +102,15 @@ class DensityUpdater(Updater):
         # according to
         #      x -> np.sqrt(x**2+ 1) -1
         # this operation is done in-place on the GPU
+
         emc.L.update_reparameterized_density(x)
 
         emc.L.reset_density_derivs()
 
         functional = 0
 
-        mpi_utils.print_gpu_usage_across_ranks(self.emc.L, logger=self.LOGGER)
-        mpi_utils.print_cpu_mem_usage(logger=self.LOGGER)
+        #mpi_utils.print_gpu_usage_across_ranks(self.emc.L, logger=self.LOGGER)
+        #mpi_utils.print_cpu_mem_usage(logger=self.LOGGER)
 
         self.LOGGER.debug("Compute func/grads for %d shots" % emc.nshots)
         for i_shot in range(emc.nshots):

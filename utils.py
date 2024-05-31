@@ -243,7 +243,6 @@ def integrate_W(W, dens_dim, max_q, ucell_p=None, symbol=None, order=None, kerne
             i2_slc = slice(i2-ksz, i2+ksz+1,1)
             i3_slc = slice(i3-ksz, i3+ksz+1,1)
             peakRegion = W[i1_slc, i2_slc, i3_slc]  # region around one peak, same shape as kernel
-            #from IPython import embed;embed()
 
             integrated_val = peakRegion[kernel].sum()
             data.append(np.float64(integrated_val))
@@ -950,7 +949,6 @@ def dials_find_spots(data_img, params, trusted_flags=None):
     if isinstance(params.spotfinder.filter.max_spot_size, int):
         maxpix = params.spotfinder.filter.max_spot_size
     bad_ref_labels = np.where( np.logical_or(npix_per_ref < minpix, npix_per_ref > maxpix))[0]
-    spotmask2 = spotmask.copy()
     for i_lab in bad_ref_labels:
         spotmask[lab==i_lab+1] = False
 
@@ -1104,8 +1102,15 @@ def signal_level_of_image(R, img):
     for i in range(len(R)):
         refl = R[i]
         x1,x2,y1,y2,_,_ = refl["bbox"]
+        x1 = max(0, x1)
+        y1 = max(0, y1)
         pid = refl['panel']
-        signal_level += img[pid, y1:y2, x1:x2].mean()
+        pix = img[pid, y1:y2, x1:x2]
+        if not pix.size:
+            print("WARNING: oddball bbox")
+            continue
+        else:
+            signal_level += pix.mean()
     signal_level /= len(R)
     return signal_level
 
@@ -1143,7 +1148,7 @@ def get_prob_rots_per_shot(O, R, hcut, min_pred,
 
 def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=None,
                  max_num_strong_spots=1000, hcut=0.1, min_pred=3, verbose=True,
-                detector=None,beam=None, hcut_incr=None, device_comm=None, minimum_prob_rot=0):
+                detector=None,beam=None, hcut_incr=None, device_comm=None, minimum_prob_rot=0, O=None):
     """
 
     :param dev_id: gpu device ID
@@ -1164,7 +1169,8 @@ def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=N
     if probable_orients is None:
         print("probable_orients failed to import")
         return
-    O = probable_orients()
+    if O is None:
+        O = probable_orients()
     if device_comm is not None:
         num_rots = None
         if device_comm.rank==0:
@@ -1188,7 +1194,8 @@ def get_prob_rot(dev_id, list_of_refl_tables, rotation_samples, Bmat_reference=N
         prob_rots_per_shot.append(prob_rot)
         if verbose:
             print("%d probable rots on shot %d / %d with %d strongs (%f sec)"
-                   % ( len(prob_rot),i_img+1, len(list_of_refl_tables) , len(R), time.time()-t), flush=True )
+                   % ( len(prob_rot),i_img+1, len(list_of_refl_tables) , len(R),
+                       time.time()-t), flush=True )
     #O.free_device()
     return prob_rots_per_shot
 
